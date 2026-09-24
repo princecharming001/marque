@@ -1347,7 +1347,15 @@ final class AppStore {
                     try? FileManager.default.attributesOfItem(
                         atPath: MediaStore.url(for: $0).path)[.size] as? Int
                 }) ?? 0
-                let ceiling = UInt64(min(900, 480 + MediaCompressor.compressionBudget(bytes: srcBytes)))
+                // LV-2: the compression budget now also scales with the take's DURATION (one
+                // bitrate-targeted transcode for every length), so the ceiling follows it —
+                // 480s for mint + PUT + create-job on top, capped at 30 min instead of 15.
+                var srcSeconds = 0.0
+                if let p = footagePath, !p.isEmpty {
+                    srcSeconds = Double(await Self.assetDurationSeconds(MediaStore.url(for: p)))
+                }
+                let ceiling = UInt64(min(1800, 480 + MediaCompressor.compressionBudget(
+                    bytes: srcBytes, seconds: srcSeconds)))
                 group.addTask { try? await Task.sleep(nanoseconds: ceiling * 1_000_000_000); return nil }
                 let first = await group.next() ?? nil
                 group.cancelAll()
@@ -1364,9 +1372,13 @@ final class AppStore {
     /// Swap the uploading placeholder for the real server-tracked clips, or mark it failed.
     private func reconcileInstantSubmit(placeholderId: UUID, resp: AnalyzeJobResponse?,
                                         script: Script, footagePath: String?) {
-        clips.removeAll { $0.id == placeholderId }
+        // LV-3: the placeholder is REPLACED in place by the server's clips (shared helper),
+        // carrying what the creator set on it while it uploaded. Gone ⇒ deleted mid-upload
+        // (deleteClip cancelled this submit) — never resurrect it, failed or tracked.
+        guard let placeholder = clips.first(where: { $0.id == placeholderId }) else { return }
         let journalEntry = UploadJournal.shared.entry(placeholderId: placeholderId.uuidString)
         guard let resp, let stubs = resp.clips, !stubs.isEmpty else {
+            clips.removeAll { $0.id == placeholderId }
             // Submit failed — surface a failed card the creator can retry, never a silent drop.
             // Breadcrumb → Render logs (client-side failures here previously left no trace).
             // The journal entry stays (state failedRetryable) so the reconcile sweep can resume
@@ -1405,47 +1417,62 @@ final class AppStore {
         // optimistically at submit time; don't repeat it here after the round-trip.
         trackSubmittedClips(jobId: resp.jobId, script: script, footagePath: footagePath,
                             stubs: stubs.map { ($0.clipId, $0.format, $0.status == "ready") },
-                            etaSeconds: resp.etaSeconds, celebrate: false)
+                            etaSeconds: resp.etaSeconds, celebrate: false,
+                            replacing: placeholderId, carryOver: placeholder)
     }
 
+    /// LV-3: the script a re-tracked clip is filed under — its own when it still exists,
+    /// else a stand-in built from the card (the carried-over clip keeps its real scriptId).
+    private func trackingScript(for clip: Clip) -> Script {
+        scripts.first(where: { $0.id == clip.scriptId }) ?? Script(
+            pillarName: "Freestyle", title: clip.title, summary: "", style: VideoStyle.talkingHead.rawValue,
+            formatId: clip.formatId, hook: Hook(text: clip.title, signal: .narrative, strength: 70),
+            altHooks: [], body: "", cta: clip.caption, shotPlan: [], targetSeconds: max(1, clip.seconds),
+            predictedScore: clip.predictedScore)
+    }
+
+    /// The shared "clips are now in flight" tail for EVERY create-job response.
+    ///
+    /// LV-3: `replacing` is the local stand-in the response belongs to (upload placeholder,
+    /// failed card being re-submitted). It is swapped IN PLACE for rows carrying the
+    /// SERVER's clip ids — the ids every poll loop matches on — with the creator's card
+    /// metadata carried over (`carryOver`). Before this, the resubmit path kept the local
+    /// id, so no poll ever matched it and a finished job read as edit_timeout.
     func trackSubmittedClips(jobId: String, script: Script, footagePath: String?,
                              stubs: [(id: String, format: String, ready: Bool)],
-                             etaSeconds: Int? = nil, celebrate: Bool = true) {
-        let tagged = stubs.map { stub -> Clip in
-            // A clip_id that doesn't parse as a UUID can NEVER be reconciled: every poll
-            // loop matches responses on UUID(uuidString: clip_id) == clip.id, so the old
-            // random-UUID fallback minted a local id no server response would ever address
-            // — a permanent spinner, forever, across launches. Land it as .failed
-            // retryable instead. jobId is deliberately nil: that job's responses can't
-            // name this clip anyway, and a nil jobId routes retryClipJob straight to
-            // resubmitFailedClip (fresh upload from the local take → fresh job →
-            // server-minted id), the only path that can actually heal it.
-            let parsedId = UUID(uuidString: stub.id)
-            let formatId = stub.format.isEmpty ? script.formatId : stub.format
-            var c = Clip(id: parsedId ?? UUID(), scriptId: script.id, formatId: formatId,
-                         formatName: Catalog.format(formatId).name,
-                         title: script.title.isEmpty ? script.hook.text : script.title,
-                         caption: script.cta,
-                         predictedScore: script.predictedScore,
-                         status: parsedId == nil ? .failed : (stub.ready ? .ready : .rendering),
-                         seconds: Catalog.format(formatId).targetSeconds,
-                         jobId: parsedId == nil ? nil : jobId)
-            c.localVideoPath = footagePath
-            if parsedId == nil {
-                c.lastError = "internal_error"
-                c.lastErrorDetail = "unreadable clip id from the server"
-            }
-            if !stub.ready && parsedId != nil { c.etaSeconds = etaSeconds; c.etaSetAt = Date() }
-            return c
+                             etaSeconds: Int? = nil, celebrate: Bool = true,
+                             replacing localId: UUID? = nil, carryOver: Clip? = nil) {
+        // A stand-in that's gone was deleted mid-flight (deleteClip cancels its task) —
+        // re-creating it from a late response would resurrect a card the creator removed.
+        if let localId, !clips.contains(where: { $0.id == localId }) {
+            backend.reportClientEvent("adopt_skipped_deleted", detail: "job=\(jobId)")
+            return
         }
+        // A clip_id that doesn't parse as a UUID can NEVER be reconciled: every poll loop
+        // matches responses on UUID(uuidString: clip_id) == clip.id, so it lands .failed
+        // retryable with a nil jobId — which routes retryClipJob straight to
+        // resubmitFailedClip (fresh upload → fresh job → server-minted id), the only path
+        // that can actually heal it. (ServerClipAdoption.trackedClips.)
+        let tagged = ServerClipAdoption.trackedClips(
+            jobId: jobId, script: script, footagePath: footagePath,
+            stubs: stubs.map { ServerClipAdoption.Stub(id: $0.id, format: $0.format, ready: $0.ready) },
+            etaSeconds: etaSeconds, carryOver: carryOver)
         // Breadcrumb → Render logs: a malformed clip_id is a backend contract break we
         // want to hear about, not silently absorb.
         if let bad = stubs.first(where: { UUID(uuidString: $0.id) == nil }) {
             backend.reportClientEvent("clip_id_unparseable",
                                       detail: "job=\(jobId) | id=\(bad.id.prefix(36))")
         }
-        clips.insert(contentsOf: tagged, at: 0)
-        upgradeSocialCaption(for: script)
+        ServerClipAdoption.replace(localId, in: &clips, with: tagged)
+        if let localId, let first = tagged.first, first.id != localId {
+            ServerClipAdoption.repoint(&schedule, from: localId, to: first.id)
+            ServerClipAdoption.repoint(&pendingPublishes, from: localId, to: first.id)
+        }
+        // The stand-in's files nothing carried over (e.g. an old job's cached render).
+        if let carryOver { reclaimOrphanedMedia(from: carryOver) }
+        // Only when a row actually files under this script — a stand-in script (the card's
+        // own was deleted) must not trigger a caption rewrite of nothing.
+        if tagged.contains(where: { $0.scriptId == script.id }) { upgradeSocialCaption(for: script) }
         readiedScripts.removeAll { $0.script.id == script.id }
         save()
         if tagged.contains(where: { $0.status == .rendering }) {
@@ -1512,7 +1539,16 @@ final class AppStore {
         }
         if strandedChanged { save() }
 
-        let stuck = clips.filter { $0.status == .rendering && $0.jobId != nil }
+        // LV-4: an `edit_timeout` card is the CLIENT's verdict (its poll ceiling ran out),
+        // not the server's — the job may have finished since, or still be rendering a long
+        // take. While it still has a job id it's re-polled here like a rendering clip; the
+        // first answer replaces the verdict with the server's (ready / real failure / still
+        // working), and a gone job (404/410) retires it to job_expired.
+        let stuck = clips.filter {
+            ($0.status == .rendering && $0.jobId != nil)
+                || ($0.status == .failed
+                    && JobPollBudget.shouldRepollFailed(lastError: $0.lastError, hasJobId: $0.jobId != nil))
+        }
         for (jobId, group) in Dictionary(grouping: stuck, by: { $0.jobId! })
         where !activeRepolls.contains(jobId) {
             activeRepolls.insert(jobId)
@@ -1700,7 +1736,8 @@ final class AppStore {
                                           detail: "reattach=\(entry != nil) | \(clip.id.uuidString)")
                 let task = Task { [weak self] in
                     guard let self else { return }
-                    _ = await self.resubmitFailedClip(clip)
+                    // LV-5: automatic resume — the lifetime attempt cap still applies.
+                    _ = await self.resubmitFailedClip(clip, userInitiated: false)
                     self.backgroundSubmits[clip.id] = nil
                 }
                 backgroundSubmits[clip.id] = task
@@ -1748,17 +1785,14 @@ final class AppStore {
             save()
             return
         }
-        clips.removeAll { $0.id == clip.id }
         UploadJournal.shared.update(uploadId: entry.uploadId) { $0.jobId = resp.jobId; $0.state = .jobCreated }
         UploadJournal.shared.remove(uploadId: entry.uploadId)
-        let effScript = script ?? Script(
-            pillarName: "Freestyle", title: clip.title, summary: "", style: VideoStyle.talkingHead.rawValue,
-            formatId: clip.formatId, hook: Hook(text: clip.title, signal: .narrative, strength: 70),
-            altHooks: [], body: "", cta: clip.caption, shotPlan: [], targetSeconds: max(1, clip.seconds),
-            predictedScore: clip.predictedScore)
-        trackSubmittedClips(jobId: resp.jobId, script: effScript, footagePath: clip.localVideoPath,
+        let current = clips.first(where: { $0.id == clip.id }) ?? clip
+        trackSubmittedClips(jobId: resp.jobId, script: script ?? trackingScript(for: current),
+                            footagePath: clip.localVideoPath,
                             stubs: stubs.map { ($0.clipId, $0.format, $0.status == "ready") },
-                            etaSeconds: resp.etaSeconds, celebrate: false)
+                            etaSeconds: resp.etaSeconds, celebrate: false,
+                            replacing: clip.id, carryOver: current)
     }
 
     /// The chat-edit card sweep (unchanged behavior, factored out of reconcileTransientState).
@@ -1790,8 +1824,13 @@ final class AppStore {
     /// a futile 5-minute poll loop on every Library visit.
     private func failClipsForDeadJob(_ clipIds: [UUID]) {
         for id in clipIds {
+            // LV-4: a re-polled client-verdict card (edit_timeout) whose job is gone gets the
+            // server's truth too — otherwise it would be re-polled on every foreground.
             guard let idx = clips.firstIndex(where: { $0.id == id }),
-                  clips[idx].status == .rendering else { continue }
+                  clips[idx].status == .rendering
+                    || (clips[idx].status == .failed
+                        && JobPollBudget.shouldRepollFailed(lastError: clips[idx].lastError, hasJobId: true))
+            else { continue }
             clips[idx].status = .failed
             clips[idx].lastError = "job_expired"
         }
@@ -1803,8 +1842,10 @@ final class AppStore {
     func pollClipStatuses(jobId: String, clipIds: [UUID]) async {
         // Same long-footage deadline discipline as pollJob (see jobPollCeiling): the
         // old 60-iteration cap abandoned tweak re-renders of longer takes mid-spinner.
+        // LV-4: the ceiling scales with the source take's duration.
+        let ceiling = JobPollBudget.ceiling(sourceSeconds: await pollSourceSeconds(for: clipIds))
         let started = Date()
-        while Date().timeIntervalSince(started) < Self.jobPollCeiling {
+        while Date().timeIntervalSince(started) < ceiling {
             if Task.isCancelled { return }
             let (maybeResult, httpStatus) = await backend.pollClipJobWithStatus(jobId: jobId)
             if httpStatus == 404 || httpStatus == 410 {
@@ -1847,7 +1888,7 @@ final class AppStore {
                    let hit = clips.first(where: { clipIds.contains($0.id)
                        && $0.status == .failed && $0.lastError == "pipeline_interrupted" }) {
                     autoRetriedJobs.insert(jobId)
-                    await retryClipJob(hit)
+                    await retryClipJob(hit, userInitiated: false)   // automatic, not the creator
                     return
                 }
                 if !clips.contains(where: { clipIds.contains($0.id) && $0.status == .rendering }) {
@@ -1869,12 +1910,46 @@ final class AppStore {
     /// pipeline (the server's own watchdog fails a stuck job at ~16min, so the server
     /// verdict arrives first); past it the clips are marked failed-retryable — never
     /// abandoned in a spinner.
-    static let jobPollCeiling: TimeInterval = 20 * 60
+    ///
+    /// LV-4: this is now only the BASE (and ChatStore's edit watchdog). The job polls use
+    /// JobPollBudget.ceiling(sourceSeconds:) — 20 min + 3× the source take, ≤ 90 min — since
+    /// the server's legitimate budget for a long take (transcribe ≈ realtime, render scaled
+    /// by frames) outran a flat 20 min, and an `edit_timeout` card is re-polled afterwards.
+    static let jobPollCeiling: TimeInterval = JobPollBudget.baseCeiling
     /// 5s while fresh, 10s once the job has been going >5min — long renders don't need
     /// a tight poll, and the slower pace halves the request load exactly when the
     /// backend is busiest.
     private func pollInterval(elapsed: TimeInterval) -> UInt64 {
-        elapsed < 300 ? 5_000_000_000 : 10_000_000_000
+        UInt64(JobPollBudget.interval(elapsed: elapsed) * 1_000_000_000)
+    }
+
+    /// LV-4: measured source-take durations by media path (a take never changes length,
+    /// so one AVAsset probe per path per launch).
+    private var sourceSecondsByPath: [String: Double] = [:]
+
+    /// LV-4: the longest SOURCE take among `clipIds`, which sizes the poll ceilings. Read
+    /// from the local raw take; a clip with none on this device falls back to its measured
+    /// render length (a lower bound), else nil → the 20-min base.
+    private func pollSourceSeconds(for clipIds: [UUID]) async -> Double? {
+        var longest: Double?
+        for id in clipIds {
+            guard let clip = clips.first(where: { $0.id == id }) else { continue }
+            var secs = 0.0
+            if let p = clip.localVideoPath {
+                if let cached = sourceSecondsByPath[p] {
+                    secs = cached
+                } else {
+                    let url = MediaStore.url(for: p)
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        secs = Double(await Self.assetDurationSeconds(url))
+                        if secs > 0 { sourceSecondsByPath[p] = secs }
+                    }
+                }
+            }
+            if secs <= 0, clip.durationMeasured == true { secs = Double(clip.seconds) }
+            if secs > 0 { longest = max(longest ?? 0, secs) }
+        }
+        return longest
     }
 
     /// Local terminal verdict when polling exhausts its ceiling: the clips get a real,
@@ -1892,12 +1967,14 @@ final class AppStore {
 
     func pollJob(jobId: String, clipIds: [UUID]) async {
         var done = false
+        // LV-4: ceiling scaled by the source take (20 min + 3×, ≤ 90 min).
+        let ceiling = JobPollBudget.ceiling(sourceSeconds: await pollSourceSeconds(for: clipIds))
         let started = Date()
         // H1: without the cancellation check, a cancelled caller Task doesn't stop
         // this loop — it busy-spins instead (Task.sleep throws immediately once
         // cancelled, and the `try?` below swallows that), hammering the backend
         // until `done` or the ceiling instead of actually stopping.
-        while !done && Date().timeIntervalSince(started) < Self.jobPollCeiling && !Task.isCancelled {
+        while !done && Date().timeIntervalSince(started) < ceiling && !Task.isCancelled {
             try? await Task.sleep(nanoseconds: pollInterval(elapsed: Date().timeIntervalSince(started)))
             let (maybeResult, httpStatus) = await backend.pollClipJobWithStatus(jobId: jobId)
             if httpStatus == 404 || httpStatus == 410 {
@@ -1978,8 +2055,10 @@ final class AppStore {
         case "render_stalled", "render_timeout":
             return "The edit took too long and timed out. Tap to try again."
         case "edit_timeout":
-            // Client-side poll ceiling (20min) — by then the server watchdog has almost
-            // always produced its own verdict; this is the belt-and-braces copy.
+            // Client-side poll ceiling (20 min + 3× the take, LV-4) — by then the server
+            // has almost always produced its own verdict; this is the belt-and-braces copy.
+            // The card keeps being re-polled while it has a job, and Try again on a job
+            // that's still running just resumes polling it.
             return "This edit is taking much longer than it should. Tap to try again."
         case "pipeline_interrupted":
             return "The edit was interrupted mid-flight (a brief server restart). Tap to restart it."
@@ -1996,6 +2075,9 @@ final class AppStore {
             return "The upload was interrupted before it finished. Tap Try again to resume."
         case "upload_failed":
             return "Your take couldn't be uploaded, check your connection and tap Try again."
+        case "retry_unreachable":
+            // ED-11: Try again couldn't reach the server; the edit itself is untouched.
+            return "Couldn't reach the studio to restart this edit. Check your connection and tap Try again."
         case MediaCompressor.tooLargeErrorCode:
             // Build 78: the one upload failure where "check your connection" is actively
             // wrong — no network on earth fixes a body that can't be squeezed under the
@@ -2012,10 +2094,23 @@ final class AppStore {
     /// Re-run a failed clip's render from the backend (the job still holds the
     /// source + EDL). Optimistically flips affected clips back to .rendering and
     /// resumes polling.
-    func retryClipJob(_ clip: Clip) async {
+    /// LV-5: `userInitiated` is true for the creator's taps (Library "Try again", the
+    /// editor's "Re-create"); the self-heal auto-retry passes false so its re-upload keeps
+    /// the lifetime attempt cap.
+    ///
+    /// ED-11: returns what happened (callers may ignore it). Only a server that says the job
+    /// is GONE (404/410) sends the clip to resubmitFailedClip (re-upload + a NEW job, which
+    /// abandons the server-side edit history); offline / timeout / 5xx used to take that
+    /// path too. Now they put the clips back as they were, flagged `retry_unreachable`
+    /// ("couldn't reach the studio"), so Try again works once the connection is back — and
+    /// the next foreground re-polls them for the server's real state.
+    @discardableResult
+    func retryClipJob(_ clip: Clip, userInitiated: Bool = true) async -> RetryJobPolicy.Outcome {
         // No server job at all (it failed before one was ever created) → recover straight
         // from the local take.
-        guard let jobId = clip.jobId else { _ = await resubmitFailedClip(clip); return }
+        guard let jobId = clip.jobId else {
+            _ = await resubmitFailedClip(clip, userInitiated: userInitiated); return .jobGone
+        }
         let affected = clips.filter { $0.jobId == jobId && $0.status == .failed }.map { $0.id }
         for id in affected {
             if let idx = clips.firstIndex(where: { $0.id == id }) {
@@ -2025,9 +2120,33 @@ final class AppStore {
             }
         }
         save()
-        if await backend.retryClipJob(jobId: jobId) {
+        let outcome = RetryJobPolicy.classify(status: await backend.retryClipJobStatus(jobId: jobId))
+        if outcome == .stillRunning {
+            // LV-4: 409 = the ORIGINAL run is still going (a long take outlived the client's
+            // poll ceiling). Keep polling it — this used to fall into the re-upload branch
+            // below: a full second upload + a duplicate job racing the first.
+            backend.reportClientEvent("retry_still_running", detail: "job=\(jobId)")
+        }
+        if outcome == .unreachable {
+            // ED-11: we couldn't reach the server (or it errored) — the job and its edit
+            // history may be perfectly alive, so never re-upload on this. Put the clips back
+            // and say so; a ready clip (the editor's "Re-create" path) stays exactly as it was
+            // (only failed clips were flipped above).
+            for id in affected {
+                guard let idx = clips.firstIndex(where: { $0.id == id }), clips[idx].status == .rendering else { continue }
+                clips[idx].status = .failed
+                clips[idx].lastError = "retry_unreachable"
+                clips[idx].lastErrorDetail = nil
+            }
+            save()
+            backend.reportClientEvent("retry_unreachable", detail: "job=\(jobId)")
+            return .unreachable
+        }
+        if outcome == .restarted || outcome == .stillRunning {
             await pollJob(jobId: jobId, clipIds: affected)
+            return outcome
         } else {
+            // The server says the job is gone (404/410): only now recover from the local take.
             // The backend can't re-render the job. resubmitFailedClip only recovers THIS clip
             // (re-uploads its own footage → a fresh single-clip job); any SIBLINGS from the same
             // job we optimistically flipped to .rendering above would otherwise be orphaned in a
@@ -2041,7 +2160,7 @@ final class AppStore {
                 }
             }
             if !siblings.isEmpty { save() }
-            if !(await resubmitFailedClip(clip)) {
+            if !(await resubmitFailedClip(clip, userInitiated: userInitiated)) {
                 // No local footage to recover THIS clip from either — put it back to .failed too.
                 if let idx = clips.firstIndex(where: { $0.id == clip.id }) {
                     clips[idx].status = .failed
@@ -2049,6 +2168,7 @@ final class AppStore {
                 }
                 save()
             }
+            return .jobGone
         }
     }
 
@@ -2056,7 +2176,9 @@ final class AppStore {
     /// copy was written): re-upload the local take and start a FRESH job in place, so the
     /// retry is actually doable end-to-end. Returns false when there's no local footage to
     /// recover from (caller then leaves the clip in .failed).
-    private func resubmitFailedClip(_ clip: Clip) async -> Bool {
+    /// LV-5: `userInitiated` (the creator tapped Try again / Re-create) resets the journal's
+    /// lifetime attempt budget; the automatic relaunch/foreground resume keeps the cap.
+    private func resubmitFailedClip(_ clip: Clip, userInitiated: Bool) async -> Bool {
         guard let path = clip.localVideoPath,
               let idx = clips.firstIndex(where: { $0.id == clip.id }) else { return false }
         clips[idx].status = .rendering
@@ -2078,7 +2200,13 @@ final class AppStore {
         let uploadId: String
         if let existing = UploadJournal.shared.entry(placeholderId: clip.id.uuidString) {
             uploadId = existing.uploadId
-            UploadJournal.shared.update(uploadId: uploadId) { $0.state = .queued; $0.lastErrorCode = nil }
+            UploadJournal.shared.update(uploadId: uploadId) {
+                if userInitiated {
+                    $0.resetForUserRetry()      // LV-5: a fresh budget for the creator's retry
+                } else {
+                    $0.state = .queued; $0.lastErrorCode = nil
+                }
+            }
         } else {
             uploadId = UUID().uuidString
             let payload = UploadPayload(
@@ -2117,17 +2245,21 @@ final class AppStore {
                                                themeId: jp?.themeId, config: jp?.config,
                                                autoConfirm: true, toggles: toggles,
                                                idempotencyKey: uploadId),
-              !resp.jobId.isEmpty else {
+              !resp.jobId.isEmpty, let stubs = resp.clips, !stubs.isEmpty else {
             fail("Couldn't restart the edit. Tap Try again."); return true
-        }
-        if let i = clips.firstIndex(where: { $0.id == clip.id }) {
-            clips[i].jobId = resp.jobId
-            clips[i].uploading = false
         }
         UploadJournal.shared.update(uploadId: uploadId) { $0.jobId = resp.jobId; $0.state = .jobCreated }
         UploadJournal.shared.remove(uploadId: uploadId)
-        save()
-        await pollJob(jobId: resp.jobId, clipIds: [clip.id])
+        // LV-3: adopt the SERVER's clip ids exactly like the instant submit does. This used
+        // to stamp the new jobId on the LOCAL clip and poll [clip.id] — an id no response of
+        // the new job ever names, so every "Try again" / relaunch auto-resume spun for the
+        // whole poll ceiling and then read edit_timeout while the job had finished.
+        let current = clips.first(where: { $0.id == clip.id }) ?? clip
+        trackSubmittedClips(jobId: resp.jobId, script: script ?? trackingScript(for: current),
+                            footagePath: path,
+                            stubs: stubs.map { ($0.clipId, $0.format, $0.status == "ready") },
+                            etaSeconds: resp.etaSeconds, celebrate: false,
+                            replacing: clip.id, carryOver: current)
         return true
     }
 
@@ -2384,6 +2516,41 @@ final class AppStore {
         }
     }
 
+    /// ED-10: a COMMITTING tweak request whose outcome the STORE owns. The tweak chat used
+    /// to run its commit in a view task that it cancels on dismiss, with the cancellation
+    /// guard BEFORE setClipRendering — so closing the sheet while "Thinking…" let the server
+    /// commit the edit and start the render while the clip stayed .ready on the old URL and
+    /// nothing watched the render (the long-operation rule: store-owned, never view-owned).
+    /// The request runs in an unstructured store task — cancelling the caller doesn't cancel
+    /// it — and a render it starts flips the card + gets the store's watcher regardless of
+    /// what happened to the view. The caller still gets the response to show.
+    func commitClipTweak(jobId: String, clipId: UUID, label: String,
+                         _ request: @escaping @MainActor () async -> [String: Any]) async -> [String: Any] {
+        let owned = Task { @MainActor [weak self] () -> [String: Any] in
+            let resp = await request()
+            if let self, resp["error"] as? Bool != true, resp["needs_render"] as? Bool == true {
+                self.setClipRendering(clipId)
+                self.watchTweakRender(jobId: jobId, clipId: clipId, label: label)
+            }
+            return resp
+        }
+        return await owned.value
+    }
+
+    /// ED-10: the tweak chat's direct instruction turn, store-owned (see commitClipTweak).
+    func commitTweakInstruction(jobId: String, clipId: UUID, instruction: String) async -> [String: Any] {
+        await commitClipTweak(jobId: jobId, clipId: clipId, label: instruction) { [backend] in
+            await backend.tweakClip(jobId: jobId, clipId: clipId.uuidString, instruction: instruction)
+        }
+    }
+
+    /// ED-10: the tweak chat's "Apply this change" (previewed typed ops), store-owned.
+    func commitTweakOps(jobId: String, clipId: UUID, ops: [[String: Any]], label: String) async -> [String: Any] {
+        await commitClipTweak(jobId: jobId, clipId: clipId, label: label) { [backend] in
+            await backend.tweakClipOps(jobId: jobId, clipId: clipId.uuidString, ops: ops)
+        }
+    }
+
     // Build 57 (owner): submitting a re-render must NOT hold the editor hostage on a
     // spinner — the editor dismisses at submit, the Library card shows "rendering",
     // and this STORE-owned watcher (it survives the editor view's deallocation)
@@ -2404,17 +2571,24 @@ final class AppStore {
                 tweakWatchInFlight.remove(clipId)
                 activeRepolls.remove(jobId)
             }
-            for _ in 0..<120 {                                   // ~10 min at 5s
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            // LV-6: the budget scales with the clip's source length (10 min + 3×, ≤ 90 min);
+            // the flat 120 × 5 s gave up on long-take re-renders that were still on track.
+            // Running out of budget still leaves the card .rendering on purpose: the next
+            // foreground / Library appear re-polls it (repollRenderingClips) to the truth.
+            let budget = TweakWatchPolicy.ceiling(sourceSeconds: await pollSourceSeconds(for: [clipId]))
+            let started = Date()
+            while Date().timeIntervalSince(started) < budget {
+                try? await Task.sleep(nanoseconds: pollInterval(elapsed: Date().timeIntervalSince(started)))
                 let (maybe, http) = await backend.pollClipJobWithStatus(jobId: jobId)
-                if http == 404 || http == 410 { break }          // session gone — leave card as-is
-                guard let result = maybe, let jobClips = result["clips"] as? [[String: Any]],
-                      let mine = jobClips.first(where: { UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clipId })
-                else { continue }
-                switch mine["status"] as? String ?? "" {
-                case "ready":
-                    applyTweakResult(clipId, remoteURL: mine["render_url"] as? String, label: label)
-                    if mine["last_render_failed"] as? Bool == true {
+                let mine = (maybe?["clips"] as? [[String: Any]])?
+                    .first(where: { UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clipId })
+                switch TweakWatchPolicy.step(httpStatus: http, clipStatus: mine?["status"] as? String,
+                                             lastRenderFailed: mine?["last_render_failed"] as? Bool == true) {
+                case .keepWaiting:
+                    continue
+                case .landed(let renderFailed):
+                    applyTweakResult(clipId, remoteURL: mine?["render_url"] as? String, label: label)
+                    if renderFailed {
                         notifyTweakRender("That edit couldn't render",
                                           "Your previous cut is untouched in the Library.",
                                           clipId: clipId, jobId: jobId)
@@ -2424,7 +2598,7 @@ final class AppStore {
                                           clipId: clipId, jobId: jobId)
                     }
                     return
-                case "failed":
+                case .renderFailed:
                     // The backend keeps the previous render on a failed tweak — restore
                     // the card so the Library plays the last good cut again.
                     applyTweakResult(clipId, remoteURL: nil)
@@ -2432,7 +2606,18 @@ final class AppStore {
                                       "Your previous cut is untouched in the Library.",
                                       clipId: clipId, jobId: jobId)
                     return
-                default: continue
+                case .sessionGone:
+                    // LV-6: the edit session is gone (404/410), so this render can never
+                    // land. This used to `break` with the card left on "rendering" forever;
+                    // restore the previous cut instead (ready, remoteURL untouched — the
+                    // re-render never replaced it) and say so.
+                    if let i = clips.firstIndex(where: { $0.id == clipId }), clips[i].status == .rendering {
+                        applyTweakResult(clipId, remoteURL: nil)
+                        notifyTweakRender("That edit couldn't finish",
+                                          "The edit session expired. Your previous cut is untouched in the Library.",
+                                          clipId: clipId, jobId: jobId)
+                    }
+                    return
                 }
             }
         }
@@ -2467,7 +2652,10 @@ final class AppStore {
     /// Single-flight guard: clip ids with a render download currently in flight.
     private var renderCacheInFlight: Set<UUID> = []
     /// Renders larger than this stream instead of caching (keeps Documents sane).
-    private static let renderCacheMaxBytes: Int64 = 200 * 1024 * 1024
+    private static let renderCacheMaxBytes: Int64 = RenderCachePolicy.maxBytes
+    /// LV-7: render URLs already known to be over the cap this launch — cacheRender fires on
+    /// every ready poll tick, so without this each tick would re-probe the same render.
+    private var renderCacheOversize: Set<String> = []
 
     /// Reflect a (possibly new) render URL on a clip. When the URL actually CHANGES
     /// (tweak re-render), the cached render file + its poster are stale — invalidate
@@ -2506,39 +2694,58 @@ final class AppStore {
     /// Build 70: this used to fire undo ops WITH a re-render and sit in `.rendering`
     /// for minutes to reproduce a video we already had (owner: "reverting should be
     /// almost instantaneous"). The re-render was pure waste — same EDL, same output.
+    ///
+    /// ED-4: the server is asked FIRST. This used to swap the picture, delete the cached
+    /// render and trim the history before the rewind was confirmed — so a failed rewind
+    /// (offline, expired session, a render in flight) had already changed the picture and
+    /// thrown away the newer versions, and ANY applied undo reported success even when the
+    /// server's shorter history (5 durable entries vs 10 here) stopped short of the version
+    /// asked for. Now local state changes only on a FULL rewind; a partial or failed one
+    /// returns false (the sheet's "can't be restored" copy) with the picture untouched.
     @discardableResult
     func restoreEditVersion(clipId: UUID, index: Int) async -> Bool {
         guard let idx = clips.firstIndex(where: { $0.id == clipId }),
               let jobId = clips[idx].jobId,
               let history = clips[idx].renderHistory, index < history.count else { return false }
         let restored = history[index]
+        let requested = EditRestorePolicy.undosNeeded(forIndex: index)
 
-        // 1) Swap the picture NOW — the old render is already hosted.
-        clips[idx].remoteURL = restored.url
-        if let old = clips[idx].renderLocalPath {
-            try? FileManager.default.removeItem(at: MediaStore.url(for: old))
-        }
-        clips[idx].renderLocalPath = nil        // cached file belonged to the newer cut
-        clips[idx].previewURL = nil
-        clips[idx].thumbnailPath = nil          // poster too — regenerated from the restored render
-        clips[idx].durationMeasured = nil
-        clips[idx].currentVersionLabel = restored.label.isEmpty ? nil : restored.label
-        var trimmed = history
-        trimmed.removeFirst(min(index + 1, trimmed.count))
-        clips[idx].renderHistory = trimmed
-        clips[idx].status = .ready
-        save()
-        cacheRender(clipId: clipId)             // re-warm the local file + poster in the background
-
-        // 2) Rewind the server EDL to match — committed, NOT re-rendered.
-        let ops = Array(repeating: ["type": "undo"], count: index + 1)
+        // 1) Rewind the server EDL — committed, NOT re-rendered (the archived render exists).
+        let ops = Array(repeating: ["type": "undo"], count: requested)
         let resp = await backend.tweakClipOps(jobId: jobId, clipId: clipId.uuidString,
                                               ops: ops, deferRender: true)
-        let undos = (resp["applied"] as? [[String: Any]] ?? [])
+        let applied = (resp["applied"] as? [[String: Any]] ?? [])
             .filter { $0["type"] as? String == "undo" }.count
-        // The picture is already right either way; a failed rewind only means the NEXT
-        // tweak would branch from the newer EDL, so say so rather than silently diverge.
-        return undos > 0
+        let outcome = EditRestorePolicy.outcome(requestedUndos: requested, appliedUndos: applied,
+                                                error: resp["error"] as? Bool == true)
+        guard outcome == .restored else {
+            if case .partial(let a, let r) = outcome {
+                // The server rewound what it still had; the picture stays on the current cut.
+                backend.reportClientEvent("restore_partial",
+                                          detail: "job=\(jobId) | clip=\(clipId.uuidString.prefix(8)) | \(a)/\(r)")
+            }
+            return false
+        }
+
+        // 2) Only now swap the picture to the archived render. Re-locate the clip and the
+        //    version by id — both may have moved while the request was in flight.
+        guard let i = clips.firstIndex(where: { $0.id == clipId }),
+              let current = clips[i].renderHistory,
+              let at = current.firstIndex(where: { $0.id == restored.id }) else { return false }
+        clips[i].remoteURL = restored.url
+        if let old = clips[i].renderLocalPath {
+            try? FileManager.default.removeItem(at: MediaStore.url(for: old))
+        }
+        clips[i].renderLocalPath = nil          // cached file belonged to the newer cut
+        clips[i].previewURL = nil
+        clips[i].thumbnailPath = nil            // poster too — regenerated from the restored render
+        clips[i].durationMeasured = nil
+        clips[i].currentVersionLabel = restored.label.isEmpty ? nil : restored.label
+        clips[i].renderHistory = EditRestorePolicy.historyAfterRestoring(current, index: at)
+        clips[i].status = .ready
+        save()
+        cacheRender(clipId: clipId)             // re-warm the local file + poster in the background
+        return true
     }
 
     /// The current edit as a LOCAL video file for the share sheet. Sharing a remote URL
@@ -2595,27 +2802,31 @@ final class AppStore {
               clips[idx].isServerRendered,
               clips[idx].renderLocalPath == nil,
               let urlStr = clips[idx].remoteURL, let url = URL(string: urlStr),
-              !renderCacheInFlight.contains(clipId) else { return }
+              !renderCacheInFlight.contains(clipId),
+              !renderCacheOversize.contains(urlStr) else { return }
         renderCacheInFlight.insert(clipId)
         Task { [weak self] in
             defer { self?.renderCacheInFlight.remove(clipId) }
             // The whole download → adopt → poster → duration tail runs off the main
             // actor: this fires exactly when a clip lands (poll tick), and the old
             // Data(contentsOf:) + re-write put the entire render through RAM on main.
-            let landed: (path: String, thumbPath: String?, seconds: Int)? =
-                await Task.detached(priority: .utility) { () async -> (path: String, thumbPath: String?, seconds: Int)? in
-                    do {
-                        let (tmp, response) = try await URLSession.shared.download(from: url)
-                        var size = response.expectedContentLength          // -1 when unknown
-                        if size < 0 {
-                            let attrs = try? FileManager.default.attributesOfItem(atPath: tmp.path)
-                            size = (attrs?[.size] as? Int64) ?? 0
-                        }
-                        guard size <= Self.renderCacheMaxBytes,
-                              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
-                              let path = MediaStore.adopt(fileAt: tmp, ext: "mp4") else {
+            //
+            // LV-7: the size check happens BEFORE the body is downloaded. This used to pull
+            // the whole render and only then discard it when it was over the cap — every
+            // long take's render (a 10-min cut is easily past 200 MB), in full, per attempt.
+            // CappedDownload aborts on the response's expected length (Content-Length), or
+            // as soon as the bytes written pass the cap when the length is unknown.
+            let fetched: (landed: (path: String, thumbPath: String?, seconds: Int)?, oversize: Bool) =
+                await Task.detached(priority: .utility) { () async -> (landed: (path: String, thumbPath: String?, seconds: Int)?, oversize: Bool) in
+                    switch await CappedDownload.fetch(url, maxBytes: Self.renderCacheMaxBytes) {
+                    case .tooLarge:
+                        return (nil, true)                // over the cap → keep streaming
+                    case .failed:
+                        return (nil, false)               // fail-soft: streaming continues
+                    case .file(let tmp):
+                        guard let path = MediaStore.adopt(fileAt: tmp, ext: "mp4") else {
                             try? FileManager.default.removeItem(at: tmp)
-                            return nil                  // too big / bad response → keep streaming
+                            return (nil, false)
                         }
                         // Poster from the actual render.
                         let thumbPath = MediaStore.poster(for: MediaStore.url(for: path))
@@ -2624,12 +2835,14 @@ final class AppStore {
                         // Build 68: the badge shows the RENDER's real length, not the
                         // script's target estimate (owner: everything said 24s).
                         let dur = await Self.assetDurationSeconds(MediaStore.url(for: path))
-                        return (path, thumbPath, dur)
-                    } catch {
-                        return nil                      // fail-soft: streaming continues
+                        return ((path, thumbPath, dur), false)
                     }
                 }.value
-            guard let self, let landed else { return }
+            if fetched.oversize {
+                self?.renderCacheOversize.insert(urlStr)
+                self?.backend.reportClientEvent("render_cache_skipped_oversize", detail: "clip=\(clipId.uuidString.prefix(8))")
+            }
+            guard let self, let landed = fetched.landed else { return }
             // Re-locate the clip (it may have moved) and confirm the URL didn't
             // change mid-download (a tweak landing during the fetch wins).
             guard let i = self.clips.firstIndex(where: { $0.id == clipId }),
@@ -3310,6 +3523,8 @@ final class AppStore {
 
     // MARK: Import an external clip (I-6) — schedule a video you didn't film on Yunicorn.
 
+    /// Fallback for pickers with no file representation (small items only — the caller
+    /// prefers `importExternalClip(fileAt:)`, which never holds the video in memory).
     @discardableResult
     func importExternalClip(data: Data, title: String) async -> Clip {
         // File write, poster generation and the duration probe all run off the main
@@ -3324,6 +3539,35 @@ final class AppStore {
             let seconds = await Self.assetDurationSeconds(url)
             return (path, thumbPath, seconds)
         }.value
+        return insertImportedClip(path: path, thumbPath: thumbPath, seconds: seconds, title: title)
+    }
+
+    /// LV-8: import a picked video by FILE — the picker's streamed temp copy is moved into
+    /// the container (no Data round-trip: the old path loaded the whole video into memory,
+    /// which a multi-minute library video can't survive). Returns nil only if the file
+    /// couldn't be adopted (then nothing was inserted).
+    @discardableResult
+    func importExternalClip(fileAt src: URL, title: String) async -> Clip? {
+        let adopted = await Task.detached(priority: .userInitiated) { () async -> (String, String?, Int)? in
+            let ext = src.pathExtension.isEmpty ? "mov" : src.pathExtension.lowercased()
+            // Move (the picker copy is ours); copy as the fallback across volumes.
+            guard let path = MediaStore.adopt(fileAt: src, ext: ext)
+                    ?? MediaStore.saveFile(from: src, ext: ext) else { return nil }
+            try? FileManager.default.removeItem(at: src)      // no-op after a move
+            let url = MediaStore.url(for: path)
+            let thumbPath = MediaStore.poster(for: url)
+                .flatMap { $0.jpegData(compressionQuality: 0.7) }
+                .map { MediaStore.save($0, ext: "jpg") }
+            let seconds = await Self.assetDurationSeconds(url)
+            return (path, thumbPath, seconds)
+        }.value
+        guard let (path, thumbPath, seconds) = adopted else { return nil }
+        return insertImportedClip(path: path, thumbPath: thumbPath, seconds: seconds, title: title)
+    }
+
+    /// The shared tail of both imports: insert the ready "Imported" clip and upload it in
+    /// the background so it's postable.
+    private func insertImportedClip(path: String, thumbPath: String?, seconds: Int, title: String) -> Clip {
         let style = brand.preferredStyles.first ?? .talkingHead
         var clip = Clip(scriptId: UUID(), formatId: style.formats.first ?? "myth-buster",
                         formatName: "Imported", caption: "",

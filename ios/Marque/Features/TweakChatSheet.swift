@@ -232,17 +232,19 @@ struct TweakChatSheet: View {
                 messages.append(Msg(role: .assistant, text: reply))
                 return
             }
-            // No preview possible → today's direct flow, unchanged.
-            let direct = await store.backend.tweakClip(jobId: jobId,
-                                                       clipId: clip.id.uuidString,
-                                                       instruction: text)
+            // No preview possible → the direct commit. ED-10: the STORE owns it — the request
+            // and, when it starts a render, setClipRendering + the store's watcher run in a
+            // store task that closing this sheet can't cancel. (This view used to flip the
+            // clip itself AFTER the cancellation guard below, so a dismissal mid-"Thinking…"
+            // left the clip on the old cut while the server re-rendered it.)
+            let direct = await store.commitTweakInstruction(jobId: jobId, clipId: clip.id,
+                                                            instruction: text)
             guard !Task.isCancelled else { return }
             sending = false
             let directReply = direct["reply"] as? String ?? "Something went sideways. Try that again."
             messages.append(Msg(role: .assistant, text: directReply))
             if direct["needs_render"] as? Bool == true {
                 rendering = true
-                store.setClipRendering(clip.id)
                 messages.append(Msg(role: .status, text: "Re-editing your clip. This usually takes a minute or two."))
                 startPolling(jobId: jobId)
             }
@@ -259,8 +261,9 @@ struct TweakChatSheet: View {
         store.clearClipPreview(clip.id)
         sending = true
         sendTask = Task {
-            let resp = await store.backend.tweakClipOps(jobId: jobId,
-                                                        clipId: clip.id.uuidString, ops: ops)
+            // ED-10: store-owned commit (see send) — dismissing mid-apply can't strand it.
+            let resp = await store.commitTweakOps(jobId: jobId, clipId: clip.id, ops: ops,
+                                                  label: lastInstruction)
             guard !Task.isCancelled else { return }
             sending = false
             if resp["error"] as? Bool == true {
@@ -271,7 +274,6 @@ struct TweakChatSheet: View {
             messages.append(Msg(role: .status, text: "Applying it for real now."))
             if resp["needs_render"] as? Bool == true {
                 rendering = true
-                store.setClipRendering(clip.id)
                 startPolling(jobId: jobId)
             } else {
                 rendering = false
@@ -331,52 +333,47 @@ struct TweakChatSheet: View {
         }
     }
 
-    /// Watch THIS clip until its re-render lands (AppStore.pollJob watches the
-    /// whole job's status, which stays "ready" during tweaks — hence a dedicated loop).
+    /// Mirror THIS clip's re-render into the chat until it lands. ED-10: the STORE owns the
+    /// watch (commitTweakInstruction / commitTweakOps started setClipRendering + the store's
+    /// watchTweakRender before this sheet could be dismissed, and that watcher applies the
+    /// result with this turn's label); this loop only reads the store's clip — no network,
+    /// nothing lost when the sheet closes.
     private func startPolling(jobId: String) {
         pollTask?.cancel()
+        let before = store.clips.first(where: { $0.id == clip.id })?.remoteURL
         pollTask = Task {
-            for _ in 0..<60 {
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            let started = Date()
+            var nudged = false
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
                 if Task.isCancelled { return }
-                guard let result = await store.backend.pollClipJob(jobId: jobId),
-                      let jobClips = result["clips"] as? [[String: Any]],
-                      // UUID-compare (backend ids are lowercase, uuidString is uppercase)
-                      let mine = jobClips.first(where: {
-                          UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clip.id
-                      })
-                else { continue }
-                let status = mine["status"] as? String
-                if status == "ready" {
-                    // The clip comes back "ready" even when the re-render FAILED — the
-                    // backend restores the previous good URL and flags last_render_failed.
-                    // Reporting "the new cut is live" there is a lie (audit #8/#44): the
-                    // player still shows the OLD cut. Surface the failure honestly.
-                    store.applyTweakResult(clip.id, remoteURL: mine["render_url"] as? String,
-                                           label: lastInstruction)
-                    rendering = false
-                    if mine["last_render_failed"] as? Bool == true {
-                        messages.append(Msg(role: .status,
-                                            text: "That re-render didn't take. Your previous cut is untouched, so try rewording the change."))
-                    } else {
-                        messages.append(Msg(role: .status, text: "Done. The new cut is live."))
+                guard let now = store.clips.first(where: { $0.id == clip.id }) else {
+                    rendering = false; pollTask = nil; return
+                }
+                if now.status == .rendering {
+                    if !nudged, Date().timeIntervalSince(started) > 300 {
+                        // Polite heads-up for a long take; the store keeps watching.
+                        nudged = true
+                        messages.append(Msg(role: .status, text: "Still working. Check back in the Library in a bit."))
                     }
-                    pollTask = nil
-                    return
+                    continue
                 }
-                if status == "failed" {
-                    rendering = false
+                rendering = false
+                if now.status == .failed {
                     messages.append(Msg(role: .status,
-                                        text: store.friendlyRenderError(mine["error"] as? String,
-                                                                        detail: mine["error_detail"] as? String)))
-                    pollTask = nil
-                    return
+                                        text: store.friendlyRenderError(now.lastError, detail: now.lastErrorDetail)))
+                } else if let url = now.remoteURL, !url.isEmpty, url != before {
+                    messages.append(Msg(role: .status, text: "Done. The new cut is live."))
+                } else {
+                    // Back to ready on the SAME cut: the server kept the previous render
+                    // (last_render_failed / a failed re-render / an expired session). Saying
+                    // "the new cut is live" there would be a lie (audit #8/#44).
+                    messages.append(Msg(role: .status,
+                                        text: "That re-render didn't take. Your previous cut is untouched, so try rewording the change."))
                 }
+                pollTask = nil
+                return
             }
-            // Timed out politely; the Library keeps polling state honest on next open.
-            rendering = false
-            messages.append(Msg(role: .status, text: "Still working. Check back in the Library in a bit."))
-            pollTask = nil
         }
     }
 }

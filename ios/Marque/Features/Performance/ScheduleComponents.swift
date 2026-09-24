@@ -317,7 +317,14 @@ struct SchedulePickerSheet: View {
                                 guard let item else { return }
                                 importing = true
                                 Task {
-                                    if let data = try? await item.loadTransferable(type: Data.self) {
+                                    // LV-8: file-URL transfer first (streams to disk, like
+                                    // RecordView) — `Data.self` put the WHOLE video in RAM,
+                                    // a memory-kill for a real multi-minute library video.
+                                    // Data stays only as the fallback for providers with
+                                    // no file representation.
+                                    if let picked = try? await item.loadTransferable(type: PickedVideoFile.self) {
+                                        await store.importExternalClip(fileAt: picked.url, title: "Imported clip")
+                                    } else if let data = try? await item.loadTransferable(type: Data.self) {
                                         await store.importExternalClip(data: data, title: "Imported clip")
                                     }
                                     importPick = nil; importing = false
