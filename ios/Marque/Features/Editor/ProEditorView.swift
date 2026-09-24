@@ -2340,6 +2340,15 @@ struct ProEditorView: View {
                     }
                     .padding(.horizontal, Space.sm)
                 }
+                // B2 #4: Filters/Effects sat past the right edge with nothing saying the bar
+                // scrolls (first-time sweep: "Change the look" failed discovery). A short
+                // trailing fade reads as "more this way" (CapCut's cut-off tile). Visual only:
+                // a mask never changes hit testing.
+                .mask(HStack(spacing: 0) {
+                    Rectangle()
+                    LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: 24)
+                })
                 .onChange(of: vocabularyKey) { _, _ in proxy.scrollTo("barStart", anchor: .leading) }
             }
         }
