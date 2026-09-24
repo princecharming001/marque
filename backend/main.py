@@ -11224,6 +11224,30 @@ def _apply_persona_voice(reply: str, persona: str, length: str) -> str:
     return reply
 
 
+_CHAT_ANGLES = ["", "as a quick how-to", "through the myth most people believe about it"]
+
+
+def _format_for_topic(topic: str) -> str:
+    t = (topic or "").lower()
+    if re.search(r"\b(mistakes?|wrong|myths?|lies?|truth|actually|overrated)\b", t):
+        return "myth-buster"
+    if re.search(r"\b(\d+|tips|ways|steps|things|rules|habits|list)\b", t):
+        return "listicle"
+    if re.search(r"\b(story|pov|moment|when you)\b", t):
+        return "pov-story"
+    if re.search(r"\b(react|reacting|viral|claims?|trend)\b", t):
+        return "green-screen"
+    return "myth-buster"
+
+
+def _chat_slots(topic: str, style: str, count: int, angle: str = "") -> list[dict]:
+    first = _format_for_topic(topic)
+    order = [first] + [f for f in _page_formats(style, 0, 4) if f != first]
+    return [{"formatId": order[i % len(order)], "topic": topic, "subarea": "",
+             "angle": " ".join(x for x in (angle, _CHAT_ANGLES[i % len(_CHAT_ANGLES)]) if x)}
+            for i in range(max(1, count))]
+
+
 async def _chain_scripts(req: ConverseRequest, intent_args: dict) -> list[dict]:
     """generate_scripts intent → run the real scripts engine and attach the results.
     Fully guarded: a malformed model-emitted intent_args (non-numeric count) or a
@@ -11251,7 +11275,15 @@ async def _chain_scripts(req: ConverseRequest, intent_args: dict) -> list[dict]:
             memory=req.memory or {},          # carry chat-learned memory into generation
             posts=posts,
         )
-        result = await scripts(sreq)
+        # The creator's topic is the ASSIGNMENT for every script (it used to be passed as
+        # the page "theme", which the planner treats as background, so "3 scripts on X"
+        # came back with one on X). Formats vary; angles keep the takes distinct.
+        sreq.slots = _chat_slots(topic, style, count, angle)
+        # The planned draft pipeline (~11s) instead of the full OPUS pipeline (~35s) for
+        # a chat turn: v6 judged them near parity, and drafts now get the honesty guard.
+        result = await _fast_feed_scripts(sreq)
+        if result.get("mode") == "mock" and ANTHROPIC_KEY:
+            return []                          # a failure: no template copy inside a live reply
         return result.get("scripts", [])
     except Exception as e:
         logging.warning("chain_scripts failed, degrading to reply-only: %s", e)

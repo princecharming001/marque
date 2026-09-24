@@ -265,3 +265,30 @@ def test_first_paint_plans_around_what_was_already_pitched(monkeypatch):
     asyncio.run(main._fast_feed_scripts(_sreq(creator_id=cid)))
     assert seen["avoid"] == ["why desk workers skip leg day"]
     main._pitched_titles.pop(cid, None)
+
+
+# --- orb chat scripts ------------------------------------------------------------------
+
+def test_chat_slots_keep_the_requested_topic_on_every_script():
+    slots = main._chat_slots("3 mistakes with meal prep", "talking_head", 3)
+    assert [s["topic"] for s in slots] == ["3 mistakes with meal prep"] * 3
+    assert len({s["formatId"] for s in slots}) == 3 and slots[0]["formatId"] == "myth-buster"
+    assert main._chat_slots("my morning routine story", "talking_head", 1)[0]["formatId"] == "pov-story"
+
+
+def test_chat_scripts_write_the_topic_and_never_ship_template_copy(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    seen = {}
+
+    async def fake_fast(sreq, cursor=0):
+        seen["slots"] = sreq.slots
+        return {"mode": "mock", "scripts": main.mock_scripts(sreq)}     # a real failure
+
+    async def no_posts(cid):
+        return []
+
+    monkeypatch.setattr(main, "_fast_feed_scripts", fake_fast)
+    monkeypatch.setattr(main, "_creator_posts", no_posts)
+    req = main.ConverseRequest(creator_id="c-chat", brand={"niche": "Cooking"}, messages=[])
+    out = asyncio.run(main._chain_scripts(req, {"topic": "meal prep", "count": 2}))
+    assert out == [] and [s["topic"] for s in seen["slots"]] == ["meal prep", "meal prep"]
