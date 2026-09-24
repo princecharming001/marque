@@ -127,3 +127,19 @@ def test_strategy_block_skips_template_and_thin_compiles(monkeypatch):
 ])
 def test_invented_statistics_are_claims(text, claim):
     assert bool(honesty.flag_first_person_claim(text)) is claim
+
+
+def test_honesty_guard_retries_once_naming_the_leftover_claim(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    calls = []
+
+    async def repair(sys, usr, schema, model, max_tokens, array_key=None):
+        calls.append(usr)
+        if len(calls) == 1:
+            return {"hook": "h", "body": "We spent a year on it - and it paid off.", "cta": "c"}
+        return {"hook": "h", "body": "Most teams spend a year on it - and it pays off.", "cta": "c"}
+
+    monkeypatch.setattr(main, "anthropic_json", repair)
+    out = asyncio.run(main._ensure_honest([_script("We spent three months building a feature nobody used.")]))
+    assert len(calls) == 2 and "still claims" in calls[1]
+    assert out and out[0]["body"] == "Most teams spend a year on it, and it pays off."

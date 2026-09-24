@@ -13096,24 +13096,36 @@ async def _ensure_honest(scripts: list[dict], *, timeout_s: float = 8.0) -> list
     if not flagged:
         return scripts
 
+    def _clean(text: str) -> str:
+        # A spaced hyphen between words is a dash in disguise ("one thing - a line");
+        # the voice doctrine bans dashes, and the repair model likes this one.
+        return re.sub(r"(?<=[A-Za-z]) - (?=[A-Za-z])", ", ", prompts.scrub_em_dashes(text))
+
     async def _fix(s: dict) -> dict | None:
         if not ANTHROPIC_KEY:
             return None
-        try:
-            out = await asyncio.wait_for(
-                anthropic_json(_HONESTY_REPAIR_SYS,
-                               json.dumps({k: s.get(k) or "" for k in ("hook", "body", "cta")}),
-                               _HONESTY_REPAIR_JSON, HAIKU, 900),
-                timeout=timeout_s)
-        except (HTTPException, asyncio.TimeoutError):
+        cur = s
+        # Two attempts: the second names what the first rewrite still claimed (the realism
+        # eval dropped 5 of 11 flagged drafts after one attempt, emptying a whole chat turn).
+        for _attempt in range(2):
+            claim = honesty.script_claims(cur)
+            user = json.dumps({k: cur.get(k) or "" for k in ("hook", "body", "cta")})
+            if claim and cur is not s:
+                user += f"\n\nYour last rewrite still claims: \"{claim}\". Rewrite that sentence too."
+            try:
+                out = await asyncio.wait_for(
+                    anthropic_json(_HONESTY_REPAIR_SYS, user, _HONESTY_REPAIR_JSON, HAIKU, 900),
+                    timeout=timeout_s)
+            except (HTTPException, asyncio.TimeoutError):
+                return None
+            if not isinstance(out, dict):
+                return None
+            cur = {**s, **{k: _clean(str(out.get(k) or s.get(k) or "")) for k in ("hook", "body", "cta")}}
+            if not honesty.script_claims(cur):
+                break
+        if honesty.script_claims(cur) or prompts.flag_stage_direction(cur.get("body") or ""):
             return None
-        if not isinstance(out, dict):
-            return None
-        fixed = {**s, **{k: prompts.scrub_em_dashes(str(out.get(k) or s.get(k) or ""))
-                         for k in ("hook", "body", "cta")}}
-        if honesty.script_claims(fixed) or prompts.flag_stage_direction(fixed.get("body") or ""):
-            return None
-        return _finalize_script(fixed)
+        return _finalize_script(cur)
 
     fixes = dict(zip(flagged, await asyncio.gather(*(_fix(scripts[i]) for i in flagged))))
     out: list[dict] = []
@@ -13393,14 +13405,17 @@ async def _fast_feed_scripts(sreq: "ScriptRequest", cursor: int = 0) -> dict:
         # "90 to 140" it landed ~160 (v6/smoke7), so it now aims at ~115 with 140 as a ceiling.
         suffix = strategy + (
             "\n\nFIRST PAINT: write this script at the style's full spoken length. Aim for about 115 "
-            "words across hook, body and CTA, and NEVER more than 140 (count them before you "
-            "answer; over 140 runs past a minute on camera). Speak it "
+            "words across hook, body and CTA, and NEVER more than 140 (over 140 runs past a minute "
+            "on camera). Shape: the hook is ONE sentence; the body is exactly THREE short "
+            "paragraphs of two or three sentences each; the CTA is ONE sentence. Speak it "
             "the way the creator would say it to a friend: contractions, varied sentence length, no "
             "chains of clipped fragments.")
         results = await asyncio.gather(*(
             _write_slot(sreq, slot, model=HAIKU, schema=prompts.FAST_SCRIPT_JSON_ELEMENT,
                         max_tokens=1100, sys_suffix=suffix, stats=stats, context=context,
-                        timeout=float(os.environ.get("FEED_FAST_TIMEOUT_S", "11")), tag="fast")
+                        # 13s (was 11): the realism eval lost ~6% of draft slots to the
+                        # Haiku latency tail under load; the retry already lives inside it.
+                        timeout=float(os.environ.get("FEED_FAST_TIMEOUT_S", "13")), tag="fast")
             for slot in sreq.slots))
         out = [s for s in results if s]
         if not out:
