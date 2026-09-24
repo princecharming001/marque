@@ -282,11 +282,17 @@ struct EditorTimeline: View {
         ZStack {
             FilmstripThumbs(filmstrip: filmstrip, srcIn: srcIn, srcOut: srcOut, width: w, zoomBucket: zoomBucket)
                 .frame(width: w, height: 64).clipped()
+                // FT-1: decorative — `.clipped()` hides overflow but never clipped HIT
+                // testing, so frames spilling past this cell took taps meant for its neighbour.
+                .allowsHitTesting(false)
             // Hard WHITE selection frame (reference) — accent is reserved for effect objects.
             RoundedRectangle(cornerRadius: 6).strokeBorder(selected ? Palette.textPrimary : Palette.hairline,
                                                            lineWidth: selected ? 2.5 : 1)
         }
         .frame(width: w, height: 64)
+        // FT-1: the cell's hit area is exactly its visible rect (the stroke alone would only
+        // hit on the border now that the filmstrip is non-interactive).
+        .contentShape(Rectangle())
         .opacity(dimmed ? 0.55 : 1)
         // Duration badge — top-leading on the SELECTED clip only (reference: "4.9s" appears
         // with the selection frame). Leading inset clears the 11pt trim bracket that always
@@ -337,6 +343,7 @@ struct EditorTimeline: View {
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background(Palette.onNight).clipShape(Capsule())
                     .offset(y: -40)
+                    .allowsHitTesting(false)
             }
         }
         .overlay(alignment: .leading) { if selected { trimHandle(.leading, segIdx: segIdx, srcIn: srcIn, srcOut: srcOut) } }
@@ -879,7 +886,9 @@ struct FilmstripThumbs: View {
                     if let img = images[sec] { Image(uiImage: img).resizable().aspectRatio(contentMode: .fill) }
                     else { Palette.surfaceSunken }
                 }
-                .frame(maxWidth: .infinity).frame(height: 64).clipped()
+                // FT-1: minWidth 0 — without it each slot's minimum was the thumbnail's fill
+                // width (~36 pt at 64 pt tall), so the strip laid out WIDER than its cell.
+                .frame(minWidth: 0, maxWidth: .infinity).frame(height: 64).clipped()
             }
         }
         .task(id: "\(srcIn)-\(srcOut)-\(zoomBucket)") {
