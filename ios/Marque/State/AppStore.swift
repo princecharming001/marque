@@ -1531,7 +1531,16 @@ final class AppStore {
         }
         if strandedChanged { save() }
 
-        let stuck = clips.filter { $0.status == .rendering && $0.jobId != nil }
+        // LV-4: an `edit_timeout` card is the CLIENT's verdict (its poll ceiling ran out),
+        // not the server's — the job may have finished since, or still be rendering a long
+        // take. While it still has a job id it's re-polled here like a rendering clip; the
+        // first answer replaces the verdict with the server's (ready / real failure / still
+        // working), and a gone job (404/410) retires it to job_expired.
+        let stuck = clips.filter {
+            ($0.status == .rendering && $0.jobId != nil)
+                || ($0.status == .failed
+                    && JobPollBudget.shouldRepollFailed(lastError: $0.lastError, hasJobId: $0.jobId != nil))
+        }
         for (jobId, group) in Dictionary(grouping: stuck, by: { $0.jobId! })
         where !activeRepolls.contains(jobId) {
             activeRepolls.insert(jobId)
@@ -1806,8 +1815,13 @@ final class AppStore {
     /// a futile 5-minute poll loop on every Library visit.
     private func failClipsForDeadJob(_ clipIds: [UUID]) {
         for id in clipIds {
+            // LV-4: a re-polled client-verdict card (edit_timeout) whose job is gone gets the
+            // server's truth too — otherwise it would be re-polled on every foreground.
             guard let idx = clips.firstIndex(where: { $0.id == id }),
-                  clips[idx].status == .rendering else { continue }
+                  clips[idx].status == .rendering
+                    || (clips[idx].status == .failed
+                        && JobPollBudget.shouldRepollFailed(lastError: clips[idx].lastError, hasJobId: true))
+            else { continue }
             clips[idx].status = .failed
             clips[idx].lastError = "job_expired"
         }
@@ -1819,8 +1833,10 @@ final class AppStore {
     func pollClipStatuses(jobId: String, clipIds: [UUID]) async {
         // Same long-footage deadline discipline as pollJob (see jobPollCeiling): the
         // old 60-iteration cap abandoned tweak re-renders of longer takes mid-spinner.
+        // LV-4: the ceiling scales with the source take's duration.
+        let ceiling = JobPollBudget.ceiling(sourceSeconds: await pollSourceSeconds(for: clipIds))
         let started = Date()
-        while Date().timeIntervalSince(started) < Self.jobPollCeiling {
+        while Date().timeIntervalSince(started) < ceiling {
             if Task.isCancelled { return }
             let (maybeResult, httpStatus) = await backend.pollClipJobWithStatus(jobId: jobId)
             if httpStatus == 404 || httpStatus == 410 {
@@ -1885,12 +1901,46 @@ final class AppStore {
     /// pipeline (the server's own watchdog fails a stuck job at ~16min, so the server
     /// verdict arrives first); past it the clips are marked failed-retryable — never
     /// abandoned in a spinner.
-    static let jobPollCeiling: TimeInterval = 20 * 60
+    ///
+    /// LV-4: this is now only the BASE (and ChatStore's edit watchdog). The job polls use
+    /// JobPollBudget.ceiling(sourceSeconds:) — 20 min + 3× the source take, ≤ 90 min — since
+    /// the server's legitimate budget for a long take (transcribe ≈ realtime, render scaled
+    /// by frames) outran a flat 20 min, and an `edit_timeout` card is re-polled afterwards.
+    static let jobPollCeiling: TimeInterval = JobPollBudget.baseCeiling
     /// 5s while fresh, 10s once the job has been going >5min — long renders don't need
     /// a tight poll, and the slower pace halves the request load exactly when the
     /// backend is busiest.
     private func pollInterval(elapsed: TimeInterval) -> UInt64 {
-        elapsed < 300 ? 5_000_000_000 : 10_000_000_000
+        UInt64(JobPollBudget.interval(elapsed: elapsed) * 1_000_000_000)
+    }
+
+    /// LV-4: measured source-take durations by media path (a take never changes length,
+    /// so one AVAsset probe per path per launch).
+    private var sourceSecondsByPath: [String: Double] = [:]
+
+    /// LV-4: the longest SOURCE take among `clipIds`, which sizes the poll ceilings. Read
+    /// from the local raw take; a clip with none on this device falls back to its measured
+    /// render length (a lower bound), else nil → the 20-min base.
+    private func pollSourceSeconds(for clipIds: [UUID]) async -> Double? {
+        var longest: Double?
+        for id in clipIds {
+            guard let clip = clips.first(where: { $0.id == id }) else { continue }
+            var secs = 0.0
+            if let p = clip.localVideoPath {
+                if let cached = sourceSecondsByPath[p] {
+                    secs = cached
+                } else {
+                    let url = MediaStore.url(for: p)
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        secs = Double(await Self.assetDurationSeconds(url))
+                        if secs > 0 { sourceSecondsByPath[p] = secs }
+                    }
+                }
+            }
+            if secs <= 0, clip.durationMeasured == true { secs = Double(clip.seconds) }
+            if secs > 0 { longest = max(longest ?? 0, secs) }
+        }
+        return longest
     }
 
     /// Local terminal verdict when polling exhausts its ceiling: the clips get a real,
@@ -1908,12 +1958,14 @@ final class AppStore {
 
     func pollJob(jobId: String, clipIds: [UUID]) async {
         var done = false
+        // LV-4: ceiling scaled by the source take (20 min + 3×, ≤ 90 min).
+        let ceiling = JobPollBudget.ceiling(sourceSeconds: await pollSourceSeconds(for: clipIds))
         let started = Date()
         // H1: without the cancellation check, a cancelled caller Task doesn't stop
         // this loop — it busy-spins instead (Task.sleep throws immediately once
         // cancelled, and the `try?` below swallows that), hammering the backend
         // until `done` or the ceiling instead of actually stopping.
-        while !done && Date().timeIntervalSince(started) < Self.jobPollCeiling && !Task.isCancelled {
+        while !done && Date().timeIntervalSince(started) < ceiling && !Task.isCancelled {
             try? await Task.sleep(nanoseconds: pollInterval(elapsed: Date().timeIntervalSince(started)))
             let (maybeResult, httpStatus) = await backend.pollClipJobWithStatus(jobId: jobId)
             if httpStatus == 404 || httpStatus == 410 {
@@ -1994,8 +2046,10 @@ final class AppStore {
         case "render_stalled", "render_timeout":
             return "The edit took too long and timed out. Tap to try again."
         case "edit_timeout":
-            // Client-side poll ceiling (20min) — by then the server watchdog has almost
-            // always produced its own verdict; this is the belt-and-braces copy.
+            // Client-side poll ceiling (20 min + 3× the take, LV-4) — by then the server
+            // has almost always produced its own verdict; this is the belt-and-braces copy.
+            // The card keeps being re-polled while it has a job, and Try again on a job
+            // that's still running just resumes polling it.
             return "This edit is taking much longer than it should. Tap to try again."
         case "pipeline_interrupted":
             return "The edit was interrupted mid-flight (a brief server restart). Tap to restart it."
@@ -2041,7 +2095,14 @@ final class AppStore {
             }
         }
         save()
-        if await backend.retryClipJob(jobId: jobId) {
+        let outcome = RetryJobPolicy.classify(status: await backend.retryClipJobStatus(jobId: jobId))
+        if outcome == .stillRunning {
+            // LV-4: 409 = the ORIGINAL run is still going (a long take outlived the client's
+            // poll ceiling). Keep polling it — this used to fall into the re-upload branch
+            // below: a full second upload + a duplicate job racing the first.
+            backend.reportClientEvent("retry_still_running", detail: "job=\(jobId)")
+        }
+        if outcome == .restarted || outcome == .stillRunning {
             await pollJob(jobId: jobId, clipIds: affected)
         } else {
             // The backend can't re-render the job. resubmitFailedClip only recovers THIS clip

@@ -1047,8 +1047,15 @@ extension BackendClient {
     /// true on 200; 404/409 are treated as no-op (nothing to retry / already running).
     @discardableResult
     func retryClipJob(jobId: String) async -> Bool {
+        await retryClipJobStatus(jobId: jobId) == 200
+    }
+
+    /// LV-4 / ED-11: the raw HTTP status of POST /retry (0 = transport failure), so the
+    /// caller can tell "restarted" (200) from "still running" (409), "gone" (404/410) and
+    /// "couldn't reach the server" — see RetryJobPolicy.classify.
+    func retryClipJobStatus(jobId: String) async -> Int {
         let (_, status) = await postWithStatus("/v1/clips/\(jobId)/retry", [:])
-        return status == 200
+        return status
     }
 
     /// The manual-editor apply path: pre-typed EDL ops bypass LLM interpretation

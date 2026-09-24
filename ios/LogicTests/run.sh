@@ -22,6 +22,7 @@ SOURCES=(
   "$S/Adapters/UploadRetryPolicy.swift"
   "$S/Adapters/CompressionPlan.swift"
   "$S/Adapters/ServerClipAdoption.swift"
+  "$S/Adapters/JobPolicies.swift"
 )
 
 swiftc -O -o "$OUT/logictests" "${SOURCES[@]}" "$DIR"/*Tests.swift "$DIR/Support.swift" "$DIR/main.swift"
