@@ -123,6 +123,15 @@ enum UploadRetryPolicy {
                        lifetimeAttempt: Int = 0, watchdogStalled: Bool = false,
                        bodyBytes: Int64 = 0, capBytes: Int = 0,
                        sizeRecompressions: Int = 0) -> Decision {
+        // LV-1 (checked FIRST — verifier finding): a storage SIZE refusal is a verdict about
+        // this body, not a transport retry, and recompressions are bounded on their own
+        // counter. Evaluated after the attempt ceilings it turned a refusal on the last
+        // attempt of a session (or lifetime attempt 9) into a generic dead card.
+        if storageRefusedSize(status: status, bodyBytes: bodyBytes),
+           sizeRecompressions < maxSizeRecompressions,
+           let target = recompressTarget(capBytes: capBytes, refusedBodyBytes: bodyBytes) {
+            return .recompressSmaller(targetBytes: target)
+        }
         if attempt + 1 >= maxAttemptsPerSession { return .fail }
         if lifetimeAttempt + 1 >= maxLifetimeAttempts { return .fail }
 
@@ -147,11 +156,6 @@ enum UploadRetryPolicy {
         // on anything over its 50 MiB project limit, whatever the mint advertised). That is
         // the one 400/413 a smaller body fixes, so it must not fall into the fail-fast set
         // below: recompress under the real limit and retry. Bounded per session.
-        if storageRefusedSize(status: status, bodyBytes: bodyBytes),
-           sizeRecompressions < maxSizeRecompressions,
-           let target = recompressTarget(capBytes: capBytes, refusedBodyBytes: bodyBytes) {
-            return .recompressSmaller(targetBytes: target)
-        }
 
         // Signed-URL death — the object store rejects the token; a fresh mint is required.
         // 403 = expired/invalid token; 409/400 "already exists" is handled by the caller's

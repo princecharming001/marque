@@ -31,16 +31,21 @@ func runUploadRetryPolicyTests() {
     expectEqual(UploadRetryPolicy.decide(status: 400, attempt: 0), .fail,
                 "400 with unknown body size (0) → fail")
 
-    // Bounded: one size recompression per session, and never after the budget is spent.
+    // Bounded by the recompression counter (one per session), NOT by the transport-retry
+    // budget: a size refusal is a verdict about this body, so even on the last attempt the
+    // smaller body gets its one try (verifier finding; it used to die as a generic failure).
     expectEqual(UploadRetryPolicy.decide(status: 400, attempt: 1, bodyBytes: 91_500_000,
                                          capBytes: 150_000_000, sizeRecompressions: 1),
                 .fail, "second size refusal in a session → fail")
     expectEqual(UploadRetryPolicy.decide(status: 400, attempt: 5, bodyBytes: 91_500_000,
                                          capBytes: 150_000_000),
-                .fail, "session attempts exhausted → fail even for a size refusal")
+                .recompressSmaller(targetBytes: 50_000_000), "session attempts exhausted → a size refusal still recompresses once")
     expectEqual(UploadRetryPolicy.decide(status: 400, attempt: 0, lifetimeAttempt: 9,
                                          bodyBytes: 91_500_000, capBytes: 150_000_000),
-                .fail, "lifetime attempts exhausted → fail even for a size refusal")
+                .recompressSmaller(targetBytes: 50_000_000), "lifetime attempts exhausted → a size refusal still recompresses once")
+    expectEqual(UploadRetryPolicy.decide(status: 400, attempt: 5, bodyBytes: 91_500_000,
+                                         capBytes: 150_000_000, sizeRecompressions: 1),
+                .fail, "…but never twice")
 
     // Other statuses keep their classification when the body is big.
     expectEqual(UploadRetryPolicy.decide(status: 404, attempt: 0, bodyBytes: 91_500_000,
@@ -84,4 +89,11 @@ func runUploadRetryPolicyTests() {
                 48_000_000, "mint cap 0 → default")
     expectEqual(UploadRetryPolicy.effectiveCap(mintCap: 150_000_000, lastSizeRefusalEpoch: now + 3600, now: now),
                 150_000_000, "a refusal stamp in the future (clock change) is ignored")
+
+    // Verifier: a size refusal on the LAST attempt of the session still recompresses.
+    expectEqual(UploadRetryPolicy.decide(status: 400, attempt: UploadRetryPolicy.maxAttemptsPerSession - 1,
+                                         lifetimeAttempt: UploadRetryPolicy.maxLifetimeAttempts - 1,
+                                         bodyBytes: 91_555_510, capBytes: 150_000_000),
+                .recompressSmaller(targetBytes: 50_000_000),
+                "size refusal on the last attempt still recompresses")
 }

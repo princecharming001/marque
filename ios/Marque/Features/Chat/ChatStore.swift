@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import SwiftUI
 import PhotosUI
+import AVFoundation
 
 // Chat-tab session state. Conversations themselves live in AppStore (persisted);
 // this owns which thread is open, the in-flight request, and the reply chrome
@@ -271,9 +272,20 @@ final class ChatStore {
         // Every stage inside is individually bounded now (compress budget ≤420s, stalled
         // PUTs restart, brief 360s, render polling is detached) — this only catches a
         // wedge none of them saw, so jobPollCeiling (20min) is the right belt-and-braces.
+        //
+        // Editor audit: the ceiling now scales with the take (JobPollBudget: 20 min + 3x the
+        // source, max 90 min). Long takes compress for up to ~30 min before the pipeline even
+        // starts (LV-2), so a flat 20 min failed healthy long edits as "took too long".
         ChatStore.liveEditCardIds.insert(cardId)
+        let sourceSeconds: Double? = await {
+            let asset = AVURLAsset(url: MediaStore.url(for: footagePath))
+            guard let d = try? await asset.load(.duration) else { return nil }
+            let s = CMTimeGetSeconds(d)
+            return s.isFinite && s > 0 ? s : nil
+        }()
+        let ceiling = JobPollBudget.ceiling(sourceSeconds: sourceSeconds)
         let watchdog = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(AppStore.jobPollCeiling) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(ceiling * 1_000_000_000))
             guard !Task.isCancelled else { return }
             self?.updateCard(cardId, in: convoId, store: store) {
                 guard $0.stage != .ready && $0.stage != .failed else { return }
