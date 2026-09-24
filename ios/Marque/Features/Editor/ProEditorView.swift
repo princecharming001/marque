@@ -147,6 +147,8 @@ struct ProEditorView: View {
     // Outlives teardown (a reference box): the retheme poll checks it before reloading, so
     // a render finishing after the editor closed never spins up a player nobody sees.
     @State var lifetime = EditorLifetime()
+    // ED-5: phrases/strips memoized per draft revision (not rebuilt per body pass).
+    @State private var phraseMemo = CaptionPhraseMemo()
 
     struct WordSpan: Identifiable { var id: Int { startFrame }; let text: String; let startFrame: Int; let endFrame: Int }
 
@@ -354,8 +356,10 @@ struct ProEditorView: View {
     /// changes the delivered video and re-renders. Kept in lockstep so the button label
     /// ("Render" vs "Save") never lies about what the tap actually costs.
     var saveNeedsRender: Bool {
-        guard let ops = session?.flattenedOps(), !ops.isEmpty else { return false }
-        return !ops.allSatisfy { ($0["type"] as? String) == "split_segment" }
+        // ED-5: answered from the op types — flattenedOps() serialized the whole log to
+        // JSON dicts on every body pass.
+        guard let session, session.isDirty else { return false }
+        return !session.onlySplits
     }
 
     // MARK: editing layout
@@ -397,9 +401,10 @@ struct ProEditorView: View {
     private var transportRow: some View {
         VStack(spacing: 0) {
             HStack(spacing: Space.lg) {
-                Text(timeReadout).font(AppFont.caption.monospacedDigit())
-                    .foregroundStyle(Palette.textSecondary)
-                    .lineLimit(1)
+                // ED-5: a leaf that observes the player itself — reading the 30 Hz playhead
+                // here, in the editor's body, re-evaluated the WHOLE editor (and EditorTimeline
+                // with its ~15 closure props) every frame of playback.
+                TransportTimeReadout(player: player)
                     .accessibilityIdentifier("editorPro.timeReadout")
                 Spacer()
                 // Stoic circular control: the one filled (ink) circle on the strip.
@@ -921,6 +926,10 @@ struct ProEditorView: View {
         ZStack {
             // Video + captions scale together during a punch-in window (L1 preview of the
             // rendered zoom); the play/time controls below stay unscaled.
+            // ED-5: everything on the canvas that follows the playhead (captions, stickers,
+            // rolls, cards, punch-in scale, transitions, the playhead clip's transform) is
+            // built INSIDE this leaf, so the 30 Hz tick invalidates the canvas only.
+            PlayheadReader(player: player) {
             GeometryReader { outerGeo in
             // v6 canvas-fidelity: the composition is EXACTLY 9:16 (1080×1920); the canvas
             // must be too, or every overlay (captions, rolls, stickers) lands at a
@@ -1004,6 +1013,7 @@ struct ProEditorView: View {
             .frame(width: canvasSize.width, height: canvasSize.height)
             .clipped()
             .position(x: outerGeo.size.width / 2, y: outerGeo.size.height / 2)
+            }
             }
             // R10: play/time controls moved to the transport strip (CapCut keeps the
             // picture clean); a toast surfaces mid-canvas for undo/redo/completion.
@@ -1226,8 +1236,8 @@ struct ProEditorView: View {
         return (idx, min(3.0, max(0.5, seg.txScale * v)))
     }
 
-    private var timeReadout: String {
-        let cur = player?.currentOutputTime ?? 0, tot = player?.totalOutputTime ?? 0
+    /// "m:ss / m:ss" — the transport readout's text (rendered by TransportTimeReadout).
+    static func timeReadout(current cur: Double, total tot: Double) -> String {
         func fmt(_ s: Double) -> String { String(format: "%d:%02d", Int(s) / 60, Int(s) % 60) }
         return "\(fmt(cur)) / \(fmt(tot))"
     }
@@ -1926,7 +1936,7 @@ struct ProEditorView: View {
     /// The words visible at the playhead under the draft's grouping mode, plus which of
     /// them is the active one. nil during silences (UX-3) or before the first word.
     private func currentCaptionGroup(_ d: EditorDocument) -> (words: [String], activeInGroup: Int)? {
-        let srcFrame = secondsToFrame(d.sourceSeconds(forOutput: player?.currentOutputTime ?? 0))
+        let srcFrame = playheadSourceFrame      // (d is session.draft — same mapping, memoized)
         // Perf: binary search (captions are frame-sorted) — the linear lastIndex scan ran
         // 30x/s and spiked exactly at caption-group changes (the owner's playback hitch).
         guard let activeIdx = Self.lastIndexAtOrBefore(d.captions, frame: srcFrame) else { return nil }
@@ -1972,15 +1982,30 @@ struct ProEditorView: View {
 
     // (internal: +Actions' split-at-playhead reads it too)
     var playheadSourceFrame: Int {
-        guard let d = session?.draft else { return 0 }
-        return secondsToFrame(d.sourceSeconds(forOutput: player?.currentOutputTime ?? 0))
+        guard let session else { return 0 }
+        // ED-5: memoized kept intervals — this runs several times per 30 Hz frame.
+        return session.sourceFrame(forOutputSeconds: player?.currentOutputTime ?? 0)
     }
 
     // MARK: timeline
 
     /// Transcript words grouped into caption phrase clips; edited caption text wins.
+    /// ED-5: built once per edit (memoized on the session revision), not per body pass.
     var phrases: [CaptionPhrase] {
-        buildCaptionPhrases(words: words, captions: session?.draft.captions ?? [])
+        phraseMemo.refresh(session: session, words: words)
+        return phraseMemo.phrases
+    }
+
+    /// The phrases placed on the output timeline, for the caption lane (memoized with them).
+    var captionStrips: [CaptionStrip] {
+        phraseMemo.refresh(session: session, words: words)
+        return phraseMemo.strips
+    }
+
+    /// Where a phrase plays in the cut (seconds), nil when its footage is fully cut.
+    func phraseOutputStart(_ p: CaptionPhrase) -> Double? {
+        phraseMemo.refresh(session: session, words: words)
+        return phraseMemo.startByPhrase[p.id]
     }
 
     /// The music track's display name (catalog lookup by URL, filename fallback).
@@ -2038,6 +2063,7 @@ struct ProEditorView: View {
             onTapOverlay: { i in select(selectedOverlay == i ? nil : .overlay(i)) },
             onTapBackground: { if anySelection { select(nil) } },
             phrases: phrases,
+            captionStrips: captionStrips,
             captionsOn: captionsOn,
             selectedPhraseID: selectedPhraseID,
             musicName: musicName,
@@ -2662,6 +2688,29 @@ extension View {
         default:
             self
         }
+    }
+}
+
+/// ED-5: a leaf that re-evaluates at the playhead's 30 Hz. Content built inside it reads the
+/// tick here, so the tick invalidates this leaf — never ProEditorView's body.
+struct PlayheadReader<Content: View>: View {
+    let player: EditorPlayerController?
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        let _ = player?.currentOutputTime        // the dependency lives here, explicitly
+        content()
+    }
+}
+
+/// ED-5: the transport's time readout — observes the player itself (see PlayheadReader).
+private struct TransportTimeReadout: View {
+    let player: EditorPlayerController?
+    var body: some View {
+        Text(ProEditorView.timeReadout(current: player?.currentOutputTime ?? 0,
+                                       total: player?.totalOutputTime ?? 0))
+            .font(AppFont.caption.monospacedDigit())
+            .foregroundStyle(Palette.textSecondary)
+            .lineLimit(1)
     }
 }
 

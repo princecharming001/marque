@@ -87,6 +87,37 @@ final class EditorSession {
         return step.ops.first?.type
     }
 
+    // MARK: ED-5 — derived timeline, computed once per revision (not per frame / per phrase)
+
+    @ObservationIgnored private var memoRevision = -1
+    @ObservationIgnored private var memoIntervals: [(srcIn: Int, srcOut: Int, speed: Double)] = []
+
+    /// draft.keptIntervalsWithSpeed, memoized per revision. Reading it tracks `revision`.
+    var keptIntervals: [(srcIn: Int, srcOut: Int, speed: Double)] {
+        if memoRevision != revision {
+            memoIntervals = draft.keptIntervalsWithSpeed
+            memoRevision = revision
+        }
+        return memoIntervals
+    }
+
+    /// The playhead's SOURCE frame — draft.sourceSeconds(forOutput:) without re-deriving the
+    /// kept intervals on every 30 Hz tick.
+    func sourceFrame(forOutputSeconds t: Double) -> Int {
+        secondsToFrame(EditorDocument.sourceSeconds(forOutput: t, intervals: keptIntervals))
+    }
+
+    /// draft.outputSpan(srcIn:srcOut:) over the memoized intervals.
+    func outputSpan(srcIn: Int, srcOut: Int) -> (start: Double, end: Double)? {
+        EditorDocument.outputSpan(srcIn: srcIn, srcOut: srcOut, intervals: keptIntervals)
+    }
+
+    /// True when every logged op is a split — the Save button's "Save" vs "Render" label,
+    /// answered from op types instead of serializing the whole log per body pass.
+    var onlySplits: Bool {
+        !opLog.isEmpty && opLog.allSatisfy { $0.allSatisfy { $0.type == "split_segment" } }
+    }
+
     /// The wire payload for Save — the op log flattened in order.
     func flattenedOps() -> [[String: Any]] {
         opLog.flatMap { $0 }.map { $0.json() }

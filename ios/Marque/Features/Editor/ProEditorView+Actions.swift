@@ -1232,8 +1232,8 @@ extension ProEditorView {
 
     /// The phrase's output-time position as m:ss (where it plays in the cut, drops applied).
     private func timecode(forPhrase p: CaptionPhrase) -> String {
-        guard let span = session?.draft.outputSpan(srcIn: p.startFrame, srcOut: p.endFrame) else { return "–" }
-        let s = Int(span.start)
+        guard let start = phraseOutputStart(p) else { return "–" }      // ED-5: memoized
+        let s = Int(start)
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 

@@ -24,6 +24,9 @@ struct EditorTimeline: View {
     var onTapBackground: () -> Void = {}
     // Track lanes (CapCut layout: captions under video, then effects, then audio lanes).
     var phrases: [CaptionPhrase] = []
+    // ED-5: the phrases already placed on the output timeline (memoized per edit by the
+    // parent) — the lane no longer maps every phrase through the kept intervals per pass.
+    var captionStrips: [CaptionStrip] = []
     var captionsOn: Bool = false
     var selectedPhraseID: Int? = nil       // CaptionPhrase.id (= startFrame), parent-owned
     var musicName: String? = nil           // nil = no music set
@@ -570,12 +573,10 @@ struct EditorTimeline: View {
     private var captionLane: some View {
         ZStack(alignment: .topLeading) {
             Color.clear.frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond), height: 28)
-            ForEach(phrases) { p in
-                if let span = document.outputSpan(srcIn: p.startFrame, srcOut: p.endFrame) {
-                    CaptionClipStrip(phrase: p, span: span, pointsPerSecond: pointsPerSecond,
-                                     selected: selectedPhraseID == p.id) { onTapPhrase(p) }
-                        .offset(y: 1)
-                }
+            ForEach(captionStrips) { st in
+                CaptionClipStrip(phrase: st.phrase, span: (st.start, st.end), pointsPerSecond: pointsPerSecond,
+                                 selected: selectedPhraseID == st.phrase.id) { onTapPhrase(st.phrase) }
+                    .offset(y: 1)
             }
         }
         .frame(height: 28, alignment: .topLeading)

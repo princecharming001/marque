@@ -50,6 +50,41 @@ func buildCaptionPhrases(words: [ProEditorView.WordSpan], captions: [EditorCapti
     }
 }
 
+/// One caption phrase placed on the OUTPUT timeline (fully-cut phrases have no strip).
+struct CaptionStrip: Identifiable {
+    let phrase: CaptionPhrase
+    let start: Double
+    let end: Double
+    var id: Int { phrase.id }
+}
+
+/// ED-5: phrases + their timeline strips, rebuilt once per draft revision. The editor used
+/// to rebuild the phrases several times per body pass, and the caption lane re-walked every
+/// kept interval for every phrase on every pass (O(phrases·segments·drops)).
+@MainActor
+final class CaptionPhraseMemo {
+    private var session: ObjectIdentifier?
+    private var revision = -1
+    private var wordCount = -1
+    private var built = false
+    private(set) var phrases: [CaptionPhrase] = []
+    private(set) var strips: [CaptionStrip] = []
+    private(set) var startByPhrase: [Int: Double] = [:]
+
+    func refresh(session s: EditorSession?, words: [ProEditorView.WordSpan]) {
+        let id = s.map(ObjectIdentifier.init)
+        let rev = s?.revision ?? -1            // the read that ties the caller to edits
+        guard !built || id != session || rev != revision || words.count != wordCount else { return }
+        built = true; session = id; revision = rev; wordCount = words.count
+        phrases = buildCaptionPhrases(words: words, captions: s?.draft.captions ?? [])
+        strips = phrases.compactMap { p in
+            s?.outputSpan(srcIn: p.startFrame, srcOut: p.endFrame)
+                .map { CaptionStrip(phrase: p, start: $0.start, end: $0.end) }
+        }
+        startByPhrase = Dictionary(strips.map { ($0.id, $0.start) }, uniquingKeysWith: { a, _ in a })
+    }
+}
+
 // MARK: - Track lane views (rendered inside EditorTimeline's scrolling stack)
 
 /// One caption phrase as a white clip strip at its output-time position (CapCut's caption track).

@@ -331,6 +331,39 @@ func runAll() {
     let nb = none.nothingAppliedNotice(displayName: names)
     check(nb.message == "None of your changes could be applied (Edit: nothing to change). Undo the last change and try again."
           && !nb.retryable, "changed:false keeps editing with the reason, no Retry")
+
+    section("memoized derived timeline == the document's own math (ED-5)")
+    let ms = EditorSession(document: EditorDocument(edl: edl))
+    ms.perform([.split(1, at: 450)])
+    ms.perform([.reorder([2, 0, 1, 3])])
+    ms.perform([.segmentSpeed(0, 2.0)])
+    ms.perform([.cut(500, 540)])
+    let d = ms.draft
+    check(ms.keptIntervals.map { [$0.srcIn, $0.srcOut] } == d.keptIntervalsWithSpeed.map { [$0.srcIn, $0.srcOut] }
+          && ms.keptIntervals.map(\.speed) == d.keptIntervalsWithSpeed.map(\.speed), "kept intervals match")
+    var mismatches = 0
+    for t in stride(from: 0.0, through: d.outputSeconds + 1, by: 0.05)
+    where ms.sourceFrame(forOutputSeconds: t) != secondsToFrame(d.sourceSeconds(forOutput: t)) { mismatches += 1 }
+    check(mismatches == 0, "playhead source frame matches at every 50ms (\(mismatches) off)")
+    var spanOff = 0
+    for a in stride(from: 0, to: 900, by: 17) {
+        for len in [5, 30, 90, 400] {
+            let x = ms.outputSpan(srcIn: a, srcOut: a + len), y = d.outputSpan(srcIn: a, srcOut: a + len)
+            if x?.start != y?.start || x?.end != y?.end { spanOff += 1 }
+        }
+    }
+    check(spanOff == 0, "output spans match for every probe (\(spanOff) off)")
+    let before = ms.keptIntervals.count
+    ms.perform([.restore(500, 540)])
+    check(ms.keptIntervals.count == ms.draft.keptIntervalsWithSpeed.count && ms.keptIntervals.count != before,
+          "the memo refreshes on the next revision")
+    _ = ms.undo()
+    check(ms.keptIntervals.count == before, "…and on undo")
+    check(!ms.onlySplits, "mixed log is not split-only")
+    let sp = EditorSession(document: EditorDocument(edl: edl))
+    check(!sp.onlySplits, "empty log is not split-only")
+    sp.perform([.split(0, at: 100)])
+    check(sp.onlySplits, "split-only log")
 }
 
 MainActor.assumeIsolated { runAll() }
