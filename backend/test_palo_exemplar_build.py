@@ -70,8 +70,15 @@ def test_build_keyless_template_and_revision(on):
     store = FakeStore(strategies={"c1": {"exemplar_bank_revision": 4}})
     bank = _run(ex.build_bank(store, "c1", [{"title": "v", "views": 100}], {"niche": "chess"}))
     assert bank and "hook" in bank and bank["payoff"][0]["mechanism"]
-    _, fields = store.upserts[0]
-    assert fields["exemplar_bank_revision"] == 5 and fields["exemplar_bank_built_at"]
+    # 2026-09-23: the placeholder bank's lifts are made up, so it is never persisted
+    # (writers would quote them as measured); the revision stays where it was.
+    assert ex.is_template_bank(bank) and store.upserts == []
+
+
+def test_stored_template_bank_reads_as_absent(on):
+    store = FakeStore(strategies={"c1": {"exemplar_bank": ex._template_bank({"niche": "chess"})}})
+    assert _run(ex._bank(store, "c1")) == {}
+    assert _run(ex.exemplar_block(store, "c1")) == ""
 
 
 def test_build_uses_llm(on, monkeypatch):

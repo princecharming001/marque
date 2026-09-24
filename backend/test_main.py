@@ -282,6 +282,7 @@ def test_feed_feedback_like_updates_arms_without_polluting_honest_stats():
     cid = "c_fb_like"
     main._arm_stats.pop(cid, None)
     r = client.post("/v1/feed/feedback", json={
+        "pillars": ["Teach"],
         "creator_id": cid, "verdict": "like", "niche": "fitness",
         "script": {"title": "t1", "hook": "h1", "pillar": "Teach", "style": "talking_head",
                    "formatId": "myth-buster", "hookSignal": "contrarian"}})
@@ -2332,6 +2333,7 @@ def test_feedback_batches_arm_writes(monkeypatch):
     main._arms_loaded.add(cid)
     r = client.post("/v1/feed/feedback", json={
         "creator_id": cid, "verdict": "like",
+        "pillars": ["Training"],
         "script": {"pillar": "Training", "style": "talking_head",
                    "format_id": "listicle", "hook_signal": "specificity"}})
     assert r.json()["arms_updated"] == 4
@@ -7841,3 +7843,34 @@ def test_clamp_title_scrubs_dashes():
     # still clamps length at a word boundary
     long = main._clamp_title("a" + " word" * 30)
     assert len(long) <= 42 and not long.endswith(" ")
+
+
+
+def test_feedback_never_turns_a_card_title_into_a_pillar(monkeypatch):
+    """iOS sends the pick card's title as its pillar. One tap used to create an arm named
+    after the title, and _top_arms then used it as the next page's theme, even after a
+    DISLIKE. Unknown pillars (and title == pillar) are ignored; the other dims still learn."""
+    cid = "c_title_pillar"
+    main._arm_stats.pop(cid, None)
+    main._arms_loaded.add(cid)
+    monkeypatch.setattr(main, "_supabase_client", None)
+    title = "why your protein shakes are useless"
+    r = client.post("/v1/feed/feedback", json={
+        "creator_id": cid, "verdict": "dislike", "niche": "fitness",
+        "script": {"title": title, "hook": "h", "pillar": title, "style": "talking_head",
+                   "formatId": "myth-buster", "hookSignal": "contrarian"}}).json()
+    assert r["arms_updated"] == 3
+    assert not [k for k in main._arm_stats.get(cid, {}) if k.startswith("pillar:")]
+    arms = asyncio.run(main._top_arms(cid, "fitness"))
+    assert all(main._is_known_pillar(a["pillar"]) for a in arms)
+    assert all("—" not in a["reason"] for a in arms)
+    main._arm_stats.pop(cid, None)
+
+
+def test_feed_uses_the_creators_own_pillars_when_sent():
+    brand = {"niche": "Fitness", "pillars": ["Desk-worker strength", "Eating for energy"]}
+    s0, why0 = main._feed_sreq(brand, "", 0, "c_own", None)
+    s1, _ = main._feed_sreq(brand, "", 1, "c_own", None)
+    assert (s0.pillar, s1.pillar) == ("Desk-worker strength", "Eating for energy")
+    assert "Desk-worker strength" in why0
+    assert main.Brand(**brand).topics == [] and main.Brand(topics=["a", "b"]).topics == ["a", "b"]

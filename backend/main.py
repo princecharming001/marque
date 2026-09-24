@@ -1428,6 +1428,14 @@ class Brand(BaseModel):
     # Creators whose style this creator wants scripts to channel — presets resolve
     # instantly (PRESET_EMULATION); custom links resolve from cache/Supabase/scrape.
     emulation_targets: list[dict] = []
+    # Multi-select onboarding: the app sends extra topics/audiences beyond the primary
+    # niche/audience and brand_block renders them ("also covers", "also talking to"), but
+    # undeclared fields are dropped by pydantic, so no prompt had ever seen them.
+    topics: list[str] = []
+    audiences: list[str] = []
+    # The creator's own content pillar NAMES (the app holds the pillar objects). When
+    # present, Home picks rotate through them instead of generic starter pillars.
+    pillars: list[str] = []
 
     def d(self) -> dict:
         return self.model_dump()
@@ -1505,6 +1513,7 @@ class FeedFeedbackRequest(BaseModel):
     verdict: str = "like"              # "like" | "dislike"
     niche: str = ""
     script: dict = {}
+    pillars: list[str] = []            # the creator's own pillar names (validates the pillar dim)
 
 
 class MemoryDistillRequest(BaseModel):
@@ -10653,9 +10662,26 @@ def _attach_react_source(edl: dict, job: dict) -> dict:
 # Phase 4: Learning loop routes
 # ---------------------------------------------------------------------------
 
+def _creator_for_clip(clip_id: str) -> str:
+    """The real creator behind a clip, from the in-memory clip jobs (job id or any of its
+    clip ids). iOS registered posts without a creator_id, so every post landed under the
+    shared "default" bucket, where learning writes are refused: nothing ever learned."""
+    if not clip_id:
+        return ""
+    for jid, job in list(_clip_jobs.items()):
+        if jid == clip_id or any(isinstance(c, dict) and c.get("clip_id") == clip_id
+                                 for c in job.get("clips") or []):
+            cid = str(job.get("creator_id") or "")
+            if palo_flags.real_creator(cid):
+                return cid
+    return ""
+
+
 @app.post("/v1/posts/register")
 async def register_post(req: PostRegisterRequest):
     """Register a scheduled post as a learning experiment."""
+    if (not req.creator_id or req.creator_id == "default") and req.clip_id:
+        req.creator_id = _creator_for_clip(req.clip_id) or req.creator_id
     if req.niche:
         _remember_niche(req.creator_id, req.niche)      # remember for cold-arm Beta seeding
         await _persist_creator(req.creator_id, niche=req.niche)
@@ -10903,6 +10929,21 @@ async def _settle_from_scrape(creator_id: str, rows: list[dict]) -> int:
     return settled
 
 
+_COLD_PILLARS = ["Myth-bust the common advice", "Teach one specific thing well",
+                 "Contrarian take on a hot topic"]
+_FALLBACK_LEARNED_PILLARS = ["Myth-busting", "Teach the fundamentals", "Hot takes"]
+
+
+def _is_known_pillar(value: str, brand_pillars: list[str] | None = None) -> bool:
+    """A pillar arm must name a PILLAR, not a script. iOS sent the pick card's title as
+    its pillar, so one like or dislike created an arm named after that title and the
+    next page used it as its theme. Only the starter pillars and the creator's own
+    pillars count."""
+    v = (value or "").strip().lower()
+    known = {p.lower() for p in _COLD_PILLARS + _FALLBACK_LEARNED_PILLARS + list(brand_pillars or [])}
+    return bool(v) and v in known
+
+
 def _cold_recommendations(niche: str) -> list[dict]:
     """Cold-start recommendations from the niche prior (before any own arm data).
     Pairs the niche's strongest styles with sensible starter pillars and an honest
@@ -10913,7 +10954,7 @@ def _cold_recommendations(niche: str) -> list[dict]:
     fmts = p["formats"]
     sigs = p["signals"]
     niche_label = niche.strip() or "your niche"
-    pillars = ["Myth-bust the common advice", "Teach one specific thing well", "Contrarian take on a hot topic"]
+    pillars = list(_COLD_PILLARS)
     _sig_word = {"patternInterrupt": "pattern-interrupt", "callOut": "call-out"}
     arms = []
     for i in range(3):
@@ -10927,7 +10968,7 @@ def _cold_recommendations(niche: str) -> list[dict]:
     return arms
 
 
-async def _top_arms(creator_id: str, niche: str = "") -> list[dict]:
+async def _top_arms(creator_id: str, niche: str = "", brand_pillars: list[str] | None = None) -> list[dict]:
     """UX-G1: the top Thompson-sampled (pillar, style) arms with their HUMAN reason —
     factored from get_recommendations so the feed + next-idea consume the same source
     of judgment instead of rotating templates. Cold start (no arm data) falls back to
@@ -10945,9 +10986,8 @@ async def _top_arms(creator_id: str, niche: str = "") -> list[dict]:
 
     mean_raw = _creator_mean_raw(creator_id)
     styles = list(prompts.ACTIVE_STYLES)     # only recommend styles the app actually offers
-    pillars = list(set(
-        k.split(":", 1)[1] for k in stats if k.startswith("pillar:")
-    )) or ["Myth-busting", "Teach the fundamentals", "Hot takes"]
+    pillars = [p for p in set(k.split(":", 1)[1] for k in stats if k.startswith("pillar:"))
+               if _is_known_pillar(p, brand_pillars)] or list(_FALLBACK_LEARNED_PILLARS)
 
     sampled_styles = _thompson_sample(creator_id, [f"style:{s}" for s in styles], niche)
     sampled_pillars = _thompson_sample(creator_id, [f"pillar:{p}" for p in pillars], niche)
@@ -10965,7 +11005,7 @@ async def _top_arms(creator_id: str, niche: str = "") -> list[dict]:
             verb = "outperforms" if lift > 0 else "underperforms"
             reason = f"{style.replace('_', ' ').title()} {verb} your average by {abs(lift)}% ({conf})"
         else:
-            reason = f"{style.replace('_', ' ').title()} — exploring where your data is still thin"
+            reason = f"{style.replace('_', ' ').title()}, exploring where your data is still thin"
         arms.append({"pillar": pillar, "style": style, "score": round(pillar_score + style_score, 3),
                      "reason": reason})
 
@@ -13443,7 +13483,15 @@ def _feed_sreq(brand: dict, styles: str, cursor: int, creator_id: str, memory: d
     allowed = ([s for s in styles.split(",") if s in prompts.ACTIVE_STYLES]
                or list(prompts.ACTIVE_STYLES))
     arm = arms[cursor] if arms and cursor < len(arms) else None
-    if arm and arm.get("pillar"):
+    own = [p.strip() for p in (brand.get("pillars") or []) if isinstance(p, str) and p.strip()]
+    if own:
+        # The creator's own pillars never used to reach Home picks (the backend didn't
+        # receive them). Rotate through them by page; the arm still picks the style.
+        pillar = own[cursor % len(own)]
+        style = (arm["style"] if arm and arm.get("style") in allowed
+                 else allowed[cursor % len(allowed)])
+        why_picked = f"From your '{pillar}' pillar"
+    elif arm and arm.get("pillar"):
         pillar = arm["pillar"]
         style = arm["style"] if arm.get("style") in allowed else allowed[cursor % len(allowed)]
         why_picked = arm.get("reason") or f"From your '{pillar}' pillar"
@@ -13813,8 +13861,12 @@ async def feed_feedback(req: FeedFeedbackRequest):
     niche = req.niche or _creator_niche.get(req.creator_id, "")
     sc = req.script
     # Map each bandit dimension to the script's field(s) — mirrors /v1/metrics/ingest's dims.
+    pillar_val = sc.get("pillar") or sc.get("pillarName") or ""
+    if not _is_known_pillar(pillar_val, req.pillars) or \
+            pillar_val.strip().lower() == str(sc.get("title") or "").strip().lower():
+        pillar_val = ""                       # a card title is not a pillar (see _is_known_pillar)
     dim_values = {
-        "pillar": sc.get("pillar") or sc.get("pillarName"),
+        "pillar": pillar_val,
         "style": sc.get("style"),
         "format_id": sc.get("format_id") or sc.get("formatId"),
         "hook_signal": sc.get("hook_signal") or sc.get("hookSignal"),

@@ -69,6 +69,9 @@ def is_compile_due(tier: str, last_updated_iso: str | None, now_epoch: float) ->
     return (now_epoch - last) >= interval * 86400
 
 
+_MIN_EVIDENCE_VIDEOS = 3
+
+
 def split_sections(md: str) -> dict[str, str]:
     """`## Name` blocks -> {name: body}. The compiler's structural contract."""
     out: dict[str, str] = {}
@@ -204,7 +207,11 @@ async def compile_strategy(store, creator_id: str, videos: list[dict],
             # instead of rendering the generic placeholder as a real strategy. The API
             # also content-detects the template (is_template_markdown) as a fallback for
             # rows written before this flag existed.
-            "strategy_footnotes": "template" if is_template_markdown(md) else "",
+            # "thin": compiled from fewer than 3 videos. Shown in the app, but not injected
+            # into writers as if proven (one cooking clip told a fitness creator how to run
+            # their channel).
+            "strategy_footnotes": ("template" if is_template_markdown(md)
+                                   else "thin" if len(videos or []) < _MIN_EVIDENCE_VIDEOS else ""),
             "strategy_updated_at": _now_iso(), "brand_hash": _brand_hash(brand or {})})
         return md
     except Exception as e:
@@ -264,6 +271,10 @@ async def strategy_block(store, creator_id: str, brand_hash: str | None = None) 
         strat = None
     md = (strat or {}).get("strategy_markdown", "") if strat else ""
     if not md.strip():
+        return ""
+    # Only real evidence shapes the writers: the placeholder template (its "day-in-the-life"
+    # bucket was injected as if compiled) and thin compiles stay out of prompts.
+    if (strat or {}).get("strategy_footnotes") in ("template", "thin") or is_template_markdown(md):
         return ""
     stale_note = ""
     if brand_hash and strat and strat.get("brand_hash") and strat["brand_hash"] != brand_hash:

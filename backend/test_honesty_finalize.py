@@ -82,3 +82,38 @@ def test_finalize_measures_seconds_and_tidies_title_style_format():
 def test_display_clamp_never_ends_on_a_function_word(title):
     out = main._clamp_title(title, limit=42)
     assert out.split()[-1].lower() not in main._TITLE_TAIL_WORDS
+
+
+def test_post_registration_resolves_the_creator_from_the_clip_job(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    main._clip_jobs["job-reg-1"] = {"creator_id": "creator-abc", "clips": [{"clip_id": "clip-xyz"}]}
+    try:
+        from fastapi.testclient import TestClient
+        c = TestClient(main.app)
+        r = c.post("/v1/posts/register", json={"post_id": "post-reg-1", "clip_id": "clip-xyz"}).json()
+        assert r["status"] in ("registered", "ok", "already_registered") or r.get("post_id") == "post-reg-1"
+        assert main._post_registry["post-reg-1"]["creator_id"] == "creator-abc"
+    finally:
+        main._clip_jobs.pop("job-reg-1", None)
+        main._post_registry.pop("post-reg-1", None)
+
+
+def test_strategy_block_skips_template_and_thin_compiles(monkeypatch):
+    from app import palo_flags, strategy_compiler as sc
+
+    class _Store:
+        def __init__(self, row):
+            self.row = row
+
+        async def load_strategy(self, cid):
+            return self.row
+
+    monkeypatch.setattr(palo_flags, "PALO_PORT", True)
+    monkeypatch.setattr(palo_flags, "STRATEGY_COMPILER", True)
+    real = "## Insights\n- Your cold opens hold.\n\n## Plan\nREGIME: breakout. x\nLEVER: y\nPriority: z\n"
+    assert asyncio.run(sc.strategy_block(_Store({"strategy_markdown": real}), "c-real"))
+    for foot in ("template", "thin"):
+        assert asyncio.run(sc.strategy_block(
+            _Store({"strategy_markdown": real, "strategy_footnotes": foot}), "c-real")) == ""
+    assert asyncio.run(sc.strategy_block(
+        _Store({"strategy_markdown": sc._template_strategy({"niche": "fitness"})}), "c-real")) == ""
