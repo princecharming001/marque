@@ -12,36 +12,81 @@ extension ProEditorView {
             return
         }
         // Use the status-aware poll (restart-fragility audit): pollClipJob swallowed the
-        // HTTP code, so a transient 503 (DB blip) or a restored-but-not-yet-edited job
-        // (no EDL) both mis-reported "session may have expired." Distinguish them.
+        // HTTP code. ED-11: only a 404/410 means the session is gone — offline, a timeout,
+        // any 5xx, or a job with no EDL yet are transient and get "Try again", not the
+        // "expired" copy (whose "Re-create" re-uploads the take and starts a NEW job).
         let (result, http) = await store.backend.pollClipJobWithStatus(jobId: jobId, includeWords: true)
-        if http == 503 {
-            phase = .failed("Couldn't reach the studio just now, pull to try again.")
+        let fetchedEDL = result?["edl"] as? [String: Any]
+        switch EditorLoadOutcome.classify(status: http, hasEDL: fetchedEDL != nil) {
+        case .ready:
+            loadRetryable = false
+        case .unreachable:
+            editorRecoverable = false; loadRetryable = true
+            phase = .failed("Couldn't reach Yunicorn. Check your connection, then try again.")
             return
-        }
-        guard let result, let edlDict = result["edl"] as? [String: Any] else {
-            // The job is gone (404/410 → a body with no `edl`). If we still hold the local
-            // take, the editor is recoverable — offer to re-create the edit from footage
-            // rather than dead-ending.
-            editorRecoverable = (clip.localVideoPath != nil)
+        case .notReady:
+            editorRecoverable = false; loadRetryable = true
+            phase = .failed("This clip's edit isn't ready yet. Try again in a moment.")
+            return
+        case .gone:
+            // If we still hold the local take, the editor is recoverable — offer to
+            // re-create the edit from footage rather than dead-ending.
+            loadRetryable = false
+            editorRecoverable = localTakeURL() != nil     // ED-14: Re-create needs the take ON DISK
             phase = .failed(editorRecoverable
                 ? "This edit session expired. Re-create it from your footage to keep editing."
                 : "Couldn't load this clip's edit, the session may have expired.")
             return
         }
+        guard let result, let edlDict = fetchedEDL else { return }
         let doc = EditorDocument(edl: edlDict)
         let sess = EditorSession(document: doc)
+
+        // ED-2: replay an unsaved draft — but ONLY onto the exact EDL its ops were made
+        // against (or, after a kept-edits retheme, the same structure). Each persisted
+        // gesture replays through LocalEDLEngine as its own undo step.
+        let base = EditorDraftBase(edl: edlDict)
+        draftAutosaver?.flush()                  // a reload: the outgoing saver writes first…
+        draftAutosaver?.close(deleting: false)   // …then retires, so it can't overwrite below
+        let saver = EditorDraftAutosaver(jobId: jobId, base: base)
+        EditorDraftStore.prune()
+        let stored = EditorDraftStore.load(jobId: jobId)
+        var restoredNote: String? = nil
+        switch EditorDraft.decide(stored, against: base) {
+        case .restore:
+            let gestures = stored?.gestures ?? []
+            let applied = sess.replay(gestures)
+            if applied > 0 {
+                restoredNote = applied == gestures.count
+                    ? "Restored your unsaved edits"
+                    : "Restored \(applied) of \(gestures.count) unsaved edits"
+            }
+            saver.schedule(sess.opLog)            // re-stamp onto this base (clears a carry flag)
+        case .drop:
+            EditorDraftStore.clear(jobId: jobId)  // the server EDL moved: the ops may not fit it
+        case .none:
+            break
+        }
+        draftAutosaver = saver
         session = sess
 
         // Source video: prefer the local recording, else the server public URL, else placeholder.
-        var url: URL?
-        if let local = clip.localVideoPath { url = MediaStore.url(for: local) }
+        // ED-14: only a local take that still EXISTS — a reclaimed/cleared file used to win
+        // over source_url and leave the preview black.
+        var url: URL? = localTakeURL()
         if url == nil, let src = result["source_url"] as? String, let u = URL(string: src) { url = u }
+        // ED-3: a reload (after a retheme) replaces the controller — tear the old one down
+        // first, or its AVPlayer + music loop keep playing behind the new editor.
+        player?.teardown()
         let pc = EditorPlayerController(sourceURL: url)
-        pc.update(document: doc)
+        pc.update(document: sess.draft)
         player = pc
+        filmstripWarm?.cancel()
         filmstrip = FilmstripCache(sourceURL: url)
-        if let fs = filmstrip { Task { await fs.warm(durationSeconds: doc.outputSeconds) } }
+        // Warm across the whole SOURCE (the cut can come from anywhere in the take — it used
+        // to warm only the first `outputSeconds` of source), cancellable.
+        let sourceExtent = framesToSeconds(doc.segments.map(\.srcOut).max() ?? 0)
+        if let fs = filmstrip { filmstripWarm = Task { await fs.warm(durationSeconds: sourceExtent) } }
 
         // Transcript words for the Text-mode word editor.
         let raw = result["words"] as? [[String: Any]] ?? []
@@ -53,7 +98,7 @@ extension ProEditorView {
             return WordSpan(text: text, startFrame: sf, endFrame: max(sf + 1, msToFrame(em)))
         }.sorted { $0.startFrame < $1.startFrame }
 
-        captionsOn = !doc.captions.isEmpty       // #1: seed enabled-state from what loaded
+        syncDraftDerivedState()   // #1 + ED-7: captions toggle/slider drafts from what loaded
         // A7: the active theme (if EDIT_THEMES produced one) — optional, absent-safe
         // (older jobs / EDIT_THEMES off never carry it).
         activeThemeId = result["theme_id"] as? String ?? ""
@@ -63,17 +108,38 @@ extension ProEditorView {
         // between the tap and the timeline — none is needed to start cutting, so they
         // hydrate in the background and their surfaces fill in as they land.
         phase = .editing
+        if let restoredNote { showToast(restoredNote, seconds: 3) }
         Task { if let all = await store.backend.editorCapabilities() { caps = all[doc.style] } }
         Task { await MusicCatalog.hydrate(using: store.backend) }
         Task { if themes.isEmpty { themes = await store.backend.fetchThemes() } }
+    }
+
+    /// The recorded take on disk, nil when there is none or the file is gone.
+    func localTakeURL() -> URL? {
+        guard let local = clip.localVideoPath else { return nil }
+        let u = MediaStore.url(for: local)
+        return FileManager.default.fileExists(atPath: u.path) ? u : nil
     }
 
     // MARK: A7 feature #1 — retheme (a SEPARATE endpoint from /tweak: it only
     // restamps caption/grade/duck, never touches segments/drops/overlays, so it
     // skips the local op-log entirely and re-renders directly).
 
-    func retheme(to themeId: String) {
+    /// Theme tile tap. Unsaved edits would be replaced by the reload, so a dirty session
+    /// asks first (ED-3); a clean one rethemes straight away as before.
+    func requestRetheme(_ themeId: String) {
+        if session?.isDirty == true { pendingThemeId = themeId } else { retheme(to: themeId) }
+    }
+
+    func retheme(to themeId: String, keepingEdits: Bool = false) {
         guard let jobId = clip.jobId, rethemeTask == nil, applyTask == nil else { return }
+        player?.pause()                              // ED-3: nothing plays behind the spinner
+        if keepingEdits, let session, session.isDirty {
+            // On disk and flagged BEFORE the request: the reload below — or the next launch,
+            // if the app dies mid-render — replays these ops onto the rethemed EDL (a
+            // retheme never touches segments/drops/overlays/broll, so they still fit).
+            draftAutosaver?.persistForRetheme(session.opLog)
+        }
         phase = .applying
         rethemeTask = Task {
             let resp = await store.backend.rethemeClip(jobId: jobId, themeId: themeId, clipId: clip.id.uuidString)
@@ -92,19 +158,25 @@ extension ProEditorView {
                 let (ready, message) = await pollClipUntilDone(jobId: jobId)
                 guard !Task.isCancelled else { return }
                 rethemeTask = nil
+                // Closed mid-render: the poll above already handed the result to the store;
+                // don't build a player/filmstrip for an editor nobody is looking at.
+                guard lifetime.visible else { return }
                 if ready { await load() } else { phase = .failed(message ?? "Couldn't finish that render.") }
             } else {
                 rethemeTask = nil
-                phase = .editing   // keyless/mock, or nothing needed re-rendering
+                // Keyless/mock, or nothing needed re-rendering: the EDL still changed
+                // server-side, so reload it (the kept edits replay on top) rather than keep
+                // editing a document that no longer matches the server.
+                await load()
             }
         }
     }
 
     // MARK: gesture → op helpers (one gesture = one perform() = one undo step)
 
-    func mutate(_ ops: [WireOp], rejectMsg: String? = nil) {
+    func mutate(_ ops: [WireOp], rejectMsg: String? = nil, label: String? = nil) {
         guard let session else { return }
-        if session.perform(ops) { refreshPlayer() }
+        if session.perform(ops, label: label) { refreshPlayer() }
         else if let rejectMsg { flash(rejectMsg) }
     }
 
@@ -170,7 +242,7 @@ extension ProEditorView {
 
     func deleteSelected(_ segIdx: Int) {
         guard let seg = session?.draft.segments[safe: segIdx] else { return }
-        mutate([.cut(seg.srcIn, seg.srcOut)], rejectMsg: "You can't delete the whole clip.")
+        mutate([.cut(seg.srcIn, seg.srcOut)], rejectMsg: "You can't delete the whole clip.", label: "Delete clip")
         // Every vocabulary's Delete clears its own selection (and any expansion on it).
         select(nil)
     }
@@ -207,13 +279,19 @@ extension ProEditorView {
     }
     func toggleMute(_ segIdx: Int) {
         guard let seg = session?.draft.segments[safe: segIdx] else { return }
-        mutate([mutedState(segIdx) ? .segmentVolume(seg.srcIn, seg.srcOut, 1.0) : .mute(seg.srcIn, seg.srcOut)])
+        let muted = mutedState(segIdx)
+        mutate([muted ? .segmentVolume(seg.srcIn, seg.srcOut, 1.0) : .mute(seg.srcIn, seg.srcOut)],
+               label: muted ? "Unmute" : "Mute")
     }
     func setClipVolume(_ segIdx: Int, _ v: Double) {
         guard let seg = session?.draft.segments[safe: segIdx] else { return }
         mutate([.segmentVolume(seg.srcIn, seg.srcOut, v)])
     }
-    func pickMusic(_ track: MusicCatalog.Track) { mutate([.setMusic(url: track.url, volume: 0.15, duck: true)]); showMusicSheet = false }
+    func pickMusic(_ track: MusicCatalog.Track) {
+        mutate([.setMusic(url: track.url, volume: 0.15, duck: true)])
+        syncDraftDerivedState()      // the open Sound panel's slider follows the new track's volume
+        showMusicSheet = false
+    }
     func removeMusic() {
         mutate([.removeMusic()])
         // The strip vanishes with the track — a stale music selection would leave the
@@ -306,6 +384,10 @@ extension ProEditorView {
         guard let p = editingPhrase else { return }
         editingPhrase = nil
         let newWords = editDraft.split(separator: " ").map(String.init).filter { !$0.isEmpty }
+        // Unchanged text is not an edit: committing it used to emit one edit_caption per slot,
+        // marking the session dirty (Save → a pointless re-render).
+        let oldWords = p.text.split(separator: " ").map(String.init).filter { !$0.isEmpty }
+        guard newWords != oldWords else { return }
         var ops: [WireOp] = []
         // Clear any stray captions in the phrase's span that sit off the transcript slots
         // (e.g. server-side chat edits) so the redistribute below fully owns the range.
@@ -483,20 +565,30 @@ extension ProEditorView {
     func importRollMedia(_ item: PhotosPickerItem) async {
         uploadingMedia = true
         defer { uploadingMedia = false; mediaPickerItem = nil }
-        guard var data = try? await item.loadTransferable(type: Data.self) else {
+        let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+        let ext = isVideo ? "mov" : "jpg"
+        var savedPath: String? = nil
+        // LV-8: a picked VIDEO streams to a file (PickedVideoFile, the RecordView/Media path)
+        // and is moved into media/ — loadTransferable(type: Data.self) materialized the whole
+        // file in RAM, a memory kill for a multi-minute library clip. Data stays for stills
+        // and as the fallback for providers with no file representation.
+        if isVideo, let picked = try? await item.loadTransferable(type: PickedVideoFile.self) {
+            savedPath = MediaStore.adopt(fileAt: picked.url, ext: ext) ?? MediaStore.saveFile(from: picked.url, ext: ext)
+            try? FileManager.default.removeItem(at: picked.url)
+        } else if var data = try? await item.loadTransferable(type: Data.self) {
+            // Build 55 (audit): photo picks arrive as their ORIGINAL bytes — HEIC by default on
+            // iPhone — and Chromium (the Lambda renderer) can't decode HEIC, so the roll showed
+            // locally (UIImage reads HEIC) but rendered BLANK in the delivered video. Re-encode
+            // stills to real JPEG before upload; videos pass through untouched.
+            if !isVideo, let img = UIImage(data: data), let jpg = img.jpegData(compressionQuality: 0.9) {
+                data = jpg
+            }
+            savedPath = MediaStore.save(data, ext: ext)
+        }
+        guard let path = savedPath else {
             flashPublic("Couldn't load that media, try another.")
             return
         }
-        let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
-        let ext = isVideo ? "mov" : "jpg"
-        // Build 55 (audit): photo picks arrive as their ORIGINAL bytes — HEIC by default on
-        // iPhone — and Chromium (the Lambda renderer) can't decode HEIC, so the roll showed
-        // locally (UIImage reads HEIC) but rendered BLANK in the delivered video. Re-encode
-        // stills to real JPEG before upload; videos pass through untouched.
-        if !isVideo, let img = UIImage(data: data), let jpg = img.jpegData(compressionQuality: 0.9) {
-            data = jpg
-        }
-        let path = MediaStore.save(data, ext: ext)
         guard let url = await LiveClipEngine.uploadMedia(path: path, filename: "roll.\(ext)") else {
             flashPublic("Couldn't upload that media, check your connection.")
             return
@@ -816,6 +908,9 @@ extension ProEditorView {
                 }
                 .padding(Space.xl)
                 Spacer()
+                // Nothing NEW to clean up doesn't mean nothing was cut: the Restore link (the
+                // only root path to it) must survive the empty state.
+                if !(session?.draft.drops.isEmpty ?? true) { cleanupRestoreLink }
             } else {
                 ScrollView {
                     // Stoic checklist: one grouped card, trailing circular checks.
@@ -857,25 +952,7 @@ extension ProEditorView {
                     .accessibilityIdentifier("editorPro.cleanup.apply")
                 // Build 69: Restore moved off the root bar — it only means something
                 // after a cleanup ran, so its home is here (plus the amber cut seams).
-                if !(session?.draft.drops.isEmpty ?? true) {
-                    Button {
-                        withAnimation(.easeOut(duration: 0.15)) { showCleanup = false }
-                        openRestorePanel()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.uturn.backward.circle").font(.system(size: 14, weight: .regular))
-                            Text("Restore removed footage (\(session?.draft.drops.count ?? 0))")
-                                .font(AppFont.supporting.weight(.semibold))
-                                .lineLimit(1).minimumScaleFactor(0.85)
-                        }
-                        .foregroundStyle(Palette.textPrimary)
-                        .frame(maxWidth: .infinity).frame(height: 36)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.bottom, Space.sm)
-                    .accessibilityIdentifier("editorPro.cleanup.restore")
-                }
+                if !(session?.draft.drops.isEmpty ?? true) { cleanupRestoreLink }
             }
         }
         .frame(height: 340, alignment: .top)
@@ -897,10 +974,47 @@ extension ProEditorView {
         .accessibilityIdentifier("editorPro.cleanupPanel")
     }
 
+    /// "Restore removed footage (N)" — shown under the checklist AND in the empty state.
+    private var cleanupRestoreLink: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { showCleanup = false }
+            openRestorePanel()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.uturn.backward.circle").font(.system(size: 14, weight: .regular))
+                    .accessibilityHidden(true)
+                Text("Restore removed footage (\(session?.draft.drops.count ?? 0))")
+                    .font(AppFont.supporting.weight(.semibold))
+                    .lineLimit(1).minimumScaleFactor(0.85)
+            }
+            .foregroundStyle(Palette.textPrimary)
+            .frame(maxWidth: .infinity).frame(height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.bottom, Space.sm)
+        .accessibilityIdentifier("editorPro.cleanup.restore")
+    }
+
     // MARK: Save (flatten op log → one tweak POST → per-clip poll → reload)
 
     func save() {
-        guard let session, session.isDirty, let jobId = clip.jobId, applyTask == nil else { dismiss(); return }
+        guard let session, session.isDirty, clip.jobId != nil, applyTask == nil else { dismiss(); return }
+        commitSave()
+    }
+
+    /// ED-1: the inline error bar's Retry — the same commit, guarded the same way.
+    func retrySave() {
+        guard session?.isDirty == true else { saveError = nil; return }
+        guard applyTask == nil else { return }
+        commitSave()
+    }
+
+    /// One Save attempt. The draft is on disk before the request leaves; every failure lands
+    /// back in `.editing` with the draft intact and an inline reason (ED-1) — never the
+    /// dead-end `.failed` screen, which used to throw the whole session away.
+    private func commitSave() {
+        guard let session, let jobId = clip.jobId else { return }
         let ops = session.flattenedOps()
         // defer_render is ONLY safe when the delivered MP4 is byte-for-byte unchanged.
         // A pure split qualifies (it just adds a cut point; the same frames play in the
@@ -908,27 +1022,95 @@ extension ProEditorView {
         // output — deferring their render leaves the Library playing AND publishing the
         // pre-edit video (audit #6/#43). Only defer a split-only batch.
         let structural = !ops.isEmpty && ops.allSatisfy { ($0["type"] as? String) == "split_segment" }
+        let saver = draftAutosaver
+        let verifyBase = saveNeedsBaseCheck
+        saver?.flush()
+        player?.pause()                              // nothing plays behind "Applying…"
+        withAnimation(.easeOut(duration: 0.15)) { saveError = nil }
         phase = .applying
         applyTask = Task {
-            let resp = await store.backend.tweakClipOps(jobId: jobId, clipId: clip.id.uuidString, ops: ops, deferRender: structural)
-            if resp["error"] as? Bool == true {
-                if resp["transient"] as? Bool == true { phase = .editing; applyTask = nil; flash(resp["reply"] as? String ?? "Still busy, try again."); return }
-                phase = .failed(resp["reply"] as? String ?? "Couldn't apply your edits."); return
+            if verifyBase, let saver {
+                // A transport drop or 5xx can surface AFTER the server applied the ops, and
+                // /tweak has no idempotency key: re-sending blindly would apply every op
+                // twice. Re-read the job; only an unchanged base is safe to send onto.
+                let (job, http) = await store.backend.pollClipJobWithStatus(jobId: jobId)
+                let edl = job?["edl"] as? [String: Any]
+                switch EditorLoadOutcome.classify(status: http, hasEDL: edl != nil) {
+                case .gone:
+                    finishSaveFailure(.gone(EditorSaveOutcome.goneCopy)); return
+                case .unreachable, .notReady:
+                    finishSaveFailure(.unreachable(EditorSaveOutcome.unreachableCopy, ambiguous: true)); return
+                case .ready:
+                    if let edl, EditorDraftBase(edl: edl).full != saver.base.full {
+                        // Most likely the earlier attempt landed. If it's rendering, let the
+                        // store-owned watcher carry the Library card to the finished cut.
+                        let mine = (job?["clips"] as? [[String: Any]])?.first {
+                            UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clip.id
+                        }
+                        if mine?["status"] as? String == "rendering" {
+                            store.setClipRendering(clip.id)
+                            store.watchTweakRender(jobId: jobId, clipId: clip.id, label: "Manual edit")
+                        }
+                        finishSaveFailure(.rejected(EditorSaveOutcome.baseMovedCopy)); return
+                    }
+                }
             }
-            let needsRender = resp["needs_render"] as? Bool ?? false
-            if needsRender {
-                // Build 57 (owner): never hold the editor hostage on a render spinner.
-                // The Library card flips to "rendering" NOW, a store-owned watcher
-                // (survives this view) applies the result + notifies when the backend
-                // finishes, and the creator gets the app back immediately.
-                store.setClipRendering(clip.id)
-                store.watchTweakRender(jobId: jobId, clipId: clip.id, label: "Manual edit")
-                bumpHaptic()
-                dismiss()
-            } else {
-                dismiss()   // keyless/mock: applied in place
+            let outcome = await sendTweakOps(jobId: jobId, ops: ops, deferRender: structural)
+            switch outcome {
+            case .saved(let result):
+                saveNeedsBaseCheck = false
+                // ED-9: changed:false means NOTHING landed — the server EDL is still the base
+                // the draft targets, so keep the draft and the user editing, and say why
+                // (this used to dismiss exactly like a successful save).
+                guard result.changed else {
+                    applyTask = nil
+                    phase = .editing
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        saveError = result.nothingAppliedNotice(displayName: opDisplayName)
+                    }
+                    return
+                }
+                saver?.close()                      // committed server-side: the draft is done
+                if result.needsRender {
+                    // Build 57 (owner): never hold the editor hostage on a render spinner.
+                    // The Library card flips to "rendering" NOW, a store-owned watcher
+                    // (survives this view) applies the result + notifies when the backend
+                    // finishes, and the creator gets the app back immediately.
+                    store.setClipRendering(clip.id)
+                    store.watchTweakRender(jobId: jobId, clipId: clip.id, label: "Manual edit")
+                    bumpHaptic()
+                }
+                // ED-9: ops the server refused mean the render will differ from what the
+                // preview showed — say so (and why) before closing, instead of silently.
+                if let report = result.skippedReport(displayName: opDisplayName) {
+                    applyTask = nil
+                    withAnimation(.easeOut(duration: 0.18)) { saveReport = report }
+                } else {
+                    dismiss()   // (keyless/mock: applied in place)
+                }
+            case .unreachable(_, let ambiguous):
+                if ambiguous { saveNeedsBaseCheck = true }
+                finishSaveFailure(outcome)
+            case .busy, .gone, .rejected:
+                finishSaveFailure(outcome)
             }
         }
+    }
+
+    private func finishSaveFailure(_ outcome: EditorSaveOutcome) {
+        applyTask = nil
+        phase = .editing
+        withAnimation(.easeOut(duration: 0.15)) { saveError = outcome.notice }
+    }
+
+    /// POST /tweak with the HTTP status intact — the adapter's tweakClipOps folds 5xx JSON
+    /// bodies into "success" and transport failures into one generic string, so the save
+    /// path classifies the raw status itself (EditorSaveOutcome.classify).
+    private func sendTweakOps(jobId: String, ops: [[String: Any]], deferRender: Bool) async -> EditorSaveOutcome {
+        let path = "/v1/clips/\(jobId)/tweak" + (deferRender ? "?defer_render=1" : "")
+        let (data, status) = await store.backend.postWithStatus(path, ["clip_id": clip.id.uuidString, "ops": ops])
+        let body = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        return EditorSaveOutcome.classify(status: status, body: body)
     }
 
     func pollClipUntilDone(jobId: String) async -> (ready: Bool, message: String?) {
@@ -966,13 +1148,26 @@ extension ProEditorView {
         }.padding(.horizontal, Space.screenH).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// ED-11: re-run the editor load after a transient failure (same editor, same job).
+    func retryLoad() {
+        loadRetryable = false
+        phase = .loading
+        Task { await load() }
+    }
+
     func failedView(_ msg: String) -> some View {
         VStack(spacing: Space.md) {
             // Stoic empty/error state: monochrome glyph carries the warning (no hue).
             Image(systemName: "exclamationmark.triangle").font(.system(size: 24, weight: .regular)).foregroundStyle(Palette.textPrimary)
             Text(msg).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            if editorRecoverable {
+            if loadRetryable {
+                // ED-11: transient (offline / timeout / 5xx / not ready) — retry in place.
+                Button("Try again") { retryLoad() }
+                    .buttonStyle(.ds(.primary, height: 48)).padding(.top, Space.sm)
+                    .accessibilityIdentifier("editorPro.load.retry")
+                Button("Close") { dismiss() }.buttonStyle(DSTextLinkStyle(color: Palette.textSecondary))
+            } else if editorRecoverable {
                 // Re-create the edit from the local take (store.retryClipJob re-uploads +
                 // starts a fresh job in place when the server lost this one), then close so
                 // the Library shows it re-processing.
@@ -985,6 +1180,42 @@ extension ProEditorView {
                 Button("Close") { dismiss() }.buttonStyle(.ds(.outline, height: 48)).padding(.top, Space.sm)
             }
         }.padding(Space.xl).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// ED-1: a failed Save keeps the user editing with the draft intact — the reason, plus
+    /// Retry whenever another attempt can succeed (offline, 5xx, a render still running).
+    func saveErrorBar(_ e: EditorSaveNotice) -> some View {
+        HStack(alignment: .center, spacing: Space.sm) {
+            Image(systemName: "exclamationmark.triangle").font(.system(size: 13, weight: .regular))
+                .foregroundStyle(Palette.textPrimary)
+            Text(e.message).font(AppFont.caption).foregroundStyle(Palette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if e.retryable {
+                Button { retrySave() } label: {
+                    Text("Retry").font(AppFont.caption.weight(.semibold))
+                        .foregroundStyle(Palette.onInk)
+                        .padding(.horizontal, 14).frame(height: 30)
+                        .background(Capsule().fill(Palette.ink))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(PressableStyle(dim: 0.85))
+                .accessibilityIdentifier("editorPro.save.retry")
+            }
+            Button { withAnimation(.easeOut(duration: 0.15)) { saveError = nil } } label: {
+                Image(systemName: "xmark").font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Palette.textSecondary)
+                    .frame(width: 30, height: 30).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+            .accessibilityIdentifier("editorPro.save.errorDismiss")
+        }
+        .padding(.leading, Space.screenH).padding(.trailing, Space.sm).padding(.vertical, 6)
+        .background(Palette.surfaceSunken)
+        // Container semantics so the Retry/Dismiss ids surface (cleanupPanel lesson).
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("editorPro.save.error")
     }
 
     func transientBar(_ t: String) -> some View {
@@ -1059,8 +1290,8 @@ extension ProEditorView {
 
     /// The phrase's output-time position as m:ss (where it plays in the cut, drops applied).
     private func timecode(forPhrase p: CaptionPhrase) -> String {
-        guard let span = session?.draft.outputSpan(srcIn: p.startFrame, srcOut: p.endFrame) else { return "–" }
-        let s = Int(span.start)
+        guard let start = phraseOutputStart(p) else { return "–" }      // ED-5: memoized
+        let s = Int(start)
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 
@@ -1133,7 +1364,7 @@ extension ProEditorView {
                             let on = t.id == activeThemeId
                             Button {
                                 showThemeSheet = false
-                                retheme(to: t.id)
+                                requestRetheme(t.id)
                             } label: {
                                 VStack(alignment: .leading, spacing: 6) {
                                     HStack(alignment: .top, spacing: 4) {

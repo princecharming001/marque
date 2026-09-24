@@ -42,11 +42,53 @@ func buildCaptionPhrases(words: [ProEditorView.WordSpan], captions: [EditorCapti
     // Per-slot display: an edited caption AT a word's exact start-frame overrides that word;
     // captions at off-slot frames are ignored for display (production captions are keyed to
     // word start-frames; anything else is seed noise or a server-side rewrite in flight).
+    // Pro Max sweep: once captions exist, a slot with NO caption shows nothing — it was
+    // removed (a shortened phrase) or never captioned (a stripped filler), and the canvas +
+    // render show nothing there; falling back to the transcript word made the list/lane
+    // read "actually ships pick actually ships pick" after an edit. The transcript stands in
+    // only while captions are empty (enabled-but-rebuilding server-side).
     let byFrame = Dictionary(captions.map { ($0.frame, $0.word) }, uniquingKeysWith: { a, _ in a })
     return groups.map { g in
-        let text = g.map { byFrame[$0.startFrame] ?? $0.text }.joined(separator: " ")
+        let text = g.compactMap { w -> String? in
+            captions.isEmpty ? w.text : byFrame[w.startFrame]
+        }.joined(separator: " ")
         return CaptionPhrase(startFrame: g.first!.startFrame, endFrame: g.last!.endFrame,
                              wordFrames: g.map(\.startFrame), text: text)
+    }
+}
+
+/// One caption phrase placed on the OUTPUT timeline (fully-cut phrases have no strip).
+struct CaptionStrip: Identifiable {
+    let phrase: CaptionPhrase
+    let start: Double
+    let end: Double
+    var id: Int { phrase.id }
+}
+
+/// ED-5: phrases + their timeline strips, rebuilt once per draft revision. The editor used
+/// to rebuild the phrases several times per body pass, and the caption lane re-walked every
+/// kept interval for every phrase on every pass (O(phrases·segments·drops)).
+@MainActor
+final class CaptionPhraseMemo {
+    private var session: ObjectIdentifier?
+    private var revision = -1
+    private var wordCount = -1
+    private var built = false
+    private(set) var phrases: [CaptionPhrase] = []
+    private(set) var strips: [CaptionStrip] = []
+    private(set) var startByPhrase: [Int: Double] = [:]
+
+    func refresh(session s: EditorSession?, words: [ProEditorView.WordSpan]) {
+        let id = s.map(ObjectIdentifier.init)
+        let rev = s?.revision ?? -1            // the read that ties the caller to edits
+        guard !built || id != session || rev != revision || words.count != wordCount else { return }
+        built = true; session = id; revision = rev; wordCount = words.count
+        phrases = buildCaptionPhrases(words: words, captions: s?.draft.captions ?? [])
+        strips = phrases.compactMap { p in
+            s?.outputSpan(srcIn: p.startFrame, srcOut: p.endFrame)
+                .map { CaptionStrip(phrase: p, start: $0.start, end: $0.end) }
+        }
+        startByPhrase = Dictionary(strips.map { ($0.id, $0.start) }, uniquingKeysWith: { a, _ in a })
     }
 }
 
@@ -77,6 +119,9 @@ struct CaptionClipStrip: View {
                 .strokeBorder(selected ? Palette.night : .clear, lineWidth: 2))
             .offset(x: CGFloat(span.start) * pointsPerSecond)
             .onTapGesture(perform: onTap)
+            .accessibilityLabel(phrase.text.isEmpty ? "Caption" : phrase.text)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("editorPro.phrase.\(phrase.startFrame)")
     }
 }
 
@@ -177,7 +222,11 @@ struct MusicStrip: View {
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4)
             .strokeBorder(selected ? Palette.onNight : .clear, lineWidth: 2))
+        .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
+        // FT-2: one element (its id was stamped on the name/percent Texts instead).
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -201,5 +250,8 @@ struct AddLaneStrip: View {
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
+        // FT-2: one element, so editorPro.musicLane.add / rollsLane.add surface as buttons.
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
     }
 }

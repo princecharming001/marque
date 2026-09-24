@@ -32,16 +32,33 @@ final class EditorPlayerController {
     private var musicVolume: Double = 0.15
     private var musicDucks = true
     private var musicLoop: NSObjectProtocol?
+    private var readyObservation: NSKeyValueObservation?
 
     init(sourceURL: URL?) {
         if let sourceURL {
             placeholder = false
-            player.replaceCurrentItem(with: AVPlayerItem(url: sourceURL))
+            let item = AVPlayerItem(url: sourceURL)
+            player.replaceCurrentItem(with: item)
             player.isMuted = false
+            // ED-14: open on the first KEPT frame (output 0:00), not source frame 0 — the
+            // head of a take is usually cut (count-in, false start). A seek issued before the
+            // item is ready can be dropped, so position it once, when it becomes ready.
+            readyObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+                guard item.status == .readyToPlay else { return }
+                Task { @MainActor [weak self] in self?.positionAtPlayheadOnce() }
+            }
         } else {
             placeholder = true
         }
         installTimeObserver()
+    }
+
+    /// First readiness only: show the playhead's frame unless playback/scrubbing already took over.
+    private func positionAtPlayheadOnce() {
+        guard readyObservation != nil else { return }
+        readyObservation = nil
+        guard !isPlaying, !pendingSeek else { return }
+        seek(toOutput: currentOutputTime)
     }
 
     /// Rebuild the interval map after any draft change; preserves the playhead when possible.
@@ -55,6 +72,11 @@ final class EditorPlayerController {
         syncMusicPlayer(document.music)
         applyVolume(atSourceFrame: secondsToFrame(sourceSeconds(forOutput: currentOutputTime) ?? 0))
         if isPlaying { pause() }
+        // F4 (SE sweep): re-seek the PICTURE to the playhead after every document change —
+        // the same output time now maps to different footage (a cut before it, a reorder,
+        // a speed change), and the old frame stayed on screen after a delete. Only once the
+        // item is ready; the first positioning is positionAtPlayheadOnce().
+        if !placeholder, player.currentItem?.status == .readyToPlay { seek(toOutput: currentOutputTime) }
     }
 
     // MARK: UX-3 audio parity
@@ -273,6 +295,7 @@ final class EditorPlayerController {
     }
 
     func teardown() {
+        readyObservation = nil
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         if let boundaryObserver { player.removeTimeObserver(boundaryObserver) }
         placeholderClock?.invalidate(); placeholderClock = nil

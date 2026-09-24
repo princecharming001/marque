@@ -305,7 +305,10 @@ enum LocalEDLEngine {
                 posX: min(LayoutConstants.stickerPosXMax, max(LayoutConstants.stickerPosXMin, op.d["pos_x"] ?? 0.5)),
                 posY: min(LayoutConstants.stickerPosYMax, max(LayoutConstants.stickerPosYMin, op.d["pos_y"] ?? 0.5)),
                 rotation: min(45, max(-45, op.d["rotation"] ?? 0)),
-                color: op.s["color"], bg: op.s["bg"] ?? "none", font: op.s["font"] ?? "inter"))
+                // Server parity (edl.py add_text_sticker): invalid look values fall back.
+                color: op.s["color"].flatMap { Self.isStickerColor($0) ? $0 : nil },
+                bg: ["none", "box"].contains(op.s["bg"] ?? "") ? op.s["bg"]! : "none",
+                font: Self.stickerFonts.contains(op.s["font"] ?? "") ? op.s["font"]! : "inter"))
         case "set_captions_enabled":
             // Disabling clears the local captions. Enabling seeds them from the op's
             // transcript payload (owner bug: off→on left the draft's captions EMPTY —
@@ -341,19 +344,32 @@ enum LocalEDLEngine {
                   let (a, b) = clamp(op.i["start_frame"] ?? 0, op.i["end_frame"] ?? 0) else { return nil }
             d.overlays.append(EditorOverlay(type: "text_card", srcIn: a, srcOut: b, scale: 1.0, text: String(text.prefix(80))))
         case "edit_overlay":
+            // ED-6: exact mirror of edl.py edit_overlay — ATOMIC (an invalid window rejects the
+            // whole op), invalid colour/bg/font values are ignored, and an op with nothing
+            // valid to change is "nothing to change" (rejected). The old port accepted bare
+            // "FFFFFF", bg "111111" and font "serif" locally, so the preview showed looks the
+            // server then silently skipped at Save.
             guard let idx = op.i["index"], d.overlays.indices.contains(idx) else { return nil }
-            if let text = op.s["text"] { d.overlays[idx].text = String(text.prefix(120)) }
-            if let fi = op.i["frame_in"], let fo = op.i["frame_out"], let (a, b) = clamp(fi, fo) {
-                d.overlays[idx].srcIn = a; d.overlays[idx].srcOut = b
+            var ov = d.overlays[idx]
+            var changed = false
+            if let text = op.s["text"] { ov.text = String(text.prefix(120)); changed = true }
+            if op.i["frame_in"] != nil || op.i["frame_out"] != nil {
+                guard let (a, b) = clamp(op.i["frame_in"] ?? ov.srcIn, op.i["frame_out"] ?? ov.srcOut) else { return nil }
+                ov.srcIn = a; ov.srcOut = b; changed = true
             }
             // text_sticker placement/look (canvas drag/pinch/rotate + styling)
-            if let v = op.d["pos_x"] { d.overlays[idx].posX = min(LayoutConstants.stickerPosXMax, max(LayoutConstants.stickerPosXMin, v)) }
-            if let v = op.d["pos_y"] { d.overlays[idx].posY = min(LayoutConstants.stickerPosYMax, max(LayoutConstants.stickerPosYMin, v)) }
-            if let v = op.d["scale"] { d.overlays[idx].scale = min(3.0, max(0.4, v)) }
-            if let v = op.d["rotation"] { d.overlays[idx].rotation = min(45, max(-45, v)) }
-            if let v = op.s["color"] { d.overlays[idx].color = v == "default" ? nil : v }
-            if let v = op.s["bg"], ["none", "box"].contains(v) { d.overlays[idx].bg = v }
-            if let v = op.s["font"], ["inter", "archivo", "baloo"].contains(v) { d.overlays[idx].font = v }
+            if let v = op.d["pos_x"] { ov.posX = min(LayoutConstants.stickerPosXMax, max(LayoutConstants.stickerPosXMin, v)); changed = true }
+            if let v = op.d["pos_y"] { ov.posY = min(LayoutConstants.stickerPosYMax, max(LayoutConstants.stickerPosYMin, v)); changed = true }
+            if let v = op.d["scale"] { ov.scale = min(3.0, max(0.4, v)); changed = true }
+            if let v = op.d["rotation"] { ov.rotation = min(45, max(-45, v)); changed = true }
+            if let v = op.s["color"] {
+                if v == "default" { ov.color = nil; changed = true }
+                else if Self.isStickerColor(v) { ov.color = v; changed = true }
+            }
+            if let v = op.s["bg"], ["none", "box"].contains(v) { ov.bg = v; changed = true }
+            if let v = op.s["font"], Self.stickerFonts.contains(v) { ov.font = v; changed = true }
+            guard changed else { return nil }
+            d.overlays[idx] = ov
         case "remove_overlays":
             let kind = op.s["kind"] ?? "all"
             let a = op.i["start_frame"]; let b = op.i["end_frame"]
@@ -407,6 +423,14 @@ enum LocalEDLEngine {
             return nil
         }
         return d
+    }
+
+    /// The sticker faces the renderer ships (edl.py: inter | archivo | baloo).
+    static let stickerFonts: Set<String> = ["inter", "archivo", "baloo"]
+
+    /// edl.py `re.fullmatch(r"#[0-9a-fA-F]{6}", color)`.
+    static func isStickerColor(_ v: String) -> Bool {
+        v.count == 7 && v.hasPrefix("#") && v.dropFirst().allSatisfy { $0.isHexDigit }
     }
 
     // Sort + union-merge overlapping/adjacent drops (edl.py _coalesce_drops).

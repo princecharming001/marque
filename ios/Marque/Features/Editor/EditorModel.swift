@@ -313,9 +313,16 @@ struct EditorDocument: Equatable {
     /// Output-time (seconds) -> source-time (seconds). The Swift twin of map_point
     /// (edl.py) — speed-aware: output frames inside an interval advance speed× in source.
     func sourceSeconds(forOutput outputSec: Double) -> Double {
+        Self.sourceSeconds(forOutput: outputSec, intervals: keptIntervalsWithSpeed)
+    }
+
+    /// The same mapping over precomputed kept intervals (EditorSession memoizes them per
+    /// revision, so the 30 Hz playhead never re-derives them — ED-5).
+    static func sourceSeconds(forOutput outputSec: Double,
+                              intervals: [(srcIn: Int, srcOut: Int, speed: Double)]) -> Double {
         var acc = 0
         let target = secondsToFrame(outputSec)
-        for iv in keptIntervalsWithSpeed {
+        for iv in intervals {
             let outLen = outputFrames(iv.srcOut - iv.srcIn, speed: iv.speed)
             if target < acc + outLen {
                 let srcOffset = Int((Double(target - acc) * iv.speed).rounded(.toNearestOrEven))
@@ -323,7 +330,7 @@ struct EditorDocument: Equatable {
             }
             acc += outLen
         }
-        return framesToSeconds(keptIntervals.last?.srcOut ?? 0)
+        return framesToSeconds(intervals.last?.srcOut ?? 0)
     }
 
     /// The first visible OUTPUT-time span (seconds) of a source range, clipped to the kept
@@ -331,9 +338,15 @@ struct EditorDocument: Equatable {
     /// pieces merge; a discontiguous tail (a cut through the overlay's middle) is dropped in
     /// favor of the first piece. nil when the range's footage is fully dropped.
     func outputSpan(srcIn: Int, srcOut: Int) -> (start: Double, end: Double)? {
+        Self.outputSpan(srcIn: srcIn, srcOut: srcOut, intervals: keptIntervalsWithSpeed)
+    }
+
+    /// The same span over precomputed kept intervals (see sourceSeconds(forOutput:intervals:)).
+    static func outputSpan(srcIn: Int, srcOut: Int,
+                           intervals: [(srcIn: Int, srcOut: Int, speed: Double)]) -> (start: Double, end: Double)? {
         var acc = 0
         var found: (Int, Int)? = nil
-        for iv in keptIntervalsWithSpeed {
+        for iv in intervals {
             let a = max(iv.srcIn, srcIn), b = min(iv.srcOut, srcOut)
             let outLen = outputFrames(iv.srcOut - iv.srcIn, speed: iv.speed)
             if b > a {

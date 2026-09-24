@@ -10,7 +10,9 @@ import UIKit
 actor FilmstripCache {
     private let asset: AVAsset?
     private let generator: AVAssetImageGenerator?
-    private let cache = NSCache<NSNumber, UIImage>()
+    // NSCache is thread-safe; nonisolated so view bodies can read hits synchronously
+    // (ED-12: the cells no longer keep their own copies of every frame).
+    nonisolated(unsafe) private let cache = NSCache<NSNumber, UIImage>()
     private var inFlight: Set<Int> = []
 
     init(sourceURL: URL?) {
@@ -38,11 +40,19 @@ actor FilmstripCache {
     /// the loser stayed blank forever. Now peers WAIT for the winner's result.
     /// Generation uses the async image(at:) API (WWDC22 "Create a more responsive
     /// media app") instead of the synchronous copyCGImage.
+    /// A cache hit, synchronously (nil on a miss — call thumbnail(atSourceSecond:) to fill it).
+    nonisolated func cachedThumbnail(atSourceSecond sec: Double) -> UIImage? {
+        cache.object(forKey: NSNumber(value: Int(sec.rounded())))
+    }
+
     func thumbnail(atSourceSecond sec: Double) async -> UIImage? {
         guard let generator else { return nil }
         let key = Int(sec.rounded())
         if let img = cache.object(forKey: NSNumber(value: key)) { return img }
         while inFlight.contains(key) {
+            // A cancelled waiter must leave: Task.sleep throws immediately once cancelled,
+            // so without this check the loop spun hot until the winner finished.
+            if Task.isCancelled { return nil }
             try? await Task.sleep(nanoseconds: 40_000_000)
             if let img = cache.object(forKey: NSNumber(value: key)) { return img }
         }
@@ -57,13 +67,16 @@ actor FilmstripCache {
         return img
     }
 
-    /// Warm tier-0 thumbnails across the whole source (fire and forget).
+    /// Warm tier-0 thumbnails across the whole source (cancellable). ED-12: never more than
+    /// ~36 frames — a 10-minute take no longer queues 120 decodes that crowd the cache.
     func warm(durationSeconds: Double, everySeconds: Double = 5) async {
         guard generator != nil, durationSeconds > 0 else { return }
+        let stride = FilmstripDensity.warmStride(durationSeconds: durationSeconds, minimum: everySeconds)
         var t = 0.0
         while t < durationSeconds {
+            if Task.isCancelled { return }
             _ = await thumbnail(atSourceSecond: t)
-            t += everySeconds
+            t += stride
         }
     }
 }

@@ -10,6 +10,8 @@ import PhotosUI
 struct ProEditorView: View {
     @Environment(AppStore.self) var store
     @Environment(\.dismiss) var dismiss
+    // ED-2: the unsaved draft is flushed to disk whenever the app leaves the foreground.
+    @Environment(\.scenePhase) private var scenePhase
     let clip: Clip
 
     enum Phase: Equatable { case loading, editing, applying, rendering, failed(String) }
@@ -49,6 +51,7 @@ struct ProEditorView: View {
     @State var renderStartedAt: Date?
     @State var transient: String?
     @State var editorRecoverable = false        // gone job + local footage → offer re-create
+    @State var loadRetryable = false            // ED-11: offline/5xx/not-ready → offer Try again
     @State var showMusicSheet = false
     @State var showTextCardAlert = false
     @State var editDraft = ""
@@ -86,18 +89,23 @@ struct ProEditorView: View {
     @State var showCaptionCustomize = false
     @State var showFilterAdvanced = false
     // FP1: canvas gestures — live drafts for caption drag/pinch + sticker drag/pinch.
-    @State var capDragY: Double? = nil
-    @State var capPinch: Double? = nil
+    // ED-8: every transient gesture visual is @GestureState, which the system resets when a
+    // gesture ends OR is CANCELLED (scroll steal, incoming call, system edge swipe). The old
+    // @State copies were cleared only in onEnded, so a cancelled gesture stranded the canvas
+    // mid-drag. Commits recompute from the gesture's final value in onEnded; side effects
+    // live in body-level .onChange (the reorder-lift pattern in EditorTimeline).
+    @GestureState var capDragY: Double? = nil
+    @GestureState var capPinch: Double? = nil
     // v6 direct manipulation of a b-roll inset on the canvas: tap selects, drag moves,
     // pinch resizes; the live rect (normalized) previews until the gesture commits.
     @State var selectedRoll: Int? = nil
-    @State var rollLiveRect: CGRect? = nil
-    @State var stickerDrag: (idx: Int, x: Double, y: Double)? = nil
-    @State var stickerPinch: (idx: Int, scale: Double)? = nil
+    @GestureState var rollLiveRect: CGRect? = nil
+    @GestureState var stickerDrag: (idx: Int, x: Double, y: Double)? = nil
+    @GestureState var stickerPinch: (idx: Int, scale: Double)? = nil
     // FP1b: the VIDEO itself is canvas-interactable — tap selects the clip under the
     // playhead, drag repositions it, pinch zooms it (CapCut preview transform).
-    @State var videoDrag: (seg: Int, x: Double, y: Double)? = nil
-    @State var videoPinch: (seg: Int, scale: Double)? = nil
+    @GestureState var videoDrag: (seg: Int, x: Double, y: Double)? = nil
+    @GestureState var videoPinch: (seg: Int, scale: Double)? = nil
     // FP1c: media rolls — selection, the add-media panel, photo/video import.
     @State var selectedBroll: Int? = nil
     @State var showMediaPanel = false
@@ -125,6 +133,25 @@ struct ProEditorView: View {
     // R10: keyboard-first text — the sticker index being live-typed (bound TextField).
     @State var typingSticker: Int? = nil
     @FocusState var stickerFieldFocused: Bool
+    // ED-2: per-job draft persistence (the op log survives an app kill) + ED-1: a failed
+    // Save keeps the user editing with an inline reason and, when it can help, Retry.
+    @State var draftAutosaver: EditorDraftAutosaver? = nil
+    @State var saveError: EditorSaveNotice? = nil
+    // Set after a failure that may have landed server-side (transport drop, 5xx): the next
+    // attempt re-reads the job and refuses to re-send onto a base that moved.
+    @State var saveNeedsBaseCheck = false
+    // ED-9: ops the server refused at Save — acknowledged before the editor closes, since
+    // the render will differ from the preview.
+    @State var saveReport: EditorSaveReport? = nil
+    // ED-3: a theme picked while edits are unsaved waits here for the keep-edits confirm.
+    @State var pendingThemeId: String? = nil
+    // Outlives teardown (a reference box): the retheme poll checks it before reloading, so
+    // a render finishing after the editor closed never spins up a player nobody sees.
+    @State var lifetime = EditorLifetime()
+    // ED-12: the filmstrip warm-up, cancelled on reload/close (it used to run to the end).
+    @State var filmstripWarm: Task<Void, Never>? = nil
+    // ED-5: phrases/strips memoized per draft revision (not rebuilt per body pass).
+    @State private var phraseMemo = CaptionPhraseMemo()
 
     struct WordSpan: Identifiable { var id: Int { startFrame }; let text: String; let startFrame: Int; let endFrame: Int }
 
@@ -158,7 +185,29 @@ struct ProEditorView: View {
         .preferredColorScheme(.dark)
         .marqueConfirm($confirmDiscard, title: "Discard your edits?",
                        message: "You have unsaved changes. Save re-cuts the clip; discarding loses them.",
-                       confirm: "Discard edits", destructive: true, cancel: "Keep editing") { dismiss() }
+                       confirm: "Discard edits", destructive: true, cancel: "Keep editing") {
+            draftAutosaver?.close()          // ED-2: a confirmed discard deletes the saved draft too
+            dismiss()
+        }
+        // ED-9: one required acknowledgement (no Cancel, no scrim dismiss), then close.
+        .overlay {
+            if let r = saveReport {
+                MarqueDialogCard(title: r.title, message: r.message,
+                                 actions: [MarqueDialogAction("Done") { dismiss() }],
+                                 dismiss: { saveReport = nil })
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("editorPro.save.skipped")
+                    .zIndex(999)
+            }
+        }
+        // ED-3: a retheme reloads the clip from the server — with unsaved edits, ask first;
+        // the edits ride across the reload in the on-disk draft and replay on the new look.
+        .marqueConfirm(Binding(get: { pendingThemeId != nil }, set: { if !$0 { pendingThemeId = nil } }),
+                       title: "Apply the theme and keep your edits?",
+                       message: "The theme re-renders your clip first. Your unsaved edits stay in the editor on top of it, ready to save.",
+                       confirm: "Apply theme", cancel: "Cancel") {
+            if let id = pendingThemeId { retheme(to: id, keepingEdits: true) }
+        }
         // Dialogs + sheets live on the ROOT, not modeToolbar — the toolbar swaps out while the
         // caption list is open (dialog would never render), and an .overlay hosted by a 64pt
         // view clips its accessibility/hit-testing to that frame.
@@ -177,9 +226,25 @@ struct ProEditorView: View {
         .onChange(of: mediaPickerItem) { _, item in
             if let item { Task { await importRollMedia(item) } }
         }
-        .task { await load() }
+        // ED-15: the Stock-clip dialog consumes a pending Replace on "Add" (the action runs
+        // before the dismissal); a Cancel must clear it too.
+        .onChange(of: showStockInput) { _, shown in
+            if !shown { replacingRoll = nil }
+        }
+        // Load once per editor. A .fullScreenCover (our own fullscreen preview) can report this
+        // view as disappeared/re-appeared, which re-runs .task — a second load() would replace
+        // the live session mid-edit.
+        .task { if session == nil, phase == .loading { await load() } }
         .onChange(of: phase) { _, p in
             if p == .editing { maybeHint("tapClip", icon: "hand.tap", text: "Tap a clip to select it") }
+        }
+        // ED-2: every committed gesture / undo / redo re-stamps the on-disk draft (debounced);
+        // an empty op log deletes it.
+        .onChange(of: session?.revision) { _, _ in
+            if let session { draftAutosaver?.schedule(session.opLog) }
+        }
+        .onChange(of: scenePhase) { _, p in
+            if p != .active { draftAutosaver?.flush() }
         }
         .onChange(of: rootPanel) { _, p in
             // The filter cards' representative frame loads lazily on first entry to Filters —
@@ -193,7 +258,19 @@ struct ProEditorView: View {
         .onChange(of: stickerFieldFocused) { _, focused in
             if !focused, let idx = typingSticker { commitTyping(idx) }
         }
+        // ED-8: dragging an unselected sticker selects it — a side effect, so it hangs off
+        // the auto-resetting gesture state here instead of running inside the gesture.
+        .onChange(of: stickerDrag?.idx) { _, idx in
+            if let idx, selectedOverlay != idx { select(.overlay(idx)) }
+        }
+        .onAppear { lifetime.visible = true }
         .onDisappear {
+            // Our own fullscreen preview covering the editor is not a dismissal: never tear the
+            // player down (or cancel work) under it.
+            guard !showFullscreen else { return }
+            lifetime.visible = false
+            filmstripWarm?.cancel()
+            draftAutosaver?.flush()          // ED-2: whatever was pending reaches disk
             // #47: do NOT cancel a save that's already committing/rendering. Once Save
             // fires, applyTask owns the server commit + render poll and writes the result
             // back to the STORE (which outlives this view) via applyTweakResult — so the
@@ -294,8 +371,10 @@ struct ProEditorView: View {
     /// changes the delivered video and re-renders. Kept in lockstep so the button label
     /// ("Render" vs "Save") never lies about what the tap actually costs.
     var saveNeedsRender: Bool {
-        guard let ops = session?.flattenedOps(), !ops.isEmpty else { return false }
-        return !ops.allSatisfy { ($0["type"] as? String) == "split_segment" }
+        // ED-5: answered from the op types — flattenedOps() serialized the whole log to
+        // JSON dicts on every body pass.
+        guard let session, session.isDirty else { return false }
+        return !session.onlySplits
     }
 
     // MARK: editing layout
@@ -304,6 +383,7 @@ struct ProEditorView: View {
         VStack(spacing: 0) {
             playerSurface                       // flexes to fill; keeps the toolbar pinned bottom
             if let t = transient { transientBar(t) }
+            if let e = saveError { saveErrorBar(e) }
             if showCaptionList {
                 // CapCut pattern: the caption list replaces the timeline pane inline —
                 // a system sheet here is invisible to accessibility/automation.
@@ -336,9 +416,10 @@ struct ProEditorView: View {
     private var transportRow: some View {
         VStack(spacing: 0) {
             HStack(spacing: Space.lg) {
-                Text(timeReadout).font(AppFont.caption.monospacedDigit())
-                    .foregroundStyle(Palette.textSecondary)
-                    .lineLimit(1)
+                // ED-5: a leaf that observes the player itself — reading the 30 Hz playhead
+                // here, in the editor's body, re-evaluated the WHOLE editor (and EditorTimeline
+                // with its ~15 closure props) every frame of playback.
+                TransportTimeReadout(player: player)
                     .accessibilityIdentifier("editorPro.timeReadout")
                 Spacer()
                 // Stoic circular control: the one filled (ink) circle on the strip.
@@ -351,23 +432,36 @@ struct ProEditorView: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
+                .accessibilityLabel((player?.isPlaying ?? false) ? "Pause" : "Play")
                 .accessibilityIdentifier("editorPro.playPause")
                 Spacer()
-                Button { doUndo() } label: { transportGlyph("arrow.uturn.backward") }
+                HStack(spacing: Space.sm) {
+                    Button { doUndo() } label: { transportGlyph("arrow.uturn.backward") }
+                        .buttonStyle(PressableStyle(dim: 0.6))
+                        .disabled(!(session?.canUndo ?? false))
+                        .opacity((session?.canUndo ?? false) ? 1 : 0.35)
+                        .accessibilityLabel("Undo")
+                        .accessibilityIdentifier("editorPro.undo")
+                    Button { doRedo() } label: { transportGlyph("arrow.uturn.forward") }
+                        .buttonStyle(PressableStyle(dim: 0.6))
+                        .disabled(!(session?.canRedo ?? false))
+                        .opacity((session?.canRedo ?? false) ? 1 : 0.35)
+                        .accessibilityLabel("Redo")
+                        .accessibilityIdentifier("editorPro.redo")
+                    // Build 69's visible backup for pinch-zoom (fit → default → close). SE sweep
+                    // F2: it lived in the timeline's top-right corner, over the clip lane — right
+                    // where the last clip's trailing trim handle is grabbed. The strip is its home.
+                    Button { cycleZoom() } label: { transportGlyph("plus.magnifyingglass") }
+                        .buttonStyle(PressableStyle(dim: 0.6))
+                        .accessibilityLabel("Zoom timeline")
+                        .accessibilityIdentifier("editorPro.zoomCycle")
+                    Button { player?.pause(); showFullscreen = true } label: {
+                        transportGlyph("arrow.up.left.and.arrow.down.right")
+                    }
                     .buttonStyle(PressableStyle(dim: 0.6))
-                    .disabled(!(session?.canUndo ?? false))
-                    .opacity((session?.canUndo ?? false) ? 1 : 0.35)
-                    .accessibilityIdentifier("editorPro.undo")
-                Button { doRedo() } label: { transportGlyph("arrow.uturn.forward") }
-                    .buttonStyle(PressableStyle(dim: 0.6))
-                    .disabled(!(session?.canRedo ?? false))
-                    .opacity((session?.canRedo ?? false) ? 1 : 0.35)
-                    .accessibilityIdentifier("editorPro.redo")
-                Button { player?.pause(); showFullscreen = true } label: {
-                    transportGlyph("arrow.up.left.and.arrow.down.right")
+                    .accessibilityLabel("Full screen preview")
+                    .accessibilityIdentifier("editorPro.fullscreen")
                 }
-                .buttonStyle(PressableStyle(dim: 0.6))
-                .accessibilityIdentifier("editorPro.fullscreen")
             }
             .padding(.horizontal, Space.screenH).frame(height: 32)
         }
@@ -399,6 +493,8 @@ struct ProEditorView: View {
                                 if editing { musicVolDraft = session?.draft.music?.volume ?? 0.15 }
                                 else { setMusicVolume(musicVolDraft) }
                             }).frame(width: 120).tint(Palette.textPrimary)
+                                .accessibilityLabel("Music volume")
+                                .accessibilityIdentifier("editorPro.musicPanelVolume")
                                 .onAppear { musicVolDraft = session?.draft.music?.volume ?? 0.15 }
                         }
                     }
@@ -504,15 +600,19 @@ struct ProEditorView: View {
     }
 
     /// Filters tools: the Theme sheet (one-tap coherent look — captions+grade+music) plus an
-    /// "Advanced" toggle that reveals the manual Adjust knobs. Keeps the idle Filters tab tidy.
+    /// "Advanced" chip that opens the manual Adjust knobs. Keeps the idle Filters tab tidy.
     private var filterToolsRow: some View {
         HStack(spacing: Space.sm) {
             if !themes.isEmpty {
                 optChip("Theme", active: !activeThemeId.isEmpty) { showThemeSheet = true }
                     .accessibilityIdentifier("editorPro.themeButton")
             }
-            optChip("Advanced", active: showFilterAdvanced) {
-                withAnimation(.easeOut(duration: 0.15)) { showFilterAdvanced.toggle() }
+            // ED-16: it toggled a flag nothing read. "Advanced" = the manual knobs, which live
+            // on the Look panel's Adjust tab since build 69 — take the user there.
+            optChip("Advanced", active: lookTab == 1) {
+                showFilterAdvanced = true
+                withAnimation(.easeOut(duration: 0.15)) { lookTab = 1 }
+                bumpHaptic()
             }
             .accessibilityIdentifier("editorPro.filterAdvanced")
             Spacer(minLength: 0)
@@ -593,13 +693,17 @@ struct ProEditorView: View {
 
     /// Build 69: sticker Style — color chips, background pill toggle, font chips.
     /// Every knob commits through the same edit_overlay op the server applies on Save.
+    /// ED-6: every value here is one the server accepts (edl.py edit_overlay): colours go
+    /// out as "#RRGGBB", the background toggles none/box, fonts are inter|archivo|baloo —
+    /// the old bare-hex / "111111" / "serif" values were silently dropped at Save.
     private func stickerStyleRow(_ i: Int) -> some View {
         let o = session?.draft.overlays[safe: i]
+        let current = EditorHex.parse(o?.color ?? "#FFFFFF")?.rgb ?? 0xFFFFFF
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Space.sm) {
                 ForEach(["FFFFFF", "FFD60A", "111111", "FF3B30", "0A84FF"], id: \.self) { hex in
-                    let active = (o?.color ?? "FFFFFF").replacingOccurrences(of: "#", with: "").uppercased() == hex
-                    Button { mutate([.editSticker(index: i, color: hex)]); bumpHaptic() } label: {
+                    let active = current == (UInt(hex, radix: 16) ?? 0)
+                    Button { mutate([.editSticker(index: i, color: "#" + hex)]); bumpHaptic() } label: {
                         Circle().fill(Color(hex: UInt(hex, radix: 16) ?? 0xFFFFFF))
                             .frame(width: 24, height: 24)
                             // Swatch fill = the user's render color (content); ring = monochrome selection.
@@ -610,15 +714,19 @@ struct ProEditorView: View {
                     .accessibilityIdentifier("editorPro.sticker.color.\(hex)")
                 }
                 optDivider
-                let hasBg = (o?.bg ?? "none") != "none" && !(o?.bg ?? "").isEmpty
+                let hasBg = o?.bg == "box"
                 optChip("Background", active: hasBg) {
-                    mutate([.editSticker(index: i, bg: hasBg ? "none" : "111111")]); bumpHaptic()
+                    mutate([.editSticker(index: i, bg: hasBg ? "none" : "box")]); bumpHaptic()
                 }
                 .accessibilityIdentifier("editorPro.sticker.bg")
                 optDivider
-                ForEach(["inter", "archivo", "serif"], id: \.self) { f in
-                    optChip(f.capitalized, active: (o?.font ?? "inter") == f) {
-                        mutate([.editSticker(index: i, font: f)]); bumpHaptic()
+                // (label, automation id suffix, wire font). The third chip keeps its
+                // `serif` id, but no serif face ships in the renderer — it is the rounded
+                // Baloo face, labelled for what it renders.
+                ForEach([("Inter", "inter", "inter"), ("Archivo", "archivo", "archivo"),
+                         ("Round", "serif", "baloo")], id: \.1) { label, f, font in
+                    optChip(label, active: (o?.font ?? "inter") == font) {
+                        mutate([.editSticker(index: i, font: font)]); bumpHaptic()
                     }
                     .accessibilityIdentifier("editorPro.sticker.font.\(f)")
                 }
@@ -819,10 +927,12 @@ struct ProEditorView: View {
         .accessibilityIdentifier("editorPro.capAccent.\(hex ?? "default")")
     }
 
+    /// "#RRGGBB" / "#RRGGBBAA" (with or without '#') → Color. ED-6: the old version dropped
+    /// the first character unconditionally (white "FFFFFF" previewed as cyan) and pushed a
+    /// pill's alpha byte into the blue channel.
     func colorFromHex(_ hex: String) -> Color {
-        var v: UInt64 = 0
-        Scanner(string: String(hex.dropFirst())).scanHexInt64(&v)
-        return Color(hex: UInt(v))
+        guard let p = EditorHex.parse(hex) else { return .white }
+        return Color(hex: p.rgb, alpha: p.alpha)
     }
 
     private func drawerButton(_ label: String, _ icon: String, active: Bool = false, _ action: @escaping () -> Void) -> some View {
@@ -830,6 +940,7 @@ struct ProEditorView: View {
             // Stoic chip: surface + hairline capsule; selected inverts to ink/onInk.
             HStack(spacing: 6) {
                 Image(systemName: icon).font(.system(size: 13, weight: .regular))
+                    .accessibilityHidden(true)
                 Text(label).font(AppFont.caption.weight(.semibold)).lineLimit(1)
             }
                 .foregroundStyle(active ? Palette.onInk : Palette.textPrimary)
@@ -850,6 +961,10 @@ struct ProEditorView: View {
         ZStack {
             // Video + captions scale together during a punch-in window (L1 preview of the
             // rendered zoom); the play/time controls below stay unscaled.
+            // ED-5: everything on the canvas that follows the playhead (captions, stickers,
+            // rolls, cards, punch-in scale, transitions, the playhead clip's transform) is
+            // built INSIDE this leaf, so the 30 Hz tick invalidates the canvas only.
+            PlayheadReader(player: player) {
             GeometryReader { outerGeo in
             // v6 canvas-fidelity: the composition is EXACTLY 9:16 (1080×1920); the canvas
             // must be too, or every overlay (captions, rolls, stickers) lands at a
@@ -933,6 +1048,7 @@ struct ProEditorView: View {
             .frame(width: canvasSize.width, height: canvasSize.height)
             .clipped()
             .position(x: outerGeo.size.width / 2, y: outerGeo.size.height / 2)
+            }
             }
             // R10: play/time controls moved to the transport strip (CapCut keeps the
             // picture clean); a toast surfaces mid-canvas for undo/redo/completion.
@@ -1123,35 +1239,40 @@ struct ProEditorView: View {
     /// Drag the selected clip around the canvas → one set_segment_transform op.
     private func videoCanvasDrag(_ size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 4)
-            .onChanged { g in
-                guard let idx = clipUnderPlayhead, selectedSeg == idx,
-                      let seg = session?.draft.segments[safe: idx] else { return }
-                videoDrag = (idx,
-                             min(0.5, max(-0.5, seg.txX + g.translation.width / max(1, size.width))),
-                             min(0.5, max(-0.5, seg.txY + g.translation.height / max(1, size.height))))
+            .updating($videoDrag) { g, live, _ in live = videoDragTarget(g.translation, in: size) }
+            .onEnded { g in
+                if let d = videoDragTarget(g.translation, in: size) {
+                    commitVideoTransform(d.seg, offX: d.x, offY: d.y); bumpHaptic()
+                }
             }
-            .onEnded { _ in
-                if let d = videoDrag { commitVideoTransform(d.seg, offX: d.x, offY: d.y); bumpHaptic() }
-                videoDrag = nil
-            }
+    }
+
+    /// Where a canvas drag puts the playhead clip — nil unless that clip is selected.
+    private func videoDragTarget(_ t: CGSize, in size: CGSize) -> (seg: Int, x: Double, y: Double)? {
+        guard let idx = clipUnderPlayhead, selectedSeg == idx,
+              let seg = session?.draft.segments[safe: idx] else { return nil }
+        return (idx,
+                min(0.5, max(-0.5, seg.txX + t.width / max(1, size.width))),
+                min(0.5, max(-0.5, seg.txY + t.height / max(1, size.height))))
     }
 
     /// Pinch the selected clip to zoom it → one set_segment_transform op.
     private func videoCanvasPinch() -> some Gesture {
         MagnificationGesture()
-            .onChanged { v in
-                guard let idx = clipUnderPlayhead, selectedSeg == idx,
-                      let seg = session?.draft.segments[safe: idx] else { return }
-                videoPinch = (idx, min(3.0, max(0.5, seg.txScale * v)))
-            }
-            .onEnded { _ in
-                if let p = videoPinch { commitVideoTransform(p.seg, scale: p.scale); bumpHaptic() }
-                videoPinch = nil
+            .updating($videoPinch) { v, live, _ in live = videoPinchTarget(v) }
+            .onEnded { v in
+                if let p = videoPinchTarget(v) { commitVideoTransform(p.seg, scale: p.scale); bumpHaptic() }
             }
     }
 
-    private var timeReadout: String {
-        let cur = player?.currentOutputTime ?? 0, tot = player?.totalOutputTime ?? 0
+    private func videoPinchTarget(_ v: CGFloat) -> (seg: Int, scale: Double)? {
+        guard let idx = clipUnderPlayhead, selectedSeg == idx,
+              let seg = session?.draft.segments[safe: idx] else { return nil }
+        return (idx, min(3.0, max(0.5, seg.txScale * v)))
+    }
+
+    /// "m:ss / m:ss" — the transport readout's text (rendered by TransportTimeReadout).
+    static func timeReadout(current cur: Double, total tot: Double) -> String {
         func fmt(_ s: Double) -> String { String(format: "%d:%02d", Int(s) / 60, Int(s) % 60) }
         return "\(fmt(cur)) / \(fmt(tot))"
     }
@@ -1160,27 +1281,43 @@ struct ProEditorView: View {
 
     func doUndo() {
         guard let t = session?.undo() else { return }
+        let named = session?.lastStepLabel
         // An undo can remove the selected object (or the values an open expansion edits) —
         // clear EVERYTHING selection-shaped so the toolbar never shows a dead vocabulary.
         select(nil)
         refreshPlayer()
-        showToast("Undo: \(opDisplayName(t))")
+        syncDraftDerivedState()
+        showToast("Undo: \(named ?? opDisplayName(t))")
     }
 
     func doRedo() {
         guard let t = session?.redo() else { return }
+        let named = session?.lastStepLabel
         select(nil)
         refreshPlayer()
-        showToast("Redo: \(opDisplayName(t))")
+        syncDraftDerivedState()
+        showToast("Redo: \(named ?? opDisplayName(t))")
+    }
+
+    /// ED-7: view state that MIRRORS the draft — the captions toggle and the slider drafts —
+    /// must follow it whenever the draft is swapped wholesale (undo, redo, a restored draft).
+    /// Undoing "Captions off" used to bring the captions back on the canvas while the lane
+    /// and the Captions panel still said off.
+    func syncDraftDerivedState() {
+        guard let d = session?.draft else { return }
+        captionsOn = !d.captions.isEmpty     // the backend's model: captions on ⇔ non-empty
+        filterIntensityDraft = d.look.intensity
+        musicVolDraft = d.music?.volume ?? 0.15
+        capSizeDraft = nil
     }
 
     /// A capsule toast over the canvas (CapCut's "Undo: Split" pattern), auto-dismissed.
-    func showToast(_ msg: String) {
+    func showToast(_ msg: String, seconds: Double = 1.5) {
         withAnimation(.easeOut(duration: 0.15)) { toast = msg }
         toastTick += 1
         let mine = toastTick
         Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             if toastTick == mine { withAnimation(.easeOut(duration: 0.2)) { toast = nil } }
         }
     }
@@ -1303,7 +1440,12 @@ struct ProEditorView: View {
             HStack {
                 Text("add media.").font(AppFont.title3).foregroundStyle(Palette.textPrimary)
                 Spacer()
-                Button { withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false } } label: {
+                Button {
+                    // ED-15: a cancelled Replace must not leave the roll marked — the NEXT
+                    // "add media" used to silently replace it instead of adding.
+                    replacingRoll = nil
+                    withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
+                } label: {
                     Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                         .padding(.horizontal, Space.md).padding(.vertical, 8)
                         .contentShape(Rectangle())
@@ -1334,6 +1476,7 @@ struct ProEditorView: View {
                 .accessibilityIdentifier("editorPro.media.stock")
                 DSRowDivider(inset: Space.rowPad + 24 + Space.md)
                 Button {
+                    replacingRoll = nil                // ED-15: music never replaces a roll
                     withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
                     showMusicSheet = true
                 } label: {
@@ -1363,6 +1506,7 @@ struct ProEditorView: View {
         HStack(spacing: Space.md) {
             Image(systemName: icon).font(.system(size: 18, weight: .regular)).foregroundStyle(Palette.textPrimary)
                 .frame(width: 24)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                 Text(subtitle).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
@@ -1396,7 +1540,10 @@ struct ProEditorView: View {
                         CGRect(x: $0.minX * geo.size.width, y: $0.minY * geo.size.height,
                                width: $0.width * geo.size.width, height: $0.height * geo.size.height)
                     } ?? baseRect
-                    let selected = selectedRoll == idx
+                    // FT-3: one selection system — a roll picked on the timeline is live on the
+                    // canvas too, and a canvas tap goes through select() so the toolbar swaps
+                    // to the roll's verbs (Replace/Delete were unreachable from the canvas).
+                    let selected = selectedRoll == idx || selectedBroll == idx
                     let framed = roll.mode != "full" || rollLiveRect != nil
                     let radius = framed ? 20 * geo.size.width / 1080 : 0
                     let interactive = rollFill(roll)
@@ -1411,38 +1558,39 @@ struct ProEditorView: View {
                                 radius: framed ? 12 : 0, y: framed ? 6 : 0)
                         .position(x: rect.midX, y: rect.midY)
                         .contentShape(Rectangle().path(in: rect))
-                        .onTapGesture { selectedRoll = selected ? nil : idx }
+                        .onTapGesture {
+                            if selected { select(nil) } else { select(.broll(idx)); selectedRoll = idx }
+                        }
                         .accessibilityIdentifier("editorPro.rollSim")
                     if selected {
                         interactive
+                            // Translation is total-from-gesture-start, so it applies to the
+                            // COMMITTED base rect, never the live one.
                             .highPriorityGesture(DragGesture(minimumDistance: 3)
-                                .onChanged { g in
-                                    // Translation is total-from-gesture-start, so apply it
-                                    // to the COMMITTED base rect, never the live one.
-                                    let start = Self.normRect(baseRect, in: geo.size)
-                                    var r = start
-                                    r.origin.x = min(1 - r.width, max(0, start.minX + g.translation.width / max(1, geo.size.width)))
-                                    r.origin.y = min(1 - r.height, max(0, start.minY + g.translation.height / max(1, geo.size.height)))
-                                    rollLiveRect = r
+                                .updating($rollLiveRect) { g, live, _ in
+                                    live = Self.rollMoved(Self.normRect(baseRect, in: geo.size),
+                                                          by: g.translation, in: geo.size)
                                 }
-                                .onEnded { _ in commitRollRect(idx) })
+                                .onEnded { g in
+                                    let start = Self.normRect(baseRect, in: geo.size)
+                                    commitRollRect(idx, Self.rollMoved(start, by: g.translation, in: geo.size), from: start)
+                                })
                             .simultaneousGesture(MagnificationGesture()
-                                .onChanged { v in
-                                    let start = Self.normRect(baseRect, in: geo.size)
-                                    let w = min(1.0, max(0.15, start.width * v))
-                                    let h = min(1.0, max(0.1, start.height * v))
-                                    let cx = start.midX, cy = start.midY
-                                    rollLiveRect = CGRect(x: min(1 - w, max(0, cx - w / 2)),
-                                                          y: min(1 - h, max(0, cy - h / 2)),
-                                                          width: w, height: h)
+                                .updating($rollLiveRect) { v, live, _ in
+                                    live = Self.rollScaled(Self.normRect(baseRect, in: geo.size), by: v)
                                 }
-                                .onEnded { _ in commitRollRect(idx) })
+                                .onEnded { v in
+                                    let start = Self.normRect(baseRect, in: geo.size)
+                                    commitRollRect(idx, Self.rollScaled(start, by: v), from: start)
+                                })
                     } else {
                         interactive
                     }
                 }
+                // (The live rect needs no reset here: a gesture on a view that leaves the
+                // hierarchy is cancelled, and @GestureState resets itself.)
                 .onChange(of: f >= roll.srcOut || f < roll.srcIn) { _, gone in
-                    if gone { selectedRoll = nil; rollLiveRect = nil }
+                    if gone { selectedRoll = nil }
                 }
             }
         }
@@ -1453,10 +1601,31 @@ struct ProEditorView: View {
                width: r.width / max(1, size.width), height: r.height / max(1, size.height))
     }
 
-    private func commitRollRect(_ idx: Int) {
-        guard let r = rollLiveRect else { return }
+    /// A roll dragged by `t` (points), kept inside the frame (normalized rect).
+    private static func rollMoved(_ start: CGRect, by t: CGSize, in size: CGSize) -> CGRect {
+        var r = start
+        r.origin.x = min(1 - r.width, max(0, start.minX + t.width / max(1, size.width)))
+        r.origin.y = min(1 - r.height, max(0, start.minY + t.height / max(1, size.height)))
+        return r
+    }
+
+    /// A roll pinched by `v` about its center, kept inside the frame (normalized rect).
+    private static func rollScaled(_ start: CGRect, by v: CGFloat) -> CGRect {
+        let w = min(1.0, max(0.15, start.width * v))
+        let h = min(1.0, max(0.1, start.height * v))
+        return CGRect(x: min(1 - w, max(0, start.midX - w / 2)),
+                      y: min(1 - h, max(0, start.midY - h / 2)),
+                      width: w, height: h)
+    }
+
+    private func commitRollRect(_ idx: Int, _ r: CGRect, from start: CGRect) {
+        // Media sweep: a gesture that leaves the rect where it was (a full-frame roll can't
+        // move at all) is not an edit — set_broll_rect anyway dirtied the session, forced a
+        // re-render and turned a full-frame roll into a framed card.
+        let eps = 0.002
+        guard abs(r.minX - start.minX) > eps || abs(r.minY - start.minY) > eps
+                || abs(r.width - start.width) > eps || abs(r.height - start.height) > eps else { return }
         mutate([.brollRect(index: idx, x: r.minX, y: r.minY, w: r.width, h: r.height)])
-        rollLiveRect = nil
         bumpHaptic()
     }
 
@@ -1555,25 +1724,18 @@ struct ProEditorView: View {
         .shadow(radius: o.bg == "box" ? 0 : 3)
         .rotationEffect(.degrees(o.rotation))
         .position(x: liveX * geo.width, y: liveY * geo.height)
+        // (Dragging an unselected sticker selects it via the body-level onChange.)
         .highPriorityGestureIf(!typing,
             DragGesture(minimumDistance: 2)
-                .onChanged { g in
-                    stickerDrag = (idx,
-                                   min(LayoutConstants.stickerPosXMax, max(LayoutConstants.stickerPosXMin, o.posX + g.translation.width / max(1, geo.width))),
-                                   min(LayoutConstants.stickerPosYMax, max(LayoutConstants.stickerPosYMin, o.posY + g.translation.height / max(1, geo.height))))
-                    if selectedOverlay != idx { select(.overlay(idx)) }
-                }
-                .onEnded { _ in
-                    if let s = stickerDrag, s.idx == idx { commitStickerMove(idx, x: s.x, y: s.y) }
-                    stickerDrag = nil
+                .updating($stickerDrag) { g, live, _ in live = Self.stickerMoved(idx, o, by: g.translation, in: geo) }
+                .onEnded { g in
+                    let s = Self.stickerMoved(idx, o, by: g.translation, in: geo)
+                    commitStickerMove(idx, x: s.x, y: s.y)
                 })
         .simultaneousGestureIf(!typing,
             MagnificationGesture()
-                .onChanged { v in stickerPinch = (idx, min(3.0, max(0.4, o.scale * v))) }
-                .onEnded { _ in
-                    if let p = stickerPinch, p.idx == idx { commitStickerScale(idx, scale: p.scale) }
-                    stickerPinch = nil
-                })
+                .updating($stickerPinch) { v, live, _ in live = (idx, min(3.0, max(0.4, o.scale * v))) }
+                .onEnded { v in commitStickerScale(idx, scale: min(3.0, max(0.4, o.scale * v))) })
         .onTapGesture {
             if typing { return }
             select(selectedOverlay == idx ? nil : .overlay(idx))
@@ -1584,6 +1746,14 @@ struct ProEditorView: View {
         // own identifier.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("editorPro.sticker.\(idx)")
+    }
+
+    /// A sticker dragged by `t` (points), clamped to the safe band (normalized position).
+    private static func stickerMoved(_ idx: Int, _ o: EditorOverlay, by t: CGSize,
+                                     in geo: CGSize) -> (idx: Int, x: Double, y: Double) {
+        (idx,
+         min(LayoutConstants.stickerPosXMax, max(LayoutConstants.stickerPosXMin, o.posX + t.width / max(1, geo.width))),
+         min(LayoutConstants.stickerPosYMax, max(LayoutConstants.stickerPosYMin, o.posY + t.height / max(1, geo.height))))
     }
 
     /// The four corner controls on a selected sticker (CapCut/TikTok selection box).
@@ -1624,15 +1794,14 @@ struct ProEditorView: View {
             .contentShape(Rectangle().inset(by: -10))
             .highPriorityGesture(
                 DragGesture()
-                    .onChanged { g in
-                        let delta = (g.translation.width + g.translation.height) / 200.0
-                        stickerPinch = (idx, min(3.0, max(0.4, o.scale + delta)))
-                    }
-                    .onEnded { _ in
-                        if let p = stickerPinch, p.idx == idx { commitStickerScale(idx, scale: p.scale) }
-                        stickerPinch = nil
-                    })
+                    .updating($stickerPinch) { g, live, _ in live = (idx, Self.gripScale(o.scale, g.translation)) }
+                    .onEnded { g in commitStickerScale(idx, scale: Self.gripScale(o.scale, g.translation)) })
             .accessibilityIdentifier("editorPro.sticker.\(idx).resize")
+    }
+
+    /// Grip drag distance → sticker scale (down-right grows, up-left shrinks).
+    private static func gripScale(_ base: Double, _ t: CGSize) -> Double {
+        min(3.0, max(0.4, base + (t.width + t.height) / 200.0))
     }
 
     // MARK: caption + punch-in local sim (L1 fidelity)
@@ -1727,26 +1896,21 @@ struct ProEditorView: View {
                 .position(x: geo.size.width / 2, y: effY * geo.size.height)
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 3)
-                        .onChanged { g in
-                            let start = o.posY ?? discreteCaptionY(o.position)
-                            var y = start + g.translation.height / max(1, geo.size.height)
-                            // Snap to the three anchors (Edits' guide-line behavior).
-                            for anchor in LayoutConstants.captionAnchorY.values where abs(y - anchor) < 0.025 { y = anchor }
-                            capDragY = min(LayoutConstants.captionPosYMax, max(LayoutConstants.captionPosYMin, y))
+                        .updating($capDragY) { g, live, _ in
+                            live = Self.captionDragY(from: o.posY ?? discreteCaptionY(o.position),
+                                                     dy: g.translation.height, height: geo.size.height)
                         }
-                        .onEnded { _ in
-                            if let y = capDragY { commitCaptionPosY(y); bumpHaptic() }
-                            capDragY = nil
+                        .onEnded { g in
+                            commitCaptionPosY(Self.captionDragY(from: o.posY ?? discreteCaptionY(o.position),
+                                                                dy: g.translation.height, height: geo.size.height))
+                            bumpHaptic()
                         })
                 .simultaneousGesture(
                     MagnificationGesture()
-                        .onChanged { v in
-                            let start = o.scale ?? discreteMult
-                            capPinch = min(2.0, max(0.5, start * v))
-                        }
-                        .onEnded { _ in
-                            if let s = capPinch { commitCaptionScale(s); bumpHaptic() }
-                            capPinch = nil
+                        .updating($capPinch) { v, live, _ in live = min(2.0, max(0.5, (o.scale ?? discreteMult) * v)) }
+                        .onEnded { v in
+                            commitCaptionScale(min(2.0, max(0.5, (o.scale ?? discreteMult) * v)))
+                            bumpHaptic()
                         })
                 // Guide line while snapped to an anchor (yellow safe-zone line, Edits-style)
                 .overlay {
@@ -1759,6 +1923,14 @@ struct ProEditorView: View {
                 }
             }
         }
+    }
+
+    /// A caption drag's landing Y: start + drag, snapped to the three anchors (Edits'
+    /// guide-line behavior), clamped to the safe band.
+    static func captionDragY(from start: Double, dy: CGFloat, height: CGFloat) -> Double {
+        var y = start + Double(dy / max(1, height))
+        for anchor in LayoutConstants.captionAnchorY.values where abs(y - anchor) < 0.025 { y = anchor }
+        return min(LayoutConstants.captionPosYMax, max(LayoutConstants.captionPosYMin, y))
     }
 
     /// L1 approximations of the render fonts (Inter / Archivo Black / Baloo 2 /
@@ -1815,7 +1987,7 @@ struct ProEditorView: View {
     /// The words visible at the playhead under the draft's grouping mode, plus which of
     /// them is the active one. nil during silences (UX-3) or before the first word.
     private func currentCaptionGroup(_ d: EditorDocument) -> (words: [String], activeInGroup: Int)? {
-        let srcFrame = secondsToFrame(d.sourceSeconds(forOutput: player?.currentOutputTime ?? 0))
+        let srcFrame = playheadSourceFrame      // (d is session.draft — same mapping, memoized)
         // Perf: binary search (captions are frame-sorted) — the linear lastIndex scan ran
         // 30x/s and spiked exactly at caption-group changes (the owner's playback hitch).
         guard let activeIdx = Self.lastIndexAtOrBefore(d.captions, frame: srcFrame) else { return nil }
@@ -1861,15 +2033,30 @@ struct ProEditorView: View {
 
     // (internal: +Actions' split-at-playhead reads it too)
     var playheadSourceFrame: Int {
-        guard let d = session?.draft else { return 0 }
-        return secondsToFrame(d.sourceSeconds(forOutput: player?.currentOutputTime ?? 0))
+        guard let session else { return 0 }
+        // ED-5: memoized kept intervals — this runs several times per 30 Hz frame.
+        return session.sourceFrame(forOutputSeconds: player?.currentOutputTime ?? 0)
     }
 
     // MARK: timeline
 
     /// Transcript words grouped into caption phrase clips; edited caption text wins.
+    /// ED-5: built once per edit (memoized on the session revision), not per body pass.
     var phrases: [CaptionPhrase] {
-        buildCaptionPhrases(words: words, captions: session?.draft.captions ?? [])
+        phraseMemo.refresh(session: session, words: words)
+        return phraseMemo.phrases
+    }
+
+    /// The phrases placed on the output timeline, for the caption lane (memoized with them).
+    var captionStrips: [CaptionStrip] {
+        phraseMemo.refresh(session: session, words: words)
+        return phraseMemo.strips
+    }
+
+    /// Where a phrase plays in the cut (seconds), nil when its footage is fully cut.
+    func phraseOutputStart(_ p: CaptionPhrase) -> Double? {
+        phraseMemo.refresh(session: session, words: words)
+        return phraseMemo.startByPhrase[p.id]
     }
 
     /// The music track's display name (catalog lookup by URL, filename fallback).
@@ -1919,6 +2106,7 @@ struct ProEditorView: View {
             player: player,
             filmstrip: filmstrip,
             pointsPerSecond: $pointsPerSecond,
+            fitPointsPerSecond: CGFloat(fitPPS),
             selectedSeg: selectedSeg,
             selectedOverlay: selectedOverlay,
             onTrim: { segIdx, edge, newFrame in trim(segIdx: segIdx, edge: edge, to: newFrame) },
@@ -1927,6 +2115,7 @@ struct ProEditorView: View {
             onTapOverlay: { i in select(selectedOverlay == i ? nil : .overlay(i)) },
             onTapBackground: { if anySelection { select(nil) } },
             phrases: phrases,
+            captionStrips: captionStrips,
             captionsOn: captionsOn,
             selectedPhraseID: selectedPhraseID,
             musicName: musicName,
@@ -1962,22 +2151,9 @@ struct ProEditorView: View {
         .frame(height: timelineHeight)
         .background(Palette.surface)
         // Build 69: the pinch-zoom gesture gets VISIBLE backup (Norman: invisible
-        // gestures fail) — a magnifier that cycles fit → default → close, plus a
-        // transient seconds-per-screen pill whenever the zoom level changes.
-        .overlay(alignment: .topTrailing) {
-            Button { cycleZoom() } label: {
-                Image(systemName: "plus.magnifyingglass")
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(Palette.textPrimary)
-                    .frame(width: 34, height: 30)
-                    .background(Capsule().fill(Palette.surfaceSunken))
-                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, 8).padding(.top, 2)
-            .accessibilityIdentifier("editorPro.zoomCycle")
-        }
+        // gestures fail) — the magnifier (now in the transport strip) cycles fit →
+        // default → close, plus a transient seconds-per-screen pill whenever the zoom
+        // level changes.
         .overlay(alignment: .top) {
             if let z = zoomPill {
                 Text(z).font(AppFont.micro.monospacedDigit())
@@ -1988,22 +2164,30 @@ struct ProEditorView: View {
                     .accessibilityIdentifier("editorPro.zoomPill")
             }
         }
-        .overlay(alignment: .top) { hintPill.offset(y: -34) }
+        // SE sweep F1: the hint floats over the transport strip for 4.5 s — tap-through, so
+        // it never swallows the first play/undo taps.
+        .overlay(alignment: .top) { hintPill.offset(y: -34).allowsHitTesting(false) }
         .onChange(of: pointsPerSecond) { _, pps in flashZoomPill(pps) }
+    }
+
+    /// ED-12: pt/s that fits the WHOLE cut across the timeline. It was clamped to ≥ 6 pt/s,
+    /// so "fit" topped out at ~55 s and a 10-minute take could never be seen whole.
+    private var fitPPS: Double {
+        TimelineZoom.fitPPS(viewportWidth: Double(UIScreen.main.bounds.width),
+                            totalSeconds: session?.draft.outputSeconds ?? 1)
     }
 
     /// Cycle fit-whole-video → default → close-up (the visible redundancy for pinch).
     private func cycleZoom() {
-        let total = max(1.0, session?.draft.outputSeconds ?? 1)
-        let fit = max(6, min(110, (UIScreen.main.bounds.width - 60) / total))
-        let next: CGFloat = pointsPerSecond < 17 ? 18 : (pointsPerSecond < 55 ? 60 : fit)
-        withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = next }
+        let next = TimelineZoom.nextCycleLevel(current: Double(pointsPerSecond), fit: fitPPS)
+        withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = CGFloat(next) }
         bumpHaptic()
     }
 
     private func flashZoomPill(_ pps: CGFloat) {
-        let visible = (UIScreen.main.bounds.width - 60) / max(6, pps)
-        withAnimation(.easeOut(duration: 0.15)) { zoomPill = String(format: "%.0fs across", visible) }
+        withAnimation(.easeOut(duration: 0.15)) {
+            zoomPill = TimelineZoom.acrossLabel(viewportWidth: Double(UIScreen.main.bounds.width), pps: Double(pps))
+        }
         zoomPillWork?.cancel()
         let work = DispatchWorkItem { withAnimation(.easeOut(duration: 0.25)) { zoomPill = nil } }
         zoomPillWork = work
@@ -2031,6 +2215,7 @@ struct ProEditorView: View {
         withAnimation(.easeOut(duration: 0.15)) {
             selectedSeg = nil; selectedOverlay = nil; selectedBroll = nil; selectedBoundary = nil
             selectedMusic = false; selectedPhraseID = nil
+            selectedRoll = nil                     // FT-3: the canvas roll follows selection
             expansion = nil
             rootPanel = nil
             switch target {
@@ -2052,6 +2237,7 @@ struct ProEditorView: View {
         withAnimation(.easeOut(duration: 0.15)) {
             selectedSeg = nil; selectedOverlay = nil; selectedBroll = nil; selectedBoundary = nil
             selectedMusic = false; selectedPhraseID = nil
+            selectedRoll = nil
             expansion = nil
             rootPanel = (rootPanel == p) ? nil : p
         }
@@ -2143,6 +2329,7 @@ struct ProEditorView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
+                .accessibilityLabel("Back")          // (read as "Go Down" from the glyph)
                 .accessibilityIdentifier("editorPro.ctx.back")
             }
             ScrollViewReader { proxy in
@@ -2175,7 +2362,7 @@ struct ProEditorView: View {
             // Build 69 frequency order (talking-head jobs: cut > captions > cleanup >
             // sound > overlays > effects > look). Restore left the root — it's only
             // meaningful after Clean up ran, and lives inside that panel + cut seams.
-            barTile("Edit", "scissors", id: "editorPro.root.edit") { rootEditTap() }
+            barTile("Edit", "slider.horizontal.below.rectangle", id: "editorPro.root.edit") { rootEditTap() }
             barTile("Captions", "captions.bubble", id: "editorPro.root.captions", active: rootPanel == .captions) { openRootPanel(.captions) }
             barTile("Clean up", "wand.and.sparkles", id: "editorPro.cleanup",
                     dot: !(session?.draft.drops.isEmpty ?? true)) {
@@ -2367,7 +2554,13 @@ struct ProEditorView: View {
                     if abs(cur - 1.0) > 0.01 { setSpeed(seg, 1.0) }
                     speedDraft = 1.0
                 }
-                Text("SPEED").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textSecondary)
+                // SE sweep F3: Reset + label + slider + value + 3 chips + confirm overflowed a
+                // 375 pt row ("SPEE/D", collapsed slider, "…" chips). The label goes on compact
+                // widths (the "1.0x" value names the row); the rest never truncates.
+                if UIScreen.main.bounds.width >= 390 {
+                    Text("SPEED").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textSecondary)
+                        .fixedSize()
+                }
                 Slider(value: $speedDraft, in: 0.5...3.0, onEditingChanged: { editing in
                     if !editing { setSpeed(seg, speedDraft) }
                 })
@@ -2381,6 +2574,7 @@ struct ProEditorView: View {
                     let active = abs((session?.draft.segments[safe: seg]?.speed ?? 1.0) - v) < 0.01
                     Button { speedDraft = v; setSpeed(seg, v); bumpHaptic() } label: {
                         EditorChipLabel(text: v == 1.5 ? "1.5x" : String(format: "%.0fx", v), active: active)
+                            .fixedSize()
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("editorPro.speed.\(v)")
@@ -2552,6 +2746,34 @@ extension View {
     }
 }
 
+/// ED-5: a leaf that re-evaluates at the playhead's 30 Hz. Content built inside it reads the
+/// tick here, so the tick invalidates this leaf — never ProEditorView's body.
+struct PlayheadReader<Content: View>: View {
+    let player: EditorPlayerController?
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        let _ = player?.currentOutputTime        // the dependency lives here, explicitly
+        content()
+    }
+}
+
+/// ED-5: the transport's time readout — observes the player itself (see PlayheadReader).
+private struct TransportTimeReadout: View {
+    let player: EditorPlayerController?
+    var body: some View {
+        Text(ProEditorView.timeReadout(current: player?.currentOutputTime ?? 0,
+                                       total: player?.totalOutputTime ?? 0))
+            .font(AppFont.caption.monospacedDigit())
+            .foregroundStyle(Palette.textSecondary)
+            .lineLimit(1)
+    }
+}
+
+/// ED-3: whether the editor is still on screen, readable from tasks that outlive it.
+final class EditorLifetime {
+    var visible = true
+}
+
 /// DuetSplit.tsx: `edl.layout.split_fraction` sizes the top (reacted-to) band server-side;
 /// EditorDocument carries no client-side layout field today, so this mirrors the render's
 /// own fallback default exactly (`?? 0.58`). Shared by the framing backdrop/chrome (above)
@@ -2567,10 +2789,12 @@ private struct AdjustKnob: View {
     let commit: (Double) -> Void
     @State private var value: Double = 0
     @State private var seeded = false
+    @State private var dragging = false
 
     var body: some View {
         VStack(spacing: 2) {
             Slider(value: $value, in: range, onEditingChanged: { editing in
+                dragging = editing
                 if !editing { commit(value) }
             })
             .frame(width: 104).tint(Palette.textPrimary)
@@ -2578,6 +2802,9 @@ private struct AdjustKnob: View {
                 .font(AppFont.micro).foregroundStyle(Palette.textSecondary).lineLimit(1)
         }
         .onAppear { if !seeded { value = initial; seeded = true } }
+        // ED-7: follow the draft when it changes underneath (undo/redo/restore) — never
+        // mid-drag, where the knob owns the value until release.
+        .onChange(of: initial) { _, v in if !dragging { value = v } }
         .accessibilityIdentifier("editorPro.adjust.\(label.lowercased())")
     }
 }
@@ -2631,6 +2858,7 @@ private struct BarTileLabel: View {
             Image(systemName: icon).font(.system(size: 17, weight: .regular))
                 .foregroundStyle(active ? Palette.onInk : Palette.textPrimary)
                 .frame(width: 36, height: 36)
+                .accessibilityHidden(true)       // the label below names the tile
                 .background(Circle().fill(active ? Palette.ink : Color.clear))
             Text(label).font(AppFont.micro).lineLimit(1).minimumScaleFactor(0.85)
                 .foregroundStyle(active ? Palette.textPrimary : Palette.textSecondary)
