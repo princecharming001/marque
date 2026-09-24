@@ -32,7 +32,7 @@ extension ProEditorView {
             // If we still hold the local take, the editor is recoverable — offer to
             // re-create the edit from footage rather than dead-ending.
             loadRetryable = false
-            editorRecoverable = (clip.localVideoPath != nil)
+            editorRecoverable = localTakeURL() != nil     // ED-14: Re-create needs the take ON DISK
             phase = .failed(editorRecoverable
                 ? "This edit session expired. Re-create it from your footage to keep editing."
                 : "Couldn't load this clip's edit, the session may have expired.")
@@ -71,8 +71,9 @@ extension ProEditorView {
         session = sess
 
         // Source video: prefer the local recording, else the server public URL, else placeholder.
-        var url: URL?
-        if let local = clip.localVideoPath { url = MediaStore.url(for: local) }
+        // ED-14: only a local take that still EXISTS — a reclaimed/cleared file used to win
+        // over source_url and leave the preview black.
+        var url: URL? = localTakeURL()
         if url == nil, let src = result["source_url"] as? String, let u = URL(string: src) { url = u }
         // ED-3: a reload (after a retheme) replaces the controller — tear the old one down
         // first, or its AVPlayer + music loop keep playing behind the new editor.
@@ -111,6 +112,13 @@ extension ProEditorView {
         Task { if let all = await store.backend.editorCapabilities() { caps = all[doc.style] } }
         Task { await MusicCatalog.hydrate(using: store.backend) }
         Task { if themes.isEmpty { themes = await store.backend.fetchThemes() } }
+    }
+
+    /// The recorded take on disk, nil when there is none or the file is gone.
+    func localTakeURL() -> URL? {
+        guard let local = clip.localVideoPath else { return nil }
+        let u = MediaStore.url(for: local)
+        return FileManager.default.fileExists(atPath: u.path) ? u : nil
     }
 
     // MARK: A7 feature #1 — retheme (a SEPARATE endpoint from /tweak: it only
