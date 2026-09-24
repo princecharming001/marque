@@ -7,6 +7,7 @@ runServerClipAdoptionTests()
 runJobPoliciesTests()
 runUploadJournalTests()
 runTweakWatchPolicyTests()
+runRenderCacheTests()
 
 print("\n\(logicTestPasses) passed, \(logicTestFailures) failed")
 exit(logicTestFailures == 0 ? 0 : 1)

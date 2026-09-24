@@ -2580,7 +2580,10 @@ final class AppStore {
     /// Single-flight guard: clip ids with a render download currently in flight.
     private var renderCacheInFlight: Set<UUID> = []
     /// Renders larger than this stream instead of caching (keeps Documents sane).
-    private static let renderCacheMaxBytes: Int64 = 200 * 1024 * 1024
+    private static let renderCacheMaxBytes: Int64 = RenderCachePolicy.maxBytes
+    /// LV-7: render URLs already known to be over the cap this launch — cacheRender fires on
+    /// every ready poll tick, so without this each tick would re-probe the same render.
+    private var renderCacheOversize: Set<String> = []
 
     /// Reflect a (possibly new) render URL on a clip. When the URL actually CHANGES
     /// (tweak re-render), the cached render file + its poster are stale — invalidate
@@ -2708,27 +2711,31 @@ final class AppStore {
               clips[idx].isServerRendered,
               clips[idx].renderLocalPath == nil,
               let urlStr = clips[idx].remoteURL, let url = URL(string: urlStr),
-              !renderCacheInFlight.contains(clipId) else { return }
+              !renderCacheInFlight.contains(clipId),
+              !renderCacheOversize.contains(urlStr) else { return }
         renderCacheInFlight.insert(clipId)
         Task { [weak self] in
             defer { self?.renderCacheInFlight.remove(clipId) }
             // The whole download → adopt → poster → duration tail runs off the main
             // actor: this fires exactly when a clip lands (poll tick), and the old
             // Data(contentsOf:) + re-write put the entire render through RAM on main.
-            let landed: (path: String, thumbPath: String?, seconds: Int)? =
-                await Task.detached(priority: .utility) { () async -> (path: String, thumbPath: String?, seconds: Int)? in
-                    do {
-                        let (tmp, response) = try await URLSession.shared.download(from: url)
-                        var size = response.expectedContentLength          // -1 when unknown
-                        if size < 0 {
-                            let attrs = try? FileManager.default.attributesOfItem(atPath: tmp.path)
-                            size = (attrs?[.size] as? Int64) ?? 0
-                        }
-                        guard size <= Self.renderCacheMaxBytes,
-                              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
-                              let path = MediaStore.adopt(fileAt: tmp, ext: "mp4") else {
+            //
+            // LV-7: the size check happens BEFORE the body is downloaded. This used to pull
+            // the whole render and only then discard it when it was over the cap — every
+            // long take's render (a 10-min cut is easily past 200 MB), in full, per attempt.
+            // CappedDownload aborts on the response's expected length (Content-Length), or
+            // as soon as the bytes written pass the cap when the length is unknown.
+            let fetched: (landed: (path: String, thumbPath: String?, seconds: Int)?, oversize: Bool) =
+                await Task.detached(priority: .utility) { () async -> (landed: (path: String, thumbPath: String?, seconds: Int)?, oversize: Bool) in
+                    switch await CappedDownload.fetch(url, maxBytes: Self.renderCacheMaxBytes) {
+                    case .tooLarge:
+                        return (nil, true)                // over the cap → keep streaming
+                    case .failed:
+                        return (nil, false)               // fail-soft: streaming continues
+                    case .file(let tmp):
+                        guard let path = MediaStore.adopt(fileAt: tmp, ext: "mp4") else {
                             try? FileManager.default.removeItem(at: tmp)
-                            return nil                  // too big / bad response → keep streaming
+                            return (nil, false)
                         }
                         // Poster from the actual render.
                         let thumbPath = MediaStore.poster(for: MediaStore.url(for: path))
@@ -2737,12 +2744,14 @@ final class AppStore {
                         // Build 68: the badge shows the RENDER's real length, not the
                         // script's target estimate (owner: everything said 24s).
                         let dur = await Self.assetDurationSeconds(MediaStore.url(for: path))
-                        return (path, thumbPath, dur)
-                    } catch {
-                        return nil                      // fail-soft: streaming continues
+                        return ((path, thumbPath, dur), false)
                     }
                 }.value
-            guard let self, let landed else { return }
+            if fetched.oversize {
+                self?.renderCacheOversize.insert(urlStr)
+                self?.backend.reportClientEvent("render_cache_skipped_oversize", detail: "clip=\(clipId.uuidString.prefix(8))")
+            }
+            guard let self, let landed = fetched.landed else { return }
             // Re-locate the clip (it may have moved) and confirm the URL didn't
             // change mid-download (a tweak landing during the fetch wins).
             guard let i = self.clips.firstIndex(where: { $0.id == clipId }),
