@@ -1535,6 +1535,7 @@ class SteerRequest(Brand):
     script: dict = {}
     instruction: str = ""
     creator_id: str = "default"
+    memory: dict = {}                  # what the creator told the orb (GROUNDING's source)
 
 
 class CaptionRequest(BaseModel):
@@ -1975,7 +1976,8 @@ async def _judge_and_fix_pillars_raw(brand: dict, pillars: list[dict], posts: li
     (the original included). Measured before: ~80s for a thin profile (the judge failed
     the first draft every time, so both rounds always ran: 5 OPUS + 5 HAIKU calls)."""
     async def _judge_failures(candidate: list[dict]) -> list[str]:
-        jsys, jusr = prompts.pillar_judge_prompt(brand.get("niche", ""), candidate)
+        jsys, jusr = prompts.pillar_judge_prompt(brand.get("niche", ""), candidate,
+                                                 brand=brand, posts=posts)
         verdicts = extract_json(await anthropic(jsys, jusr, HAIKU, 800), array=True) or []
         return [candidate[v["index"]].get("name", "")
                 for v in verdicts
@@ -2187,7 +2189,8 @@ async def quality_scripts(brand: dict, style: str, scripts: list[dict],
                           posts: list[dict] | None = None,
                           creator_id: str = "default",
                           mandated_hooks: list[dict] | None = None,
-                          memory: dict | None = None) -> list[dict]:
+                          memory: dict | None = None,
+                          slots: list[dict] | None = None) -> list[dict]:
     """Generate -> judge -> targeted self-repair for scripts. A strict HAIKU critic
     scores each draft; we swap in the strongest alt-hook, rewrite only the weak
     ones with OPUS, and re-ground predictedScore on the critic's axes calibrated
@@ -2238,7 +2241,10 @@ async def quality_scripts(brand: dict, style: str, scripts: list[dict],
     if not flagged:
         return scripts
     try:
-        rsys, rusr = prompts.script_revise_prompt(brand, style, flagged, posts)
+        # memory + slots: the revise pass keeps the planned topic and knows the creator
+        # (it used to rewrite without either, so a revision could drift off the slot).
+        rsys, rusr = prompts.script_revise_prompt(brand, style, flagged, posts, memory=memory,
+                                                  slots=slots if slots and len(slots) == len(scripts) else None)
         revised = await anthropic_json(rsys, rusr,
                                        _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
                                        OPUS, 3800, array_key="scripts")
@@ -2486,7 +2492,7 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
         _lap("write")
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(req)}
-        out = await quality_scripts(req.d(), req.style, out, req.posts or None,
+        out = await quality_scripts(req.d(), req.style, out, req.posts or None, slots=req.slots or None,
                                     creator_id=req.creator_id, mandated_hooks=mandated or None,
                                     memory=req.memory or None)
         # Final speakability gate on the judged pipeline: the judge's own slop axis
@@ -2543,7 +2549,8 @@ async def steer(req: SteerRequest):
         return {"mode": "mock", "script": req.script}
     try:
         stats = await _arms_for_prompt(req.creator_id)
-        sys, usr = prompts.steer_prompt(req.d(), req.script, req.instruction, arm_stats=stats)
+        sys, usr = prompts.steer_prompt(req.d(), req.script, req.instruction, arm_stats=stats,
+                                        memory=req.memory or None)
         sys = await _inject_brain(sys, req.creator_id, req.instruction)   # G1: refine stays brain-aware
         out = extract_json(await anthropic(sys, usr, SONNET, 1500), array=False)
         if out:
@@ -11613,9 +11620,9 @@ _REEL_TEMPLATES = [
      "Direct call-out hooks are over-indexing on shares. People tag friends who do the thing.",
      "do-this-not-that", "talking_head", 3_100_000, 405_000),
     ("{slug}lab", "instagram", "The {niche} myth that won't die",
-     "This {niche} myth has two million believers. Here's the receipt it's wrong.",
+     "This {niche} myth won't die. Here's why it's wrong.",
      "State the myth respectfully. Bring one piece of hard evidence. Land the correct model in one sentence.",
-     "Myth-busting with receipts converts skeptics into followers, and saves are spiking.",
+     "Myth-busting that explains the mechanism converts skeptics into followers.",
      "myth-buster", "green_screen", 1_500_000, 190_000),
     ("quiet{slug}", "tiktok", "A day of {niche} in 25 seconds",
      "Nobody shows you the boring part of {niche}. Watch this.",

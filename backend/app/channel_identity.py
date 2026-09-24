@@ -602,7 +602,7 @@ def identity_block(identity: dict | None) -> str:
     if len(lines) == 1:
         return ""                                   # nothing substantive to inject
     if conf != "high":
-        lines.append("Treat this as the creator's self-description, sharpened — "
+        lines.append("Treat this as the creator's self-description, sharpened; "
                      "never cite it as observed performance.")
     return "\n".join(lines)
 

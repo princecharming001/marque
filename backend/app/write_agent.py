@@ -233,7 +233,7 @@ async def write_turn(store, creator_id: str, script_body: str, instruction: str,
     if not palo_flags.enabled(palo_flags.WRITE_AGENT):
         return {"actions": [], "mode": "off"}
     strat, mem = await _context_blocks(store, creator_id, instruction, brand)
-    system, user = palo_prompts.write_agent_prompt(script_body, instruction, strat, mem)
+    system, user = palo_prompts.write_agent_prompt(script_body, instruction, strat, mem, brand=brand)
     from app.prompt_store import get_prompt
     system = await get_prompt("palo.write.agent", system, store=store)
     raw = await anthropic_cached(system, user, OPUS, max_tokens=1500)
