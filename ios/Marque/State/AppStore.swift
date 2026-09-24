@@ -2479,6 +2479,41 @@ final class AppStore {
         }
     }
 
+    /// ED-10: a COMMITTING tweak request whose outcome the STORE owns. The tweak chat used
+    /// to run its commit in a view task that it cancels on dismiss, with the cancellation
+    /// guard BEFORE setClipRendering — so closing the sheet while "Thinking…" let the server
+    /// commit the edit and start the render while the clip stayed .ready on the old URL and
+    /// nothing watched the render (the long-operation rule: store-owned, never view-owned).
+    /// The request runs in an unstructured store task — cancelling the caller doesn't cancel
+    /// it — and a render it starts flips the card + gets the store's watcher regardless of
+    /// what happened to the view. The caller still gets the response to show.
+    func commitClipTweak(jobId: String, clipId: UUID, label: String,
+                         _ request: @escaping @MainActor () async -> [String: Any]) async -> [String: Any] {
+        let owned = Task { @MainActor [weak self] () -> [String: Any] in
+            let resp = await request()
+            if let self, resp["error"] as? Bool != true, resp["needs_render"] as? Bool == true {
+                self.setClipRendering(clipId)
+                self.watchTweakRender(jobId: jobId, clipId: clipId, label: label)
+            }
+            return resp
+        }
+        return await owned.value
+    }
+
+    /// ED-10: the tweak chat's direct instruction turn, store-owned (see commitClipTweak).
+    func commitTweakInstruction(jobId: String, clipId: UUID, instruction: String) async -> [String: Any] {
+        await commitClipTweak(jobId: jobId, clipId: clipId, label: instruction) { [backend] in
+            await backend.tweakClip(jobId: jobId, clipId: clipId.uuidString, instruction: instruction)
+        }
+    }
+
+    /// ED-10: the tweak chat's "Apply this change" (previewed typed ops), store-owned.
+    func commitTweakOps(jobId: String, clipId: UUID, ops: [[String: Any]], label: String) async -> [String: Any] {
+        await commitClipTweak(jobId: jobId, clipId: clipId, label: label) { [backend] in
+            await backend.tweakClipOps(jobId: jobId, clipId: clipId.uuidString, ops: ops)
+        }
+    }
+
     // Build 57 (owner): submitting a re-render must NOT hold the editor hostage on a
     // spinner — the editor dismisses at submit, the Library card shows "rendering",
     // and this STORE-owned watcher (it survives the editor view's deallocation)

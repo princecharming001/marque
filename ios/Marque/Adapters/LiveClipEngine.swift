@@ -990,7 +990,8 @@ extension BackendClient {
     func rethemeClip(jobId: String, themeId: String, clipId: String = "") async -> [String: Any] {
         let body: [String: Any] = ["theme_id": themeId, "clip_id": clipId]
         let (data, status) = await postWithStatus("/v1/clips/\(jobId)/retheme", body)
-        if status == 404 { return ["error": true, "reply": "This edit session has expired, re-submit the take."] }
+        // ED-10: 410 (TTL-swept) is the same expired session as 404.
+        if status == 404 || status == 410 { return ["error": true, "reply": "This edit session has expired, re-submit the take."] }
         if status == 422 { return ["error": true, "reply": "That theme isn't available right now."] }
         if status == 409 {
             return ["error": true, "transient": true,
@@ -1102,7 +1103,10 @@ extension BackendClient {
     func tweakClip(jobId: String, clipId: String, instruction: String) async -> [String: Any] {
         let body: [String: Any] = ["clip_id": clipId, "instruction": instruction]
         let (data, status) = await postWithStatus("/v1/clips/\(jobId)/tweak", body)
-        if status == 404 {
+        // ED-10: 410 (a job that existed but was TTL-swept) is the same "session expired" as
+        // 404 — unhandled, its {"detail":"job_expired"} body parsed as a reply-less success
+        // and the chat said "Something went sideways" instead of what actually happened.
+        if status == 404 || status == 410 {
             return ["error": true, "reply": "This edit session has expired, re-submit the take to tweak it."]
         }
         if status == 409 {
@@ -1124,7 +1128,7 @@ extension BackendClient {
     func tweakClipPreview(jobId: String, clipId: String, instruction: String) async -> [String: Any] {
         let body: [String: Any] = ["clip_id": clipId, "instruction": instruction]
         let (data, status) = await postWithStatus("/v1/clips/\(jobId)/tweak?preview=1", body)
-        if status == 404 {
+        if status == 404 || status == 410 {    // ED-10: 410 = swept session, same as 404
             return ["error": true, "reply": "This edit session has expired, re-submit the take to tweak it."]
         }
         if status == 409 {
