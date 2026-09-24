@@ -304,6 +304,33 @@ func runAll() {
     check(!cs.draft.captions.isEmpty, "undo restores them — captionsOn must re-derive to ON")
     _ = cs.redo()
     check(cs.draft.captions.isEmpty, "redo empties them — captionsOn must re-derive to OFF")
+
+    section("skipped / unchanged Save results (ED-9)")
+    let names: (String) -> String = { ["add_punch_in": "Zoom", "edit_overlay": "Edit"][$0] ?? "Edit" }
+    let partial = EditorSaveResult(needsRender: true, changed: true, appliedCount: 3, skipped: [
+        EditorSkippedOp(type: "add_punch_in", reason: "zooms aren't rendered in this video style"),
+        EditorSkippedOp(type: "add_punch_in", reason: "zooms aren't rendered in this video style"),
+    ])
+    let rep = partial.skippedReport(displayName: names)
+    check(rep?.title == "2 changes couldn't be applied", "title counts every skipped op")
+    check(rep?.message.hasPrefix("Zoom: zooms aren't rendered in this video style\n\n") == true,
+          "identical reasons collapse to one line")
+    check(rep?.message.hasSuffix("re-rendering now.") == true, "says the rest is rendering")
+    let one = EditorSaveResult(needsRender: false, changed: true, appliedCount: 1,
+                               skipped: [EditorSkippedOp(type: "edit_overlay", reason: "")])
+    check(one.skippedReport(displayName: names)?.title == "1 change couldn't be applied", "singular title")
+    check(one.skippedReport(displayName: names)?.message.hasSuffix("Everything else is saved.") == true,
+          "no-render wording")
+    let many = EditorSaveResult(needsRender: true, changed: true, appliedCount: 0, skipped: (0..<5).map {
+        EditorSkippedOp(type: "edit_overlay", reason: "reason \($0)") })
+    check(many.skippedReport(displayName: names)?.message.contains("+ 2 more") == true, "caps at three reasons")
+    let clean = EditorSaveResult(needsRender: true, changed: true, appliedCount: 2, skipped: [])
+    check(clean.skippedReport(displayName: names) == nil, "nothing skipped → no report (plain dismiss)")
+    let none = EditorSaveResult(needsRender: false, changed: false, appliedCount: 0, skipped: [
+        EditorSkippedOp(type: "edit_overlay", reason: "nothing to change")])
+    let nb = none.nothingAppliedNotice(displayName: names)
+    check(nb.message == "None of your changes could be applied (Edit: nothing to change). Undo the last change and try again."
+          && !nb.retryable, "changed:false keeps editing with the reason, no Retry")
 }
 
 MainActor.assumeIsolated { runAll() }

@@ -277,6 +277,45 @@ struct EditorSaveResult: Equatable {
     var skipped: [EditorSkippedOp]
 }
 
+/// ED-9: the acknowledgement shown when the server refused some of a Save's ops.
+struct EditorSaveReport: Equatable {
+    var title: String
+    var message: String
+}
+
+extension EditorSaveResult {
+    /// Title + reasons when some ops were skipped (nil when everything applied). Reasons are
+    /// the server's own, de-duplicated, at most three, each named by `displayName(type)`.
+    func skippedReport(displayName: (String) -> String) -> EditorSaveReport? {
+        guard !skipped.isEmpty else { return nil }
+        let n = skipped.count
+        var lines: [String] = []
+        for op in skipped {
+            let reason = op.reason.isEmpty ? "not supported here" : op.reason
+            let line = "\(displayName(op.type)): \(reason)"
+            if !lines.contains(line) { lines.append(line) }
+        }
+        var body = lines.prefix(3).joined(separator: "\n")
+        if lines.count > 3 { body += "\n+ \(lines.count - 3) more" }
+        body += needsRender ? "\n\nEverything else is saved and re-rendering now."
+                            : "\n\nEverything else is saved."
+        return EditorSaveReport(title: n == 1 ? "1 change couldn't be applied"
+                                              : "\(n) changes couldn't be applied",
+                                message: body)
+    }
+
+    /// changed:false — nothing landed, so the draft still fits the server EDL.
+    func nothingAppliedNotice(displayName: (String) -> String) -> EditorSaveNotice {
+        let first = skipped.first.map { op -> String in
+            op.reason.isEmpty ? displayName(op.type) : "\(displayName(op.type)): \(op.reason)"
+        }
+        return EditorSaveNotice(
+            message: "None of your changes could be applied" + (first.map { " (\($0))" } ?? "")
+                + ". Undo the last change and try again.",
+            retryable: false)
+    }
+}
+
 /// The inline Save-failure bar's content: what happened, and whether Retry can help.
 struct EditorSaveNotice: Equatable {
     var message: String

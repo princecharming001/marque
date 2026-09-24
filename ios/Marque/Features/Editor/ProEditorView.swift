@@ -139,6 +139,9 @@ struct ProEditorView: View {
     // Set after a failure that may have landed server-side (transport drop, 5xx): the next
     // attempt re-reads the job and refuses to re-send onto a base that moved.
     @State var saveNeedsBaseCheck = false
+    // ED-9: ops the server refused at Save — acknowledged before the editor closes, since
+    // the render will differ from the preview.
+    @State var saveReport: EditorSaveReport? = nil
     // ED-3: a theme picked while edits are unsaved waits here for the keep-edits confirm.
     @State var pendingThemeId: String? = nil
     // Outlives teardown (a reference box): the retheme poll checks it before reloading, so
@@ -180,6 +183,17 @@ struct ProEditorView: View {
                        confirm: "Discard edits", destructive: true, cancel: "Keep editing") {
             draftAutosaver?.close()          // ED-2: a confirmed discard deletes the saved draft too
             dismiss()
+        }
+        // ED-9: one required acknowledgement (no Cancel, no scrim dismiss), then close.
+        .overlay {
+            if let r = saveReport {
+                MarqueDialogCard(title: r.title, message: r.message,
+                                 actions: [MarqueDialogAction("Done") { dismiss() }],
+                                 dismiss: { saveReport = nil })
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("editorPro.save.skipped")
+                    .zIndex(999)
+            }
         }
         // ED-3: a retheme reloads the clip from the server — with unsaved edits, ask first;
         // the edits ride across the reload in the on-disk draft and replay on the new look.

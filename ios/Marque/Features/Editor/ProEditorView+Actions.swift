@@ -1014,6 +1014,17 @@ extension ProEditorView {
             switch outcome {
             case .saved(let result):
                 saveNeedsBaseCheck = false
+                // ED-9: changed:false means NOTHING landed — the server EDL is still the base
+                // the draft targets, so keep the draft and the user editing, and say why
+                // (this used to dismiss exactly like a successful save).
+                guard result.changed else {
+                    applyTask = nil
+                    phase = .editing
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        saveError = result.nothingAppliedNotice(displayName: opDisplayName)
+                    }
+                    return
+                }
                 saver?.close()                      // committed server-side: the draft is done
                 if result.needsRender {
                     // Build 57 (owner): never hold the editor hostage on a render spinner.
@@ -1023,9 +1034,14 @@ extension ProEditorView {
                     store.setClipRendering(clip.id)
                     store.watchTweakRender(jobId: jobId, clipId: clip.id, label: "Manual edit")
                     bumpHaptic()
-                    dismiss()
+                }
+                // ED-9: ops the server refused mean the render will differ from what the
+                // preview showed — say so (and why) before closing, instead of silently.
+                if let report = result.skippedReport(displayName: opDisplayName) {
+                    applyTask = nil
+                    withAnimation(.easeOut(duration: 0.18)) { saveReport = report }
                 } else {
-                    dismiss()   // keyless/mock: applied in place
+                    dismiss()   // (keyless/mock: applied in place)
                 }
             case .unreachable(_, let ambiguous):
                 if ambiguous { saveNeedsBaseCheck = true }
