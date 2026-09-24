@@ -51,6 +51,7 @@ struct ProEditorView: View {
     @State var renderStartedAt: Date?
     @State var transient: String?
     @State var editorRecoverable = false        // gone job + local footage → offer re-create
+    @State var loadRetryable = false            // ED-11: offline/5xx/not-ready → offer Try again
     @State var showMusicSheet = false
     @State var showTextCardAlert = false
     @State var editDraft = ""

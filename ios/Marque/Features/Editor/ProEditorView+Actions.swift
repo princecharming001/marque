@@ -12,23 +12,33 @@ extension ProEditorView {
             return
         }
         // Use the status-aware poll (restart-fragility audit): pollClipJob swallowed the
-        // HTTP code, so a transient 503 (DB blip) or a restored-but-not-yet-edited job
-        // (no EDL) both mis-reported "session may have expired." Distinguish them.
+        // HTTP code. ED-11: only a 404/410 means the session is gone — offline, a timeout,
+        // any 5xx, or a job with no EDL yet are transient and get "Try again", not the
+        // "expired" copy (whose "Re-create" re-uploads the take and starts a NEW job).
         let (result, http) = await store.backend.pollClipJobWithStatus(jobId: jobId, includeWords: true)
-        if http == 503 {
-            phase = .failed("Couldn't reach the studio just now, pull to try again.")
+        let fetchedEDL = result?["edl"] as? [String: Any]
+        switch EditorLoadOutcome.classify(status: http, hasEDL: fetchedEDL != nil) {
+        case .ready:
+            loadRetryable = false
+        case .unreachable:
+            editorRecoverable = false; loadRetryable = true
+            phase = .failed("Couldn't reach Yunicorn. Check your connection, then try again.")
             return
-        }
-        guard let result, let edlDict = result["edl"] as? [String: Any] else {
-            // The job is gone (404/410 → a body with no `edl`). If we still hold the local
-            // take, the editor is recoverable — offer to re-create the edit from footage
-            // rather than dead-ending.
+        case .notReady:
+            editorRecoverable = false; loadRetryable = true
+            phase = .failed("This clip's edit isn't ready yet. Try again in a moment.")
+            return
+        case .gone:
+            // If we still hold the local take, the editor is recoverable — offer to
+            // re-create the edit from footage rather than dead-ending.
+            loadRetryable = false
             editorRecoverable = (clip.localVideoPath != nil)
             phase = .failed(editorRecoverable
                 ? "This edit session expired. Re-create it from your footage to keep editing."
                 : "Couldn't load this clip's edit, the session may have expired.")
             return
         }
+        guard let result, let edlDict = fetchedEDL else { return }
         let doc = EditorDocument(edl: edlDict)
         let sess = EditorSession(document: doc)
 
@@ -1107,13 +1117,26 @@ extension ProEditorView {
         }.padding(.horizontal, Space.screenH).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// ED-11: re-run the editor load after a transient failure (same editor, same job).
+    func retryLoad() {
+        loadRetryable = false
+        phase = .loading
+        Task { await load() }
+    }
+
     func failedView(_ msg: String) -> some View {
         VStack(spacing: Space.md) {
             // Stoic empty/error state: monochrome glyph carries the warning (no hue).
             Image(systemName: "exclamationmark.triangle").font(.system(size: 24, weight: .regular)).foregroundStyle(Palette.textPrimary)
             Text(msg).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            if editorRecoverable {
+            if loadRetryable {
+                // ED-11: transient (offline / timeout / 5xx / not ready) — retry in place.
+                Button("Try again") { retryLoad() }
+                    .buttonStyle(.ds(.primary, height: 48)).padding(.top, Space.sm)
+                    .accessibilityIdentifier("editorPro.load.retry")
+                Button("Close") { dismiss() }.buttonStyle(DSTextLinkStyle(color: Palette.textSecondary))
+            } else if editorRecoverable {
                 // Re-create the edit from the local take (store.retryClipJob re-uploads +
                 // starts a fresh job in place when the server lost this one), then close so
                 // the Library shows it re-processing.
