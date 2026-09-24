@@ -3440,10 +3440,12 @@ def test_analyze_video_no_apify_is_live_structure(monkeypatch):
     monkeypatch.setattr(main, "APIFY_KEY", "")           # can't fetch the real video
 
     async def fake(*a, **k):
-        return _YOUR_VERSION_JSON
+        raise AssertionError("must not analyze a canned transcript as if it were the video")
     monkeypatch.setattr(main, "anthropic", fake)
     r = client.post("/v1/analyze-video", json={"url": "https://tiktok.com/@x/video/1"}).json()
-    assert r["mode"] == "live_structure"                 # honest: not this exact video
+    # 2026-09-23: honest "couldn't open it", no OPUS over a canned transcript, no script
+    assert r["mode"] == "unavailable" and r["your_version"] is None
+    assert "couldn't open" in r["hook_analysis"] and r["structure_beats"] == []
 
 
 def test_analyze_video_real_transcript_is_live(monkeypatch):
@@ -3487,7 +3489,7 @@ def test_analyze_video_fetch_failure_falls_back_to_structure(monkeypatch):
         return _YOUR_VERSION_JSON
     monkeypatch.setattr(main, "anthropic", fake)
     r = client.post("/v1/analyze-video", json={"url": "https://instagram.com/reel/abc"}).json()
-    assert r["mode"] == "live_structure"                 # fetch failed → NOT fake 'live'
+    assert r["mode"] == "unavailable" and r["your_version"] is None   # fetch failed: say so
 
 
 # ---------------------------------------------------------------------------

@@ -14106,6 +14106,14 @@ async def analyze_video(req: AnalyzeVideoRequest):
     transcript = real_transcript or _MOCK_VIDEO_TRANSCRIPT
     is_real = real_transcript is not None
     niche = req.brand.get("niche") or "your niche"
+    if ANTHROPIC_KEY and not is_real:
+        # We never saw this video. The old path ran OPUS over a CANNED transcript (~20s) and
+        # the chat showed that as this video's "why it works". Say so instead; the chat card
+        # hides the empty sections.
+        return {"mode": "unavailable", "platform": platform, "transcript": "",
+                "hook_analysis": ("I couldn't open that video to watch it. Paste the TikTok or "
+                                  "Instagram post link (or a direct video link) and I'll break it down."),
+                "structure_beats": [], "why_it_works": "", "suggestions": [], "your_version": None}
     if ANTHROPIC_KEY:
         try:
             stats = await _arms_for_prompt(req.creator_id)
