@@ -631,3 +631,57 @@ def test_queued_preview_is_spared_and_preview_budget_scales(monkeypatch):
     assert queued["preview_status"] == "rendering"
     assert long_preview["preview_status"] == "rendering"     # inside its scaled window
     assert stale["preview_status"] == "failed"               # flat window still applies
+
+
+# ---------------------------------------------------------------------------
+# LV-24 — no full-length self-review preview render for long outputs
+# ---------------------------------------------------------------------------
+
+def _review_job(jid, out_frames):
+    job = {"job_id": jid, "status": "editing", "source_url": "mock://s", "style": "talking_head",
+           "created_at": _time.time(),
+           "clips": [{"clip_id": "c1", "format": "myth-buster", "status": "queued"}],
+           "words": [{"word": "hi", "start_ms": 0, "end_ms": 300}],
+           "edl": {"style": "talking_head", "format_id": "myth-buster",
+                   "segments": [{"src_in": 0, "src_out": out_frames}],
+                   "captions": [], "layout": {"style": "talking_head"}}}
+    main._clip_jobs[jid] = job
+    return job
+
+
+def _count_preview_submits(monkeypatch):
+    calls: list = []
+
+    async def fake_submit(url, edl, fmt, style, preview=False):
+        calls.append(preview)
+        return None                                          # stop right after the submit
+    monkeypatch.setattr(main, "_submit_remotion_render", fake_submit)
+    monkeypatch.setattr(main, "SELF_REVIEW", True)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk")
+    return calls
+
+
+def test_self_review_skips_long_outputs_and_says_why(monkeypatch):
+    calls = _count_preview_submits(monkeypatch)
+    job = _review_job("lv24-long", 9000)                     # 5-minute output
+    _aio.run(main._self_review_edl("lv24-long"))
+    assert calls == []                                       # no preview render at all
+    sr = job["self_review"]
+    assert sr["skipped"] == "long_take" and sr["max_frames"] == 5400
+    assert sr["output_frames"] > 5400
+    # observable on the poll payload (the #8 report card surfaces job["self_review"])
+    assert client.get("/v1/clips/lv24-long").json()["self_review"]["skipped"] == "long_take"
+    main._clip_jobs.pop("lv24-long", None)
+
+
+def test_self_review_still_runs_for_short_outputs(monkeypatch):
+    calls = _count_preview_submits(monkeypatch)
+    job = _review_job("lv24-short", 900)                     # 30-second output
+    _aio.run(main._self_review_edl("lv24-short"))
+    assert calls == [True] and "self_review" not in job      # the preview was attempted
+    monkeypatch.setattr(main, "SELF_REVIEW_MAX_FRAMES", 0)   # <= 0 disables the cap
+    long_job = _review_job("lv24-uncapped", 9000)
+    _aio.run(main._self_review_edl("lv24-uncapped"))
+    assert calls == [True, True] and "self_review" not in long_job
+    for jid in ("lv24-short", "lv24-uncapped"):
+        main._clip_jobs.pop(jid, None)

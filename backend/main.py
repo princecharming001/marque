@@ -7066,6 +7066,12 @@ async def _run_edit(job_id: str, words: list[dict]):
 
 SELF_REVIEW = os.environ.get("SELF_REVIEW", "0").lower() in ("1", "true", "yes")
 SELF_REVIEW_THRESHOLD = int(os.environ.get("SELF_REVIEW_THRESHOLD", "70"))
+# LV-24 (editor audit 2026-09-24): self-review renders a FULL-LENGTH preview of the edit
+# (a Lambda render + one of the 3 render slots + minutes inside the `editing` stage) just
+# to look at ~10 frames. On a long take that cost dominates the edit and competes with
+# every creator's real renders, so outputs longer than this many frames (5400 = 3 min at
+# 30fps) skip it, recording why on job["self_review"]. <= 0 disables the cap.
+SELF_REVIEW_MAX_FRAMES = int(os.environ.get("SELF_REVIEW_MAX_FRAMES", "5400"))
 
 
 async def _sample_render_frames(url: str, n: int = 6) -> list[bytes]:
@@ -7291,6 +7297,18 @@ async def _self_review_edl(job_id: str, is_rerender: bool = False) -> None:
         return
     clip = next((c for c in job.get("clips") or [] if c.get("format")), None)
     if not clip:
+        return
+    # LV-24: gate on the OUTPUT length before spending a render slot on the preview.
+    try:
+        out_frames = int(build_render_plan(job["edl"]).get("total_frames") or 0)
+    except Exception as e:
+        logging.warning("self-review: render plan failed (%s) — skipped", e)
+        return                                   # the preview submit would fail on it too
+    if SELF_REVIEW_MAX_FRAMES > 0 and out_frames > SELF_REVIEW_MAX_FRAMES:
+        job["self_review"] = {"skipped": "long_take", "output_frames": out_frames,
+                              "max_frames": SELF_REVIEW_MAX_FRAMES}
+        logging.info("[self-review] job=%s skipped: %d output frames > %d (long take)",
+                     job_id, out_frames, SELF_REVIEW_MAX_FRAMES)
         return
     try:
         async with _render_semaphore:
