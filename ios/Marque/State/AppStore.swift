@@ -2067,6 +2067,9 @@ final class AppStore {
             return "The upload was interrupted before it finished. Tap Try again to resume."
         case "upload_failed":
             return "Your take couldn't be uploaded, check your connection and tap Try again."
+        case "retry_unreachable":
+            // ED-11: Try again couldn't reach the server; the edit itself is untouched.
+            return "Couldn't reach the studio to restart this edit. Check your connection and tap Try again."
         case MediaCompressor.tooLargeErrorCode:
             // Build 78: the one upload failure where "check your connection" is actively
             // wrong — no network on earth fixes a body that can't be squeezed under the
@@ -2086,11 +2089,19 @@ final class AppStore {
     /// LV-5: `userInitiated` is true for the creator's taps (Library "Try again", the
     /// editor's "Re-create"); the self-heal auto-retry passes false so its re-upload keeps
     /// the lifetime attempt cap.
-    func retryClipJob(_ clip: Clip, userInitiated: Bool = true) async {
+    ///
+    /// ED-11: returns what happened (callers may ignore it). Only a server that says the job
+    /// is GONE (404/410) sends the clip to resubmitFailedClip (re-upload + a NEW job, which
+    /// abandons the server-side edit history); offline / timeout / 5xx used to take that
+    /// path too. Now they put the clips back as they were, flagged `retry_unreachable`
+    /// ("couldn't reach the studio"), so Try again works once the connection is back — and
+    /// the next foreground re-polls them for the server's real state.
+    @discardableResult
+    func retryClipJob(_ clip: Clip, userInitiated: Bool = true) async -> RetryJobPolicy.Outcome {
         // No server job at all (it failed before one was ever created) → recover straight
         // from the local take.
         guard let jobId = clip.jobId else {
-            _ = await resubmitFailedClip(clip, userInitiated: userInitiated); return
+            _ = await resubmitFailedClip(clip, userInitiated: userInitiated); return .jobGone
         }
         let affected = clips.filter { $0.jobId == jobId && $0.status == .failed }.map { $0.id }
         for id in affected {
@@ -2108,9 +2119,26 @@ final class AppStore {
             // below: a full second upload + a duplicate job racing the first.
             backend.reportClientEvent("retry_still_running", detail: "job=\(jobId)")
         }
+        if outcome == .unreachable {
+            // ED-11: we couldn't reach the server (or it errored) — the job and its edit
+            // history may be perfectly alive, so never re-upload on this. Put the clips back
+            // and say so; a ready clip (the editor's "Re-create" path) stays exactly as it was
+            // (only failed clips were flipped above).
+            for id in affected {
+                guard let idx = clips.firstIndex(where: { $0.id == id }), clips[idx].status == .rendering else { continue }
+                clips[idx].status = .failed
+                clips[idx].lastError = "retry_unreachable"
+                clips[idx].lastErrorDetail = nil
+            }
+            save()
+            backend.reportClientEvent("retry_unreachable", detail: "job=\(jobId)")
+            return .unreachable
+        }
         if outcome == .restarted || outcome == .stillRunning {
             await pollJob(jobId: jobId, clipIds: affected)
+            return outcome
         } else {
+            // The server says the job is gone (404/410): only now recover from the local take.
             // The backend can't re-render the job. resubmitFailedClip only recovers THIS clip
             // (re-uploads its own footage → a fresh single-clip job); any SIBLINGS from the same
             // job we optimistically flipped to .rendering above would otherwise be orphaned in a
@@ -2132,6 +2160,7 @@ final class AppStore {
                 }
                 save()
             }
+            return .jobGone
         }
     }
 

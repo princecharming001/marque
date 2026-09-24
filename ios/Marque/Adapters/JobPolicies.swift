@@ -29,7 +29,9 @@ enum JobPollBudget {
     /// Failure codes that are the CLIENT's verdict, not the server's: the server may well
     /// have finished (or still be working), so a failed clip carrying one of these — and a
     /// job id — is re-polled on foreground / Library appear instead of being written off.
-    static let clientVerdictErrors: Set<String> = ["edit_timeout"]
+    /// ED-11 adds `retry_unreachable`: "Try again" couldn't reach the server, so the job's
+    /// real state is unknown — the next foreground asks.
+    static let clientVerdictErrors: Set<String> = ["edit_timeout", "retry_unreachable"]
 
     static func shouldRepollFailed(lastError: String?, hasJobId: Bool) -> Bool {
         hasJobId && lastError.map { clientVerdictErrors.contains($0) } == true
@@ -37,18 +39,24 @@ enum JobPollBudget {
 }
 
 /// LV-4 / ED-11 — what a POST /v1/clips/{id}/retry answer means for the client.
+///
+/// ED-11: every non-200 used to mean "re-upload the take and start a NEW job" — including
+/// offline, a timeout and a 5xx, where the job (and its server-side edit history) was very
+/// likely alive. Only the server saying the job is gone (404/410) justifies that now.
 enum RetryJobPolicy {
     enum Outcome: Equatable {
         case restarted      // 200 — the server re-runs it: poll
         case stillRunning   // 409 — the ORIGINAL run is still going: keep polling, never re-upload
-        case jobGone        // the server has no such job any more: re-upload from the local take
+        case jobGone        // 404/410 — no such job any more: re-upload from the local take
+        case unreachable    // transport error / timeout / 5xx / anything else: keep the clip, retry later
     }
 
     static func classify(status: Int) -> Outcome {
         switch status {
         case 200: return .restarted
         case 409: return .stillRunning
-        default: return .jobGone
+        case 404, 410: return .jobGone
+        default: return .unreachable
         }
     }
 }
