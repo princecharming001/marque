@@ -42,9 +42,16 @@ func buildCaptionPhrases(words: [ProEditorView.WordSpan], captions: [EditorCapti
     // Per-slot display: an edited caption AT a word's exact start-frame overrides that word;
     // captions at off-slot frames are ignored for display (production captions are keyed to
     // word start-frames; anything else is seed noise or a server-side rewrite in flight).
+    // Pro Max sweep: once captions exist, a slot with NO caption shows nothing — it was
+    // removed (a shortened phrase) or never captioned (a stripped filler), and the canvas +
+    // render show nothing there; falling back to the transcript word made the list/lane
+    // read "actually ships pick actually ships pick" after an edit. The transcript stands in
+    // only while captions are empty (enabled-but-rebuilding server-side).
     let byFrame = Dictionary(captions.map { ($0.frame, $0.word) }, uniquingKeysWith: { a, _ in a })
     return groups.map { g in
-        let text = g.map { byFrame[$0.startFrame] ?? $0.text }.joined(separator: " ")
+        let text = g.compactMap { w -> String? in
+            captions.isEmpty ? w.text : byFrame[w.startFrame]
+        }.joined(separator: " ")
         return CaptionPhrase(startFrame: g.first!.startFrame, endFrame: g.last!.endFrame,
                              wordFrames: g.map(\.startFrame), text: text)
     }

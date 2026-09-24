@@ -382,6 +382,10 @@ extension ProEditorView {
         guard let p = editingPhrase else { return }
         editingPhrase = nil
         let newWords = editDraft.split(separator: " ").map(String.init).filter { !$0.isEmpty }
+        // Unchanged text is not an edit: committing it used to emit one edit_caption per slot,
+        // marking the session dirty (Save → a pointless re-render).
+        let oldWords = p.text.split(separator: " ").map(String.init).filter { !$0.isEmpty }
+        guard newWords != oldWords else { return }
         var ops: [WireOp] = []
         // Clear any stray captions in the phrase's span that sit off the transcript slots
         // (e.g. server-side chat edits) so the redistribute below fully owns the range.
