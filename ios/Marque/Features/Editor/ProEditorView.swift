@@ -10,6 +10,8 @@ import PhotosUI
 struct ProEditorView: View {
     @Environment(AppStore.self) var store
     @Environment(\.dismiss) var dismiss
+    // ED-2: the unsaved draft is flushed to disk whenever the app leaves the foreground.
+    @Environment(\.scenePhase) private var scenePhase
     let clip: Clip
 
     enum Phase: Equatable { case loading, editing, applying, rendering, failed(String) }
@@ -125,6 +127,13 @@ struct ProEditorView: View {
     // R10: keyboard-first text — the sticker index being live-typed (bound TextField).
     @State var typingSticker: Int? = nil
     @FocusState var stickerFieldFocused: Bool
+    // ED-2: per-job draft persistence (the op log survives an app kill) + ED-1: a failed
+    // Save keeps the user editing with an inline reason and, when it can help, Retry.
+    @State var draftAutosaver: EditorDraftAutosaver? = nil
+    @State var saveError: EditorSaveNotice? = nil
+    // Set after a failure that may have landed server-side (transport drop, 5xx): the next
+    // attempt re-reads the job and refuses to re-send onto a base that moved.
+    @State var saveNeedsBaseCheck = false
 
     struct WordSpan: Identifiable { var id: Int { startFrame }; let text: String; let startFrame: Int; let endFrame: Int }
 
@@ -158,7 +167,10 @@ struct ProEditorView: View {
         .preferredColorScheme(.dark)
         .marqueConfirm($confirmDiscard, title: "Discard your edits?",
                        message: "You have unsaved changes. Save re-cuts the clip; discarding loses them.",
-                       confirm: "Discard edits", destructive: true, cancel: "Keep editing") { dismiss() }
+                       confirm: "Discard edits", destructive: true, cancel: "Keep editing") {
+            draftAutosaver?.close()          // ED-2: a confirmed discard deletes the saved draft too
+            dismiss()
+        }
         // Dialogs + sheets live on the ROOT, not modeToolbar — the toolbar swaps out while the
         // caption list is open (dialog would never render), and an .overlay hosted by a 64pt
         // view clips its accessibility/hit-testing to that frame.
@@ -181,6 +193,14 @@ struct ProEditorView: View {
         .onChange(of: phase) { _, p in
             if p == .editing { maybeHint("tapClip", icon: "hand.tap", text: "Tap a clip to select it") }
         }
+        // ED-2: every committed gesture / undo / redo re-stamps the on-disk draft (debounced);
+        // an empty op log deletes it.
+        .onChange(of: session?.revision) { _, _ in
+            if let session { draftAutosaver?.schedule(session.opLog) }
+        }
+        .onChange(of: scenePhase) { _, p in
+            if p != .active { draftAutosaver?.flush() }
+        }
         .onChange(of: rootPanel) { _, p in
             // The filter cards' representative frame loads lazily on first entry to Filters —
             // this is its ONLY trigger (without it the cards show the placeholder gradient).
@@ -194,6 +214,7 @@ struct ProEditorView: View {
             if !focused, let idx = typingSticker { commitTyping(idx) }
         }
         .onDisappear {
+            draftAutosaver?.flush()          // ED-2: whatever was pending reaches disk
             // #47: do NOT cancel a save that's already committing/rendering. Once Save
             // fires, applyTask owns the server commit + render poll and writes the result
             // back to the STORE (which outlives this view) via applyTweakResult — so the
@@ -304,6 +325,7 @@ struct ProEditorView: View {
         VStack(spacing: 0) {
             playerSurface                       // flexes to fill; keeps the toolbar pinned bottom
             if let t = transient { transientBar(t) }
+            if let e = saveError { saveErrorBar(e) }
             if showCaptionList {
                 // CapCut pattern: the caption list replaces the timeline pane inline —
                 // a system sheet here is invisible to accessibility/automation.
@@ -1175,12 +1197,12 @@ struct ProEditorView: View {
     }
 
     /// A capsule toast over the canvas (CapCut's "Undo: Split" pattern), auto-dismissed.
-    func showToast(_ msg: String) {
+    func showToast(_ msg: String, seconds: Double = 1.5) {
         withAnimation(.easeOut(duration: 0.15)) { toast = msg }
         toastTick += 1
         let mine = toastTick
         Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             if toastTick == mine { withAnimation(.easeOut(duration: 0.2)) { toast = nil } }
         }
     }

@@ -31,6 +31,33 @@ extension ProEditorView {
         }
         let doc = EditorDocument(edl: edlDict)
         let sess = EditorSession(document: doc)
+
+        // ED-2: replay an unsaved draft — but ONLY onto the exact EDL its ops were made
+        // against (or, after a kept-edits retheme, the same structure). Each persisted
+        // gesture replays through LocalEDLEngine as its own undo step.
+        let base = EditorDraftBase(edl: edlDict)
+        draftAutosaver?.flush()                  // a reload: the outgoing saver writes first…
+        draftAutosaver?.close(deleting: false)   // …then retires, so it can't overwrite below
+        let saver = EditorDraftAutosaver(jobId: jobId, base: base)
+        EditorDraftStore.prune()
+        let stored = EditorDraftStore.load(jobId: jobId)
+        var restoredNote: String? = nil
+        switch EditorDraft.decide(stored, against: base) {
+        case .restore:
+            let gestures = stored?.gestures ?? []
+            let applied = sess.replay(gestures)
+            if applied > 0 {
+                restoredNote = applied == gestures.count
+                    ? "Restored your unsaved edits"
+                    : "Restored \(applied) of \(gestures.count) unsaved edits"
+            }
+            saver.schedule(sess.opLog)            // re-stamp onto this base (clears a carry flag)
+        case .drop:
+            EditorDraftStore.clear(jobId: jobId)  // the server EDL moved: the ops may not fit it
+        case .none:
+            break
+        }
+        draftAutosaver = saver
         session = sess
 
         // Source video: prefer the local recording, else the server public URL, else placeholder.
@@ -38,7 +65,7 @@ extension ProEditorView {
         if let local = clip.localVideoPath { url = MediaStore.url(for: local) }
         if url == nil, let src = result["source_url"] as? String, let u = URL(string: src) { url = u }
         let pc = EditorPlayerController(sourceURL: url)
-        pc.update(document: doc)
+        pc.update(document: sess.draft)
         player = pc
         filmstrip = FilmstripCache(sourceURL: url)
         if let fs = filmstrip { Task { await fs.warm(durationSeconds: doc.outputSeconds) } }
@@ -53,7 +80,7 @@ extension ProEditorView {
             return WordSpan(text: text, startFrame: sf, endFrame: max(sf + 1, msToFrame(em)))
         }.sorted { $0.startFrame < $1.startFrame }
 
-        captionsOn = !doc.captions.isEmpty       // #1: seed enabled-state from what loaded
+        captionsOn = !sess.draft.captions.isEmpty   // #1: seed enabled-state from what loaded
         // A7: the active theme (if EDIT_THEMES produced one) — optional, absent-safe
         // (older jobs / EDIT_THEMES off never carry it).
         activeThemeId = result["theme_id"] as? String ?? ""
@@ -63,6 +90,7 @@ extension ProEditorView {
         // between the tap and the timeline — none is needed to start cutting, so they
         // hydrate in the background and their surfaces fill in as they land.
         phase = .editing
+        if let restoredNote { showToast(restoredNote, seconds: 3) }
         Task { if let all = await store.backend.editorCapabilities() { caps = all[doc.style] } }
         Task { await MusicCatalog.hydrate(using: store.backend) }
         Task { if themes.isEmpty { themes = await store.backend.fetchThemes() } }
@@ -900,7 +928,22 @@ extension ProEditorView {
     // MARK: Save (flatten op log → one tweak POST → per-clip poll → reload)
 
     func save() {
-        guard let session, session.isDirty, let jobId = clip.jobId, applyTask == nil else { dismiss(); return }
+        guard let session, session.isDirty, clip.jobId != nil, applyTask == nil else { dismiss(); return }
+        commitSave()
+    }
+
+    /// ED-1: the inline error bar's Retry — the same commit, guarded the same way.
+    func retrySave() {
+        guard session?.isDirty == true else { saveError = nil; return }
+        guard applyTask == nil else { return }
+        commitSave()
+    }
+
+    /// One Save attempt. The draft is on disk before the request leaves; every failure lands
+    /// back in `.editing` with the draft intact and an inline reason (ED-1) — never the
+    /// dead-end `.failed` screen, which used to throw the whole session away.
+    private func commitSave() {
+        guard let session, let jobId = clip.jobId else { return }
         let ops = session.flattenedOps()
         // defer_render is ONLY safe when the delivered MP4 is byte-for-byte unchanged.
         // A pure split qualifies (it just adds a cut point; the same frames play in the
@@ -908,27 +951,78 @@ extension ProEditorView {
         // output — deferring their render leaves the Library playing AND publishing the
         // pre-edit video (audit #6/#43). Only defer a split-only batch.
         let structural = !ops.isEmpty && ops.allSatisfy { ($0["type"] as? String) == "split_segment" }
+        let saver = draftAutosaver
+        let verifyBase = saveNeedsBaseCheck
+        saver?.flush()
+        withAnimation(.easeOut(duration: 0.15)) { saveError = nil }
         phase = .applying
         applyTask = Task {
-            let resp = await store.backend.tweakClipOps(jobId: jobId, clipId: clip.id.uuidString, ops: ops, deferRender: structural)
-            if resp["error"] as? Bool == true {
-                if resp["transient"] as? Bool == true { phase = .editing; applyTask = nil; flash(resp["reply"] as? String ?? "Still busy, try again."); return }
-                phase = .failed(resp["reply"] as? String ?? "Couldn't apply your edits."); return
+            if verifyBase, let saver {
+                // A transport drop or 5xx can surface AFTER the server applied the ops, and
+                // /tweak has no idempotency key: re-sending blindly would apply every op
+                // twice. Re-read the job; only an unchanged base is safe to send onto.
+                let (job, http) = await store.backend.pollClipJobWithStatus(jobId: jobId)
+                let edl = job?["edl"] as? [String: Any]
+                switch EditorLoadOutcome.classify(status: http, hasEDL: edl != nil) {
+                case .gone:
+                    finishSaveFailure(.gone(EditorSaveOutcome.goneCopy)); return
+                case .unreachable, .notReady:
+                    finishSaveFailure(.unreachable(EditorSaveOutcome.unreachableCopy, ambiguous: true)); return
+                case .ready:
+                    if let edl, EditorDraftBase(edl: edl).full != saver.base.full {
+                        // Most likely the earlier attempt landed. If it's rendering, let the
+                        // store-owned watcher carry the Library card to the finished cut.
+                        let mine = (job?["clips"] as? [[String: Any]])?.first {
+                            UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clip.id
+                        }
+                        if mine?["status"] as? String == "rendering" {
+                            store.setClipRendering(clip.id)
+                            store.watchTweakRender(jobId: jobId, clipId: clip.id, label: "Manual edit")
+                        }
+                        finishSaveFailure(.rejected(EditorSaveOutcome.baseMovedCopy)); return
+                    }
+                }
             }
-            let needsRender = resp["needs_render"] as? Bool ?? false
-            if needsRender {
-                // Build 57 (owner): never hold the editor hostage on a render spinner.
-                // The Library card flips to "rendering" NOW, a store-owned watcher
-                // (survives this view) applies the result + notifies when the backend
-                // finishes, and the creator gets the app back immediately.
-                store.setClipRendering(clip.id)
-                store.watchTweakRender(jobId: jobId, clipId: clip.id, label: "Manual edit")
-                bumpHaptic()
-                dismiss()
-            } else {
-                dismiss()   // keyless/mock: applied in place
+            let outcome = await sendTweakOps(jobId: jobId, ops: ops, deferRender: structural)
+            switch outcome {
+            case .saved(let result):
+                saveNeedsBaseCheck = false
+                saver?.close()                      // committed server-side: the draft is done
+                if result.needsRender {
+                    // Build 57 (owner): never hold the editor hostage on a render spinner.
+                    // The Library card flips to "rendering" NOW, a store-owned watcher
+                    // (survives this view) applies the result + notifies when the backend
+                    // finishes, and the creator gets the app back immediately.
+                    store.setClipRendering(clip.id)
+                    store.watchTweakRender(jobId: jobId, clipId: clip.id, label: "Manual edit")
+                    bumpHaptic()
+                    dismiss()
+                } else {
+                    dismiss()   // keyless/mock: applied in place
+                }
+            case .unreachable(_, let ambiguous):
+                if ambiguous { saveNeedsBaseCheck = true }
+                finishSaveFailure(outcome)
+            case .busy, .gone, .rejected:
+                finishSaveFailure(outcome)
             }
         }
+    }
+
+    private func finishSaveFailure(_ outcome: EditorSaveOutcome) {
+        applyTask = nil
+        phase = .editing
+        withAnimation(.easeOut(duration: 0.15)) { saveError = outcome.notice }
+    }
+
+    /// POST /tweak with the HTTP status intact — the adapter's tweakClipOps folds 5xx JSON
+    /// bodies into "success" and transport failures into one generic string, so the save
+    /// path classifies the raw status itself (EditorSaveOutcome.classify).
+    private func sendTweakOps(jobId: String, ops: [[String: Any]], deferRender: Bool) async -> EditorSaveOutcome {
+        let path = "/v1/clips/\(jobId)/tweak" + (deferRender ? "?defer_render=1" : "")
+        let (data, status) = await store.backend.postWithStatus(path, ["clip_id": clip.id.uuidString, "ops": ops])
+        let body = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        return EditorSaveOutcome.classify(status: status, body: body)
     }
 
     func pollClipUntilDone(jobId: String) async -> (ready: Bool, message: String?) {
@@ -985,6 +1079,42 @@ extension ProEditorView {
                 Button("Close") { dismiss() }.buttonStyle(.ds(.outline, height: 48)).padding(.top, Space.sm)
             }
         }.padding(Space.xl).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// ED-1: a failed Save keeps the user editing with the draft intact — the reason, plus
+    /// Retry whenever another attempt can succeed (offline, 5xx, a render still running).
+    func saveErrorBar(_ e: EditorSaveNotice) -> some View {
+        HStack(alignment: .center, spacing: Space.sm) {
+            Image(systemName: "exclamationmark.triangle").font(.system(size: 13, weight: .regular))
+                .foregroundStyle(Palette.textPrimary)
+            Text(e.message).font(AppFont.caption).foregroundStyle(Palette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if e.retryable {
+                Button { retrySave() } label: {
+                    Text("Retry").font(AppFont.caption.weight(.semibold))
+                        .foregroundStyle(Palette.onInk)
+                        .padding(.horizontal, 14).frame(height: 30)
+                        .background(Capsule().fill(Palette.ink))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(PressableStyle(dim: 0.85))
+                .accessibilityIdentifier("editorPro.save.retry")
+            }
+            Button { withAnimation(.easeOut(duration: 0.15)) { saveError = nil } } label: {
+                Image(systemName: "xmark").font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Palette.textSecondary)
+                    .frame(width: 30, height: 30).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+            .accessibilityIdentifier("editorPro.save.errorDismiss")
+        }
+        .padding(.leading, Space.screenH).padding(.trailing, Space.sm).padding(.vertical, 6)
+        .background(Palette.surfaceSunken)
+        // Container semantics so the Retry/Dismiss ids surface (cleanupPanel lesson).
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("editorPro.save.error")
     }
 
     func transientBar(_ t: String) -> some View {

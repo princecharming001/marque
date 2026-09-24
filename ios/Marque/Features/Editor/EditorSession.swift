@@ -21,6 +21,10 @@ final class EditorSession {
     private var redoStack: [Step] = []
     private(set) var opLog: [[WireOp]] = []      // one entry per applied gesture
 
+    /// Bumps on EVERY draft change (gesture, undo, redo, commit, replay) — the key the view
+    /// hangs draft-derived work on (autosave, memoized timeline geometry).
+    private(set) var revision = 0
+
     var canUndo: Bool { !undoStack.isEmpty }
     var canRedo: Bool { !redoStack.isEmpty }
     var isDirty: Bool { !opLog.isEmpty }
@@ -49,7 +53,17 @@ final class EditorSession {
         redoStack.removeAll()
         draft = next
         opLog.append(accepted)
+        revision += 1
         return true
+    }
+
+    /// ED-2 draft restore: re-apply persisted gestures in order, each through perform() —
+    /// so each is ONE undo step exactly as the user made it. Returns how many applied.
+    @discardableResult
+    func replay(_ gestures: [[WireOp]]) -> Int {
+        var applied = 0
+        for g in gestures where perform(g) { applied += 1 }
+        return applied
     }
 
     /// Returns the primary op type of the step that was undone (for a named toast), nil if nothing.
@@ -59,6 +73,7 @@ final class EditorSession {
         redoStack.append(Step(doc: draft, ops: step.ops))
         draft = step.doc
         if !opLog.isEmpty { opLog.removeLast() }
+        revision += 1
         return step.ops.first?.type
     }
 
@@ -68,6 +83,7 @@ final class EditorSession {
         undoStack.append(Step(doc: draft, ops: step.ops))
         draft = step.doc
         opLog.append(step.ops)
+        revision += 1
         return step.ops.first?.type
     }
 
@@ -83,5 +99,6 @@ final class EditorSession {
         undoStack.removeAll()
         redoStack.removeAll()
         opLog.removeAll()
+        revision += 1
     }
 }
