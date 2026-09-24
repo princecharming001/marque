@@ -115,6 +115,7 @@ final class AppStore {
         load()
         backend.editPrefs = editPrefs.asDictionary
         backend.creatorHandle = brand.pageHandle   // metrics poller scrapes this account
+        backend.pillarNames = pillars.map(\.name)   // Home picks rotate through the creator's pillars
         #if DEBUG
         // Deterministic Maestro/UI-audit entry: land straight on Home (all gates open),
         // bypassing the live plan-build step. Mirrors DevJumpMenu.jumpToHome but as a
@@ -2140,7 +2141,8 @@ final class AppStore {
         save()
         if outcome == .posted {
             let registered = scheduled
-            Task { await backend.registerPost(registered, clip: clip) }
+            let script = scripts.first(where: { $0.id == clip.scriptId })
+            Task { await backend.registerPost(registered, clip: clip, script: script) }
         }
     }
 
@@ -2609,13 +2611,15 @@ final class AppStore {
     // MARK: Trend → script (Coach "Write a script for this")
     func generateFromTrend(title: String, formatId: String) async {
         let style = Catalog.style(for: formatId)
-        let pillar = pillars.first(where: { !$0.name.isEmpty })
-            ?? Pillar(name: title, summary: title, angle: title, exampleTopics: [title],
-                      weight: 0.2, colorHex: Catalog.pillarColors[0])
+        // The TREND is the topic. This used to take the creator's first pillar whenever one
+        // existed, so "make a video on this trend" wrote about something else entirely.
+        let pillar = Pillar(name: title, summary: "Ride this trend: \(title)", angle: title,
+                            exampleTopics: [title], weight: 0.2, colorHex: Catalog.pillarColors[0])
         isGenerating = true
-        let f = Catalog.format(formatId)
         var made = await llm.generateScripts(brand: brand, pillar: pillar, count: 1, mediaContext: mediaContext, style: style, memory: memory)
-        made = made.map { var s = $0; s.formatId = formatId; s.targetSeconds = f.targetSeconds; return s }
+        // Keep the server's targetSeconds: it is measured from the words, and the
+        // teleprompter scrolls by it (the format's fixed number ran it too fast or slow).
+        made = made.map { var s = $0; s.formatId = formatId; return s }
         scripts.insert(contentsOf: made, at: 0)
         isGenerating = false
         save()
@@ -2806,7 +2810,8 @@ final class AppStore {
                 if let ci = clips.firstIndex(where: { $0.id == p.clipId }) {
                     clips[ci].status = .posted
                     let registered = p, clip = clips[ci]
-                    Task { await backend.registerPost(registered, clip: clip) }
+                    let script = scripts.first(where: { $0.id == clip.scriptId })
+                    Task { await backend.registerPost(registered, clip: clip, script: script) }
                 }
             }
         }
@@ -3036,6 +3041,7 @@ final class AppStore {
     }
 
     func save() {
+        backend.pillarNames = pillars.map(\.name)   // cheap; keeps the brand payload's pillars current
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -3208,7 +3214,17 @@ final class AppStore {
         guard let i = readiedScripts.firstIndex(where: { $0.script.id == script.id }) else { return }
         readiedScripts[i].script.body = fullBody
         if readiedScripts[i].script.title.isEmpty { readiedScripts[i].script.title = newTitle }
+        readiedScripts[i].script.targetSeconds = Self.measuredSeconds(readiedScripts[i].script)
         save()
+    }
+
+    /// Spoken length at a creator's pace (~165 wpm), the same measure the backend uses.
+    /// The teleprompter scrolls by targetSeconds, so an expanded brief must not keep the
+    /// brief card's placeholder number.
+    static func measuredSeconds(_ s: Script) -> Int {
+        let words = [s.hook.text, s.body, s.cta].joined(separator: " ")
+            .split(whereSeparator: { $0.isWhitespace }).count
+        return max(10, min(120, Int((Double(words) / 2.75).rounded())))
     }
 
     /// True for an idea-brief pick whose body is still just the one-line summary.
@@ -3227,6 +3243,7 @@ final class AppStore {
         var out = script
         out.body = fullBody
         if out.title.isEmpty { out.title = newTitle }
+        out.targetSeconds = Self.measuredSeconds(out)
         return out
     }
 

@@ -22,6 +22,9 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return v
     }()
     var creatorHandle = ""           // creator's own social handle — feeds the metrics poller
+    /// The creator's own pillar names (set by AppStore). Sent with the brand so Home picks
+    /// rotate through the creator's pillars, and so feedback can name a real pillar.
+    var pillarNames: [String] = []
     var editPrefs: [String: Any] = [:]   // set by AppStore; threaded into every clip job
     private(set) var lastMode = "Mock"   // "Claude" once a live response comes back
 
@@ -126,6 +129,10 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         if niches.count > 1 { body["topics"] = niches }
         let audiences = b.allAudiences
         if audiences.count > 1 { body["audiences"] = audiences }
+        // The creator's own pillars: the backend's Home picks rotate through them (they
+        // used to fall back to generic starter pillars because it never received these).
+        let pillars = pillarNames.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        if !pillars.isEmpty { body["pillars"] = pillars }
         return body
     }
 
@@ -240,7 +247,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     }
 
     func hookLab(brand: BrandGraph, topic: String, memory: CreatorMemory = CreatorMemory()) async -> [Hook] {
-        var body = brandBody(brand); body["topic"] = topic
+        var body = brandBody(brand); body["topic"] = topic; body["creator_id"] = creatorId
         if !memory.isEmpty { body["memory"] = memoryDict(memory) }
         guard let data = await post("/v1/hooks", body),
               let r = try? JSONDecoder().decode(HooksResp.self, from: data), !r.hooks.isEmpty else {
@@ -688,16 +695,20 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
 
     // MARK: Learning loop
 
-    func registerPost(_ post: ScheduledPost, clip: Clip) async {
+    func registerPost(_ post: ScheduledPost, clip: Clip, script: Script? = nil) async {
+        // creator_id: without it every post landed in the shared "default" bucket, where
+        // the backend refuses learning writes. pillar/style/hook_signal come from the
+        // SCRIPT (the clip title and style display name are not bandit dimensions).
         let body: [String: Any] = [
             "post_id": post.id.uuidString,
-            "clip_id": clip.id.uuidString,
+            "clip_id": clip.jobId ?? clip.id.uuidString,
+            "creator_id": creatorId,
             "platform": post.platforms.first.map { $0 == .instagram ? "instagram" : "tiktok" } ?? "instagram",
             "scheduled_at": ISO8601DateFormatter().string(from: post.date),
-            "pillar": clip.title,
-            "style": clip.formatName,
+            "pillar": script?.pillarName ?? "",
+            "style": script?.style ?? "",
             "format_id": clip.formatId,
-            "hook_signal": "",
+            "hook_signal": script?.hook.signal.rawValue ?? "",
             "predicted_score": clip.predictedScore,
             // Palo port: the creator's own handle — lets the backend metrics poller
             // scrape this account so post-performance insights can fire.
@@ -729,6 +740,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     func registerPostMetrics(postId: String, metrics: PostMetrics) async {
         let body: [String: Any] = [
             "post_id": postId,
+            "creator_id": creatorId,
             "views": metrics.views,
             "likes": metrics.likes,
             "comments": metrics.comments,
@@ -1001,7 +1013,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     /// 404-tolerant (older backends), so it's safe to call before the endpoint deploys.
     func sendFeedFeedback(script: Script, niche: String, verdict: String) async {
         _ = await post("/v1/feed/feedback", [
-            "creator_id": creatorId, "verdict": verdict, "niche": niche,
+            "creator_id": creatorId, "verdict": verdict, "niche": niche, "pillars": pillarNames,
             "script": ["title": script.title, "hook": script.hook.text,
                        "pillar": script.pillarName, "style": script.style,
                        "formatId": script.formatId, "hookSignal": script.hook.signal.rawValue],
