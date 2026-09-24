@@ -3432,6 +3432,8 @@ final class AppStore {
 
     // MARK: Import an external clip (I-6) — schedule a video you didn't film on Yunicorn.
 
+    /// Fallback for pickers with no file representation (small items only — the caller
+    /// prefers `importExternalClip(fileAt:)`, which never holds the video in memory).
     @discardableResult
     func importExternalClip(data: Data, title: String) async -> Clip {
         // File write, poster generation and the duration probe all run off the main
@@ -3446,6 +3448,35 @@ final class AppStore {
             let seconds = await Self.assetDurationSeconds(url)
             return (path, thumbPath, seconds)
         }.value
+        return insertImportedClip(path: path, thumbPath: thumbPath, seconds: seconds, title: title)
+    }
+
+    /// LV-8: import a picked video by FILE — the picker's streamed temp copy is moved into
+    /// the container (no Data round-trip: the old path loaded the whole video into memory,
+    /// which a multi-minute library video can't survive). Returns nil only if the file
+    /// couldn't be adopted (then nothing was inserted).
+    @discardableResult
+    func importExternalClip(fileAt src: URL, title: String) async -> Clip? {
+        let adopted = await Task.detached(priority: .userInitiated) { () async -> (String, String?, Int)? in
+            let ext = src.pathExtension.isEmpty ? "mov" : src.pathExtension.lowercased()
+            // Move (the picker copy is ours); copy as the fallback across volumes.
+            guard let path = MediaStore.adopt(fileAt: src, ext: ext)
+                    ?? MediaStore.saveFile(from: src, ext: ext) else { return nil }
+            try? FileManager.default.removeItem(at: src)      // no-op after a move
+            let url = MediaStore.url(for: path)
+            let thumbPath = MediaStore.poster(for: url)
+                .flatMap { $0.jpegData(compressionQuality: 0.7) }
+                .map { MediaStore.save($0, ext: "jpg") }
+            let seconds = await Self.assetDurationSeconds(url)
+            return (path, thumbPath, seconds)
+        }.value
+        guard let (path, thumbPath, seconds) = adopted else { return nil }
+        return insertImportedClip(path: path, thumbPath: thumbPath, seconds: seconds, title: title)
+    }
+
+    /// The shared tail of both imports: insert the ready "Imported" clip and upload it in
+    /// the background so it's postable.
+    private func insertImportedClip(path: String, thumbPath: String?, seconds: Int, title: String) -> Clip {
         let style = brand.preferredStyles.first ?? .talkingHead
         var clip = Clip(scriptId: UUID(), formatId: style.formats.first ?? "myth-buster",
                         formatName: "Imported", caption: "",
