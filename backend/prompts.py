@@ -3667,7 +3667,10 @@ GROUNDING_BLOCK = (
     "- A bracketed placeholder is a FEATURE, not a failure: one honest '[your number]' beats a fabricated "
     "'$3,180' every time. But prefer (b) or (c), and use AT MOST ONE bracketed fill-in per script: a "
     "script full of blanks reads as a template. Make the STRUCTURE specific; pull real specifics only "
-    "from the sources above."
+    "from the sources above.\n"
+    "- Never promise the viewer something the creator would have to deliver (a guide, a template, a "
+    "DM, a freebie, 'comment X and I'll send it') unless the sources above say they offer it. A CTA asks "
+    "for a save, a follow, a share, or a comment on the topic."
 )
 
 

@@ -215,6 +215,9 @@ def test_steer_keeps_title_and_shotplan_unless_asked():
     # too" / "when I moved out" until the rule said what personal means
     assert "asks for it to feel more personal" in sysp and "Never invent a memory" in sysp
     assert "'I used to do this too'" in prompts.GROUNDING_BLOCK
+    # ...and a from-brief CTA promised "Comment PROTEIN and I'll send it": no promises
+    for block in (prompts.GROUNDING_BLOCK, pp._GROUNDING_RULES):
+        assert "Never promise the viewer something the creator would have to deliver" in block
     # the model can only pass them through if it can see them
     assert "- title: you're eating protein wrong" in user
     assert "- shotPlan: " in user and "punch in on 'spread it across the day'" in user
