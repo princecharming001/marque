@@ -364,6 +364,64 @@ func runAll() {
     check(!sp.onlySplits, "empty log is not split-only")
     sp.perform([.split(0, at: 100)])
     check(sp.onlySplits, "split-only log")
+
+    section("timeline zoom + filmstrip density (ED-12)")
+    let w = 390.0
+    let fit10 = TimelineZoom.fitPPS(viewportWidth: w, totalSeconds: 600)
+    check(abs(fit10 - 330.0 / 600.0) < 1e-9, "10-min cut fits at 0.55 pt/s (old floor 6 showed ~55 s)")
+    check(TimelineZoom.fitPPS(viewportWidth: w, totalSeconds: 3600) == 0.5, "fit never drops below 0.5 pt/s")
+    check(TimelineZoom.fitPPS(viewportWidth: w, totalSeconds: 1) == 110, "fit never exceeds the max zoom")
+    check(TimelineZoom.minPPS(fit: fit10) == fit10, "pinch floor drops to fit on long cuts")
+    check(TimelineZoom.minPPS(fit: 41) == 6, "pinch floor stays 6 on short cuts")
+    check(TimelineZoom.clamp(0.1, fit: fit10) == fit10 && TimelineZoom.clamp(500, fit: fit10) == 110, "pinch clamps")
+    // Zoom cycle: long cut fit → default → close → fit.
+    check(TimelineZoom.nextCycleLevel(current: 18, fit: fit10) == 60, "default → close")
+    check(TimelineZoom.nextCycleLevel(current: 60, fit: fit10) == fit10, "close → fit")
+    check(TimelineZoom.nextCycleLevel(current: fit10, fit: fit10) == 18, "fit → default")
+    // Short cut whose fit sits between default and close (old code cycled 60 ↔ fit forever).
+    let fit8 = TimelineZoom.fitPPS(viewportWidth: w, totalSeconds: 8)
+    var lvl = 18.0, seen = Set<Int>()
+    for _ in 0..<6 { lvl = TimelineZoom.nextCycleLevel(current: lvl, fit: fit8); seen.insert(Int(lvl.rounded())) }
+    check(seen == Set([18, 60, Int(fit8.rounded())]), "short cut still cycles through all three levels")
+    check(TimelineZoom.nextCycleLevel(current: 18.3, fit: 18.2) == 60, "fit ≈ default collapses, still advances")
+    check(TimelineZoom.nextCycleLevel(current: 33, fit: fit10) == 60, "off-cycle pinch level uses old thresholds")
+    check(TimelineZoom.rulerInterval(pps: 18) == 2 && TimelineZoom.rulerInterval(pps: 60) == 1,
+          "ruler intervals unchanged at normal zoom")
+    check(TimelineZoom.rulerInterval(pps: fit10) == 120, "10-min fit → 2-minute ruler steps")
+    check(TimelineZoom.rulerLabel(seconds: 12, interval: 2) == "12s"
+          && TimelineZoom.rulerLabel(seconds: 240, interval: 120) == "4:00", "ruler labels")
+    check(TimelineZoom.acrossLabel(viewportWidth: w, pps: 18) == "18s across", "pill at default zoom")
+    check(TimelineZoom.acrossLabel(viewportWidth: w, pps: fit10) == "10:00 across", "pill at long fit")
+
+    for (pps, b) in [(0.5, -1), (0.55, -1), (1.0, 0), (6.0, 2), (18.0, 4), (60.0, 5), (110.0, 6)] {
+        check(FilmstripDensity.zoomBucket(pps: pps) == b, "bucket(\(pps)) == \(b)")
+    }
+    // Rendered-width sizing: every clip's thumbs land ~51–102 pt wide within its bucket.
+    for pps in [0.55, 1.3, 6.0, 18.0, 33.0, 60.0, 110.0] {
+        let b = FilmstripDensity.zoomBucket(pps: pps)
+        let n = FilmstripDensity.thumbCount(outputSeconds: 90, sourceSeconds: 90, bucket: b, totalOutputSeconds: 90)
+        let perThumb = 90 * pps / Double(n)
+        check(n == 1 || n == 90 || (perThumb >= 45 && perThumb <= 110),
+              "90 s clip @\(pps) pt/s → \(n) thumbs, \(Int(perThumb)) pt each")
+    }
+    let long18 = FilmstripDensity.thumbCount(outputSeconds: 600, sourceSeconds: 600,
+                                             bucket: FilmstripDensity.zoomBucket(pps: 18), totalOutputSeconds: 600)
+    check(Double(600 * 18) / Double(long18) <= 110, "10-min clip at default zoom: \(long18) thumbs, not 12 (~900 pt each)")
+    let longMax = FilmstripDensity.thumbCount(outputSeconds: 600, sourceSeconds: 600,
+                                              bucket: FilmstripDensity.zoomBucket(pps: 110), totalOutputSeconds: 600)
+    check(longMax == FilmstripDensity.timelineBudget, "max zoom on a long take is capped by the memory budget")
+    // Budget is shared across clips.
+    let shares = (0..<50).map { _ in FilmstripDensity.thumbCount(outputSeconds: 12, sourceSeconds: 12,
+                                                                  bucket: 6, totalOutputSeconds: 600) }
+    check(shares.reduce(0, +) <= FilmstripDensity.timelineBudget + 50, "50 clips stay within the timeline budget")
+    check(FilmstripDensity.thumbCount(outputSeconds: 0.3, sourceSeconds: 1, bucket: 0, totalOutputSeconds: 600) == 1,
+          "a sliver still gets one frame")
+    let samples = FilmstripDensity.sampleSeconds(srcIn: 300, srcOut: 18300, count: 7)
+    check(samples.count == 7 && Set(samples).count == 7 && samples == samples.sorted()
+          && samples.first == 10 && samples.last! < 610, "samples: distinct, ascending, inside the span")
+    check(FilmstripDensity.sampleSeconds(srcIn: 0, srcOut: 60, count: 9) == [0, 1], "never more than one per second")
+    check(FilmstripDensity.warmStride(durationSeconds: 60) == 5 && FilmstripDensity.warmStride(durationSeconds: 3600) == 100,
+          "warm stride: 5 s on short takes, ≤ ~36 frames on long ones")
 }
 
 MainActor.assumeIsolated { runAll() }

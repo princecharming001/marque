@@ -12,6 +12,9 @@ struct EditorTimeline: View {
     let player: EditorPlayerController?
     let filmstrip: FilmstripCache?
     @Binding var pointsPerSecond: CGFloat
+    // ED-12: this cut's zoom-cycle "fit" level — also the pinch floor when it sits below
+    // the usual 6 pt/s (a 10-minute take only fits at ~0.5 pt/s).
+    var fitPointsPerSecond: CGFloat = 6
     // Selection is OWNED BY THE PARENT (one-bar invariant): the timeline only reads it and
     // reports taps — it never writes selection state directly (the old @Binding writes could
     // not clear the music/phrase selections the parent also tracks).
@@ -100,9 +103,7 @@ struct EditorTimeline: View {
     private var totalSeconds: Double { document.outputSeconds }
     /// Build 54: quantized zoom level for filmstrip density — crossed only by real pinch
     /// zooms, so trim drags (which never change pps) never re-key thumbnail generation.
-    private var zoomBucket: Int {
-        pointsPerSecond < 14 ? 0 : pointsPerSecond < 28 ? 1 : pointsPerSecond < 56 ? 2 : 3
-    }
+    private var zoomBucket: Int { FilmstripDensity.zoomBucket(pps: Double(pointsPerSecond)) }
     private func width(_ frames: Int) -> CGFloat { CGFloat(framesToSeconds(frames)) * pointsPerSecond }
     private func width(_ frames: Int, speed: Double) -> CGFloat {
         CGFloat(framesToSeconds(outputFrames(frames, speed: speed))) * pointsPerSecond
@@ -257,11 +258,13 @@ struct EditorTimeline: View {
 
     private func ruler(width: CGFloat) -> some View {
         // Adaptive label interval (CapCut): densest interval that keeps labels >= 36pt apart —
-        // 2s at the default 18 pt/s, 1s zoomed in, 5s at minimum zoom (pps clamps to 8...60).
-        let interval = [1, 2, 5, 10].first { CGFloat($0) * pointsPerSecond >= 36 } ?? 10
+        // 2s at the default 18 pt/s, 1s zoomed in; ED-12: minute steps ("2:00") when a long
+        // cut is zoomed out to fit.
+        let interval = TimelineZoom.rulerInterval(pps: Double(pointsPerSecond))
         return HStack(spacing: 0) {
             ForEach(0..<max(1, Int(totalSeconds / Double(interval)) + 1), id: \.self) { i in
-                Text("\(i * interval)s").font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                Text(TimelineZoom.rulerLabel(seconds: i * interval, interval: interval))
+                    .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
                     .lineLimit(1).minimumScaleFactor(0.7)
                     .frame(width: CGFloat(interval) * pointsPerSecond, alignment: .leading)
             }
@@ -305,7 +308,13 @@ struct EditorTimeline: View {
         // I-7: dim the other clips when one is selected so the target is unmistakable.
         let dimmed = selectedSeg != nil && !selected
         ZStack {
-            FilmstripThumbs(filmstrip: filmstrip, srcIn: srcIn, srcOut: srcOut, width: w, zoomBucket: zoomBucket)
+            // ED-12: density follows the rendered width (committed length, never the live trim
+            // preview, so a trim drag can't re-key generation), within the timeline budget.
+            FilmstripThumbs(filmstrip: filmstrip, srcIn: srcIn, srcOut: srcOut, width: w, zoomBucket: zoomBucket,
+                            thumbCount: FilmstripDensity.thumbCount(
+                                outputSeconds: framesToSeconds(outputFrames(keptFrames, speed: speed)),
+                                sourceSeconds: Int(framesToSeconds(srcOut - srcIn).rounded(.up)),
+                                bucket: zoomBucket, totalOutputSeconds: totalSeconds))
                 .frame(width: w, height: 64).clipped()
                 // FT-1: decorative — `.clipped()` hides overflow but never clipped HIT
                 // testing, so frames spilling past this cell took taps meant for its neighbour.
@@ -772,7 +781,8 @@ struct EditorTimeline: View {
             .onChanged { v in
                 // (A scrub in flight re-anchors itself while the pinch is live — see scrubGesture.)
                 if pinchBasePPS == nil { pinchBasePPS = pointsPerSecond }
-                pointsPerSecond = max(6, min(110, (pinchBasePPS ?? pointsPerSecond) * v))
+                pointsPerSecond = CGFloat(TimelineZoom.clamp(Double((pinchBasePPS ?? pointsPerSecond) * v),
+                                                             fit: Double(fitPointsPerSecond)))
             }
             .onEnded { _ in pinchBasePPS = nil }
     }
@@ -894,43 +904,50 @@ struct RemoteRollThumb: View {
 }
 
 // Renders the filmstrip thumbnails across a clip's source span (async-loaded, placeholder solid).
+// ED-12: the frames live ONLY in the shared, cost-capped FilmstripCache. The old per-cell
+// [Int: UIImage] kept every frame it ever loaded (across zoom levels, never pruned) outside
+// the cache's 24 MB cap, and its count was fixed per clip (8–32), so a 10-minute take drew
+// ~900 pt-wide thumbnails.
 struct FilmstripThumbs: View {
     let filmstrip: FilmstripCache?
     let srcIn: Int
     let srcOut: Int
     let width: CGFloat
     var zoomBucket: Int = 1
-    @State private var images: [Int: UIImage] = [:]
+    var thumbCount: Int = 12
+    @State private var landed = 0              // bumps as frames arrive → re-read the cache
 
     private var sampleSeconds: [Int] {
-        // Trim-lag fix: density derives from the clip's DURATION + the QUANTIZED zoom
-        // bucket, never from the live width — width changes on every trim-drag tick and
-        // used to re-key the generation task each tick (the dominant drag lag). The zoom
-        // bucket (build 54) only crosses on real pinch zooms, so zooming in reveals more
-        // real frames while trims still never re-key.
-        let cap = [8, 12, 20, 32][max(0, min(3, zoomBucket))]
-        let start = Int(framesToSeconds(srcIn)), end = max(start + 1, Int(framesToSeconds(srcOut)))
-        let step = max(1, (end - start) / cap)
-        return Array(stride(from: start, to: end, by: step))
+        // Trim-lag fix: density derives from the clip's committed length + the QUANTIZED
+        // zoom bucket, never from the live width — width changes on every trim-drag tick
+        // and used to re-key the generation task each tick (the dominant drag lag).
+        FilmstripDensity.sampleSeconds(srcIn: srcIn, srcOut: srcOut, count: thumbCount)
     }
 
     var body: some View {
+        let _ = landed
         HStack(spacing: 0) {
             ForEach(sampleSeconds, id: \.self) { sec in
                 Group {
-                    if let img = images[sec] { Image(uiImage: img).resizable().aspectRatio(contentMode: .fill) }
-                    else { Palette.surfaceSunken }
+                    if let img = filmstrip?.cachedThumbnail(atSourceSecond: Double(sec)) {
+                        Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+                    } else { Palette.surfaceSunken }
                 }
                 // FT-1: minWidth 0 — without it each slot's minimum was the thumbnail's fill
                 // width (~36 pt at 64 pt tall), so the strip laid out WIDER than its cell.
                 .frame(minWidth: 0, maxWidth: .infinity).frame(height: 64).clipped()
             }
         }
-        .task(id: "\(srcIn)-\(srcOut)-\(zoomBucket)") {
+        .task(id: "\(srcIn)-\(srcOut)-\(zoomBucket)-\(thumbCount)") {
             guard let filmstrip else { return }
             for sec in sampleSeconds {
-                if let img = await filmstrip.thumbnail(atSourceSecond: Double(sec)) { images[sec] = img }
+                if Task.isCancelled { return }     // re-keyed (zoom/edit) or scrolled away
+                if filmstrip.cachedThumbnail(atSourceSecond: Double(sec)) != nil { continue }
+                if await filmstrip.thumbnail(atSourceSecond: Double(sec)) != nil, !Task.isCancelled {
+                    landed &+= 1
+                }
             }
+            if !Task.isCancelled { landed &+= 1 }  // frames another cell cached meanwhile
         }
     }
 }

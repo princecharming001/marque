@@ -17,6 +17,7 @@ xcrun swiftc -swift-version 5 -o "$OUT/editor-logic" \
   "$ED/EditorSession.swift" \
   "$ED/EditorDraft.swift" \
   "$ED/EditorHex.swift" \
+  "$ED/TimelineZoomMath.swift" \
   "$HERE/main.swift"
 
 "$OUT/editor-logic"

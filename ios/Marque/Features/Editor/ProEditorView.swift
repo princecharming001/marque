@@ -147,6 +147,8 @@ struct ProEditorView: View {
     // Outlives teardown (a reference box): the retheme poll checks it before reloading, so
     // a render finishing after the editor closed never spins up a player nobody sees.
     @State var lifetime = EditorLifetime()
+    // ED-12: the filmstrip warm-up, cancelled on reload/close (it used to run to the end).
+    @State var filmstripWarm: Task<Void, Never>? = nil
     // ED-5: phrases/strips memoized per draft revision (not rebuilt per body pass).
     @State private var phraseMemo = CaptionPhraseMemo()
 
@@ -255,6 +257,7 @@ struct ProEditorView: View {
         .onAppear { lifetime.visible = true }
         .onDisappear {
             lifetime.visible = false
+            filmstripWarm?.cancel()
             draftAutosaver?.flush()          // ED-2: whatever was pending reaches disk
             // #47: do NOT cancel a save that's already committing/rendering. Once Save
             // fires, applyTask owns the server commit + render poll and writes the result
@@ -2055,6 +2058,7 @@ struct ProEditorView: View {
             player: player,
             filmstrip: filmstrip,
             pointsPerSecond: $pointsPerSecond,
+            fitPointsPerSecond: CGFloat(fitPPS),
             selectedSeg: selectedSeg,
             selectedOverlay: selectedOverlay,
             onTrim: { segIdx, edge, newFrame in trim(segIdx: segIdx, edge: edge, to: newFrame) },
@@ -2129,18 +2133,24 @@ struct ProEditorView: View {
         .onChange(of: pointsPerSecond) { _, pps in flashZoomPill(pps) }
     }
 
+    /// ED-12: pt/s that fits the WHOLE cut across the timeline. It was clamped to ≥ 6 pt/s,
+    /// so "fit" topped out at ~55 s and a 10-minute take could never be seen whole.
+    private var fitPPS: Double {
+        TimelineZoom.fitPPS(viewportWidth: Double(UIScreen.main.bounds.width),
+                            totalSeconds: session?.draft.outputSeconds ?? 1)
+    }
+
     /// Cycle fit-whole-video → default → close-up (the visible redundancy for pinch).
     private func cycleZoom() {
-        let total = max(1.0, session?.draft.outputSeconds ?? 1)
-        let fit = max(6, min(110, (UIScreen.main.bounds.width - 60) / total))
-        let next: CGFloat = pointsPerSecond < 17 ? 18 : (pointsPerSecond < 55 ? 60 : fit)
-        withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = next }
+        let next = TimelineZoom.nextCycleLevel(current: Double(pointsPerSecond), fit: fitPPS)
+        withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = CGFloat(next) }
         bumpHaptic()
     }
 
     private func flashZoomPill(_ pps: CGFloat) {
-        let visible = (UIScreen.main.bounds.width - 60) / max(6, pps)
-        withAnimation(.easeOut(duration: 0.15)) { zoomPill = String(format: "%.0fs across", visible) }
+        withAnimation(.easeOut(duration: 0.15)) {
+            zoomPill = TimelineZoom.acrossLabel(viewportWidth: Double(UIScreen.main.bounds.width), pps: Double(pps))
+        }
         zoomPillWork?.cancel()
         let work = DispatchWorkItem { withAnimation(.easeOut(duration: 0.25)) { zoomPill = nil } }
         zoomPillWork = work

@@ -70,8 +70,12 @@ extension ProEditorView {
         let pc = EditorPlayerController(sourceURL: url)
         pc.update(document: sess.draft)
         player = pc
+        filmstripWarm?.cancel()
         filmstrip = FilmstripCache(sourceURL: url)
-        if let fs = filmstrip { Task { await fs.warm(durationSeconds: doc.outputSeconds) } }
+        // Warm across the whole SOURCE (the cut can come from anywhere in the take — it used
+        // to warm only the first `outputSeconds` of source), cancellable.
+        let sourceExtent = framesToSeconds(doc.segments.map(\.srcOut).max() ?? 0)
+        if let fs = filmstrip { filmstripWarm = Task { await fs.warm(durationSeconds: sourceExtent) } }
 
         // Transcript words for the Text-mode word editor.
         let raw = result["words"] as? [[String: Any]] ?? []
