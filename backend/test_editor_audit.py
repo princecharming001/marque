@@ -494,3 +494,140 @@ def test_plan_author_keeps_tailored_edit_despite_degenerate_drop(monkeypatch):
     assert edl is not None, "a zero-frame drop must not discard the tailored edit"
     assert llm_contributed is True and plan
     assert _degenerate(edl["drops"]) == []
+
+
+# ---------------------------------------------------------------------------
+# LV-23 — queue time is not render time; poll ceiling keeps scaling; the clip watchdog
+# covers the post-render tail
+# ---------------------------------------------------------------------------
+
+def _rendering_job(jid, clip, status="ready", stage_age=5.0):
+    now = _time.time()
+    return {jid: {"job_id": None, "status": status, "created_at": now - stage_age,
+                  "stage_started_at": now - stage_age, "clips": [clip]}}
+
+
+def test_queued_clip_is_not_swept_even_with_an_ancient_stamp(monkeypatch):
+    monkeypatch.setattr(main, "RENDER_WATCHDOG_S", 480)
+    now = _time.time()
+    clip = {"clip_id": "c1", "status": "rendering", "render_gen": 3,
+            "render_started_at": now - 99_999, "render_queued_at": now - 900}
+    main._sweep_stuck_renders(_rendering_job("q1", clip))
+    assert clip["status"] == "rendering" and clip["render_gen"] == 3   # waiting ≠ stalled
+
+
+def test_queue_backstop_fails_a_clip_waiting_past_the_max(monkeypatch):
+    now = _time.time()
+    clip = {"clip_id": "c1", "status": "rendering", "render_gen": 3,
+            "render_queued_at": now - main.RENDER_QUEUE_MAX_S - 5}
+    main._sweep_stuck_renders(_rendering_job("q2", clip))
+    assert clip["status"] == "failed" and clip["error"] == "render_stalled"
+    assert "render_queued_at" not in clip and clip["render_gen"] == 4
+
+
+def test_queued_clip_spares_its_rendering_job(monkeypatch):
+    monkeypatch.setattr(main, "RENDER_WATCHDOG_S", 480)
+    now = _time.time()
+    clip = {"clip_id": "c1", "status": "rendering", "render_queued_at": now - 600}
+    jobs = _rendering_job("q3", clip, status="rendering", stage_age=10_000)
+    main._sweep_stuck_renders(jobs)
+    assert jobs["q3"]["status"] == "rendering" and clip["status"] == "rendering"
+
+
+def test_burst_queue_wait_never_kills_another_creators_render(monkeypatch):
+    async def scenario():
+        for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_SECRET",
+                  "REMOTION_FUNCTION_NAME"):
+            monkeypatch.setattr(main, k, "x")
+        monkeypatch.setattr(main, "RENDER_WATCHDOG_S", 480)
+
+        async def bridge(*args, timeout_s=None, **kwargs):
+            if args[0] == "submit":
+                return {"renderId": "r1", "bucketName": "b"}
+            return {"done": True, "outputFile": "https://cdn/out.mp4"}
+        monkeypatch.setattr(main, "_run_render_bridge", bridge)
+        sem = _aio.Semaphore(1)
+        monkeypatch.setattr(main, "_render_semaphore", sem)
+        await sem.acquire()                                  # every slot busy (long renders)
+        jid = "lv23-burst"
+        main._clip_jobs[jid] = {
+            "job_id": jid, "status": "rendering", "created_at": _time.time(),
+            "stage_started_at": _time.time(), "style": "talking_head", "source_url": "mock://x",
+            "edl": {"style": "talking_head", "format_id": "x",
+                    "segments": [{"src_in": 0, "src_out": 300}]},
+            "clips": [{"clip_id": "c1", "format": "myth-buster", "status": "queued"}]}
+        task = _aio.ensure_future(main._render_all_clips(jid))
+        await _aio.sleep(0.05)
+        clip = main._clip_jobs[jid]["clips"][0]
+        assert clip.get("render_queued_at")                  # visibly waiting for a slot
+        # …for far longer than the 480s watchdog (half the queue backstop):
+        clip["render_started_at"] -= main.RENDER_QUEUE_MAX_S / 2
+        clip["render_queued_at"] -= main.RENDER_QUEUE_MAX_S / 2
+        main._sweep_stuck_renders({jid: main._clip_jobs[jid]})
+        assert clip["status"] == "rendering"                 # NOT failed as render_stalled
+        sem.release()
+        await task
+        assert clip["status"] == "ready" and "render_queued_at" not in clip
+        assert _time.time() - clip["render_started_at"] < 5  # clock started at acquisition
+        main._clip_jobs.pop(jid, None)
+    _aio.run(scenario())
+
+
+def test_restore_drops_a_stale_queue_marker(monkeypatch):
+    now = _time.time()
+
+    class _Store:
+        async def load_clip_job(self, job_id):
+            return {"job_id": job_id, "status": "ready", "created_at": now - 9_000,
+                    "clips": [{"clip_id": "c1", "status": "rendering",
+                               "render_started_at": now - 9_000,
+                               "render_queued_at": now - 60}]}   # persisted mid-wait
+    monkeypatch.setattr(main, "_supabase_client", _Store())
+    main._clip_jobs.pop("lv23-restored", None)
+    job = _aio.run(main._restore_clip_job("lv23-restored"))
+    clip = job["clips"][0]
+    assert "render_queued_at" not in clip                # nobody is waiting in THIS process
+    main._sweep_stuck_renders({"lv23-restored": job})
+    assert clip["status"] == "failed"                    # judged by its (ancient) render clock
+    main._clip_jobs.pop("lv23-restored", None)
+
+
+def test_poll_budget_keeps_scaling_past_8000_frames():
+    assert main.RENDER_POLL_CEIL_S == 2400
+    assert main._scaled_render_budgets(8000)[0] == 1200
+    assert main._scaled_render_budgets(9000)[0] == 1320      # was capped at 1200
+    assert main._scaled_render_budgets(18000)[0] == 2400     # a 10-min output: full 240+0.12/f
+    assert main._scaled_render_budgets(40000)[0] == 2400     # still capped far out
+
+
+def test_clip_watchdog_window_covers_the_post_render_tail(monkeypatch):
+    monkeypatch.setattr(main, "RENDER_WATCHDOG_S", 480)
+    frames = 18000
+    poll = main._scaled_render_budgets(frames)[0]
+    tail = main._post_render_allowance_s(frames)
+    p1, p2 = main._finalize_timeouts_s(frames / 30)
+    assert tail >= p1 + p2 + main.POSTER_INLINE_WAIT_S
+    assert main._clip_render_budget_s(frames) == poll + tail
+    # Render finished right at its poll budget; finalize is 30s in → must NOT be swept.
+    now = _time.time()
+    clip = {"clip_id": "c1", "status": "rendering", "render_started_at": now - poll - 30,
+            "render_budget_s": main._clip_render_budget_s(frames)}
+    main._sweep_stuck_renders(_rendering_job("t1", clip))
+    assert clip["status"] == "rendering"
+
+
+def test_queued_preview_is_spared_and_preview_budget_scales(monkeypatch):
+    monkeypatch.setattr(main, "RENDER_WATCHDOG_S", 480)
+    now = _time.time()
+    queued = {"clip_id": "c1", "status": "ready", "preview_status": "rendering",
+              "preview_started_at": now - 99_999, "preview_queued_at": now - 600}
+    long_preview = {"clip_id": "c2", "status": "ready", "preview_status": "rendering",
+                    "preview_started_at": now - 600, "preview_budget_s": 900}
+    stale = {"clip_id": "c3", "status": "ready", "preview_status": "rendering",
+             "preview_started_at": now - 600}
+    jobs = {"p": {"job_id": None, "status": "ready", "created_at": now,
+                  "clips": [queued, long_preview, stale]}}
+    main._sweep_stuck_renders(jobs)
+    assert queued["preview_status"] == "rendering"
+    assert long_preview["preview_status"] == "rendering"     # inside its scaled window
+    assert stale["preview_status"] == "failed"               # flat window still applies

@@ -3383,6 +3383,12 @@ async def _restore_clip_job(job_id: str) -> dict | None:
     # (double-spend + "server restarted"). The persisted render_id/bucket_name (now
     # written mid-render) make this possible; _poll_remotion_render is idempotent.
     if job is state:                    # we won the restore (first to materialize it)
+        # LV-23: a "waiting for a render slot" marker only means something in the process
+        # that is waiting. A restored clip is never waiting HERE — drop it so the
+        # watchdog judges the clip by its render clock instead of sparing it forever.
+        for _c in job.get("clips") or []:
+            _c.pop("render_queued_at", None)
+            _c.pop("preview_queued_at", None)
         # A7: _theme (the resolved Theme object) is nulled before persist (it's a runtime-only
         # pydantic object; theme_id is the durable record). Re-resolve it from theme_id here so
         # a restored themed job actually renders themed — omitting this made every job restored
@@ -3404,8 +3410,7 @@ def _reattach_in_flight_renders(job: dict) -> None:
             # re-attached poll runs under the SAME scaled window as the original, so
             # the sweep must keep honoring it (a restored 4min render otherwise gets
             # the flat 480s watchdog against a ~1100s legitimate poll).
-            clip["render_budget_s"] = _scaled_render_budgets(
-                clip.get("render_total_frames"))[0]
+            clip["render_budget_s"] = _clip_render_budget_s(clip.get("render_total_frames"))
             my_gen = _bump_render_gen(clip)
             try:
                 _spawn(_reattach_one_render(job, clip, my_gen))
@@ -4584,14 +4589,14 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             # clock so slow (but succeeding) resolution can't get the render falsely
             # failed as stalled and its good result discarded.
             clip["render_started_at"] = time.time()
-        async with _render_semaphore:   # G7: bound cross-job Lambda concurrency
+        # G7: bound cross-job Lambda concurrency. Same queue-time exemption as
+        # _render_all_clips (LV-23): marked render_queued_at while waiting (the sweep
+        # skips it), render_started_at re-stamped at acquisition.
+        async with _render_slot(clip, lambda: _is_current_render(clip, my_gen)):
             # Superseded while queued? Bail before spending a Lambda render whose
             # result every write site (incl. our finally) would discard anyway.
             if not _is_current_render(clip, my_gen):
                 return
-            # Same queue-time exemption as _render_all_clips: re-stamp at acquisition
-            # so semaphore wait never counts against the render watchdog.
-            clip["render_started_at"] = time.time()
             submission = await _submit_remotion_render(
                 job["source_url"], job["edl"], clip["format"], job["style"])
             if not submission:
@@ -4600,9 +4605,9 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             clip["bucket_name"] = submission["bucket_name"]
             clip["render_total_frames"] = submission.get("total_frames")
             # Same watchdog/poller budget agreement as _render_all_clips: the sweep must
-            # honor the scaled window this render's poll actually runs under.
-            clip["render_budget_s"] = _scaled_render_budgets(
-                submission.get("total_frames"))[0]
+            # honor the scaled window this render's poll actually runs under (+ the
+            # post-render tail, LV-23).
+            clip["render_budget_s"] = _clip_render_budget_s(submission.get("total_frames"))
             if job.get("job_id"):
                 _spawn(_persist_clip_job(job["job_id"]))   # durable render_id -> restart re-attach
             render_url = await _poll_remotion_render(
@@ -4620,7 +4625,7 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             try:
                 await asyncio.wait_for(
                     _attach_poster(job.get("job_id", ""), clip, render_url, my_gen),
-                    timeout=8)
+                    timeout=POSTER_INLINE_WAIT_S)
             except (asyncio.TimeoutError, Exception):
                 _spawn(_attach_poster(job.get("job_id", ""), clip, render_url, my_gen))
             # A tweak (e.g. a fresh cut) can newly straddle an existing duet react
@@ -4670,14 +4675,18 @@ async def _preview_rerender_clip(job_id: str, clip_id: str,
     clip["preview_started_at"] = time.time()          # G-09: watchdog can now fail a stranded preview
     my_gen = clip["preview_gen"] = clip.get("preview_gen", 0) + 1   # guard: newest preview wins
     try:
-        async with _render_semaphore:
-            if clip.get("preview_gen") == my_gen:   # queue time ≠ render time (see _render_all_clips)
-                clip["preview_started_at"] = time.time()
+        # Queue time ≠ render time (LV-23, see _render_all_clips): preview_queued_at while
+        # waiting for a slot, preview_started_at re-stamped at acquisition.
+        async with _render_slot(clip, lambda: clip.get("preview_gen") == my_gen,
+                                prefix="preview"):
             submission = await _submit_remotion_render(
                 job["source_url"], edl_override or job["edl"], clip["format"], job["style"],
                 preview=True)
             if not submission:
                 raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
+            if clip.get("preview_gen") == my_gen:
+                # The sweep honors the scaled window this preview's poll runs under.
+                clip["preview_budget_s"] = _scaled_render_budgets(submission.get("total_frames"))[0]
             preview_url = await _poll_remotion_render(
                 submission["render_id"], submission["bucket_name"],
                 total_frames=submission.get("total_frames"))
@@ -5230,7 +5239,9 @@ RENDER_POLL_PER_FRAME_S = float(os.environ.get("RENDER_POLL_PER_FRAME_S", "0.12"
 # 1200 (was 900): with uploads unlocked to 150MB a 4-5min output is a legitimate render,
 # and at 0.12s/frame its scaled budget WANTS ~1100s+ — the 900 ceiling was killing those
 # renders at the cap while Lambda was still making progress (long-take audit 2026-08-22).
-RENDER_POLL_CEIL_S = int(os.environ.get("RENDER_POLL_CEIL_S", "1200"))
+# 2400 (was 1200, LV-23 2026-09-24): 1200 stopped the scaling at 8000 frames (~4.4 min
+# of output); a 10-min output (18000 frames) now gets its full 240 + 0.12 s/frame.
+RENDER_POLL_CEIL_S = int(os.environ.get("RENDER_POLL_CEIL_S", "2400"))
 # #18: renderMediaOnLambda DISPATCHES the render as part of the submit call, so a
 # killed-and-retried submit starts a SECOND, orphaned render. Give the submit a
 # generous cold-start-covering budget and never auto-retry it (_submit_remotion_render).
@@ -5259,6 +5270,57 @@ def _scaled_render_budgets(total_frames: int | None) -> tuple[int, int]:
 # and tweak-triggered re-render all funnel through _submit_remotion_render).
 RENDER_CONCURRENCY_CAP = int(os.environ.get("RENDER_CONCURRENCY_CAP", "3"))
 _render_semaphore = asyncio.Semaphore(RENDER_CONCURRENCY_CAP)
+
+# LV-23 (editor audit 2026-09-24): time spent WAITING for one of the render slots is not
+# render time. Every render path stamped render_started_at before queueing, so under a
+# burst (3 slots held by long renders) the watchdog failed OTHER creators' queued clips
+# as render_stalled before they ever submitted. A clip waiting for a slot now carries
+# `<prefix>_queued_at` (set by _render_slot, cleared the moment the slot is acquired,
+# which is also when the render clock re-stamps); the sweep leaves it alone unless it
+# has waited longer than RENDER_QUEUE_MAX_S. The marker is dropped on restore (a
+# restored clip is never waiting in THIS process), so it can't immunize a dead clip.
+RENDER_QUEUE_MAX_S = float(os.environ.get("RENDER_QUEUE_MAX_S", "3600"))
+# The clip stays `rendering` through the post-render tail (loudness finalize, matte QC,
+# poster), so the per-clip watchdog window = poll budget + this allowance (LV-23): the
+# sum of that tail's own bounded steps, so the watchdog never pre-empts a fail-soft
+# step that is still inside its own timeout.
+POSTER_INLINE_WAIT_S = 8.0
+_FINALIZE_UPLOAD_ALLOWANCE_S = 120.0    # S3 upload of the finalized mp4
+_MATTE_QC_ALLOWANCE_S = 210.0           # frame sampler (120s) + one vision call (90s)
+
+
+def _post_render_allowance_s(total_frames: int | None) -> int:
+    """Worst-case seconds of the post-render tail for an output of `total_frames`."""
+    dur_s = max(0.0, float(total_frames or 0) / 30.0)
+    pass1, pass2 = _finalize_timeouts_s(dur_s or None)
+    return int(pass1 + pass2 + 2 * FFPROBE_TIMEOUT_S + _FINALIZE_UPLOAD_ALLOWANCE_S
+               + _MATTE_QC_ALLOWANCE_S + POSTER_INLINE_WAIT_S)
+
+
+def _clip_render_budget_s(total_frames: int | None) -> int:
+    """render_budget_s stamped at submit: the SAME scaled poll budget the poller runs
+    under, plus the post-render allowance — the whole window the clip stays `rendering`
+    after its slot is acquired."""
+    return _scaled_render_budgets(total_frames)[0] + _post_render_allowance_s(total_frames)
+
+
+@asynccontextmanager
+async def _render_slot(clip: dict, is_current, prefix: str = "render"):
+    """`async with _render_slot(clip, is_current):` — acquire a render slot, marking the
+    clip `<prefix>_queued_at` while it waits and (re-)stamping `<prefix>_started_at` the
+    moment the slot is acquired. `is_current()` gates every write so a superseded
+    attempt never touches a newer attempt's markers (render_gen/preview_gen discipline)."""
+    queued_key, started_key = f"{prefix}_queued_at", f"{prefix}_started_at"
+    clip[queued_key] = time.time()
+    try:
+        async with _render_semaphore:
+            if is_current():
+                clip.pop(queued_key, None)
+                clip[started_key] = time.time()
+            yield
+    finally:
+        if is_current():
+            clip.pop(queued_key, None)
 
 
 def _fail_clip(clip: dict, code: str, detail: str = "") -> None:
@@ -5590,20 +5652,43 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
         return float(c.get("render_started_at") or job.get("stage_started_at")
                      or job.get("created_at") or now)
 
+    def _queued_s(c: dict, prefix: str = "render") -> float | None:
+        # LV-23: seconds this clip has been WAITING for a render slot (None = not
+        # queued). Waiting is not rendering — the watchdog leaves a queued clip alone
+        # until RENDER_QUEUE_MAX_S (a backstop, never hit by a healthy queue).
+        qa = c.get(f"{prefix}_queued_at")
+        try:
+            return max(0.0, now - float(qa)) if qa else None
+        except (TypeError, ValueError):
+            return None
+
     for job in jobs.values():
         for c in job.get("clips", []):
-            if c.get("status") == "rendering" and now - _render_anchor(c, job) > _clip_budget(c):
-                # Bump the render generation so the still-running task's late write is
-                # discarded (_is_current_render fails) — else it could flip the clip back
-                # to ready with contradictory state (audit D8).
-                _bump_render_gen(c)
-                _fail_clip(c, "render_stalled", f"render exceeded {int(_clip_budget(c))}s watchdog")
-                if job.get("job_id"): _touched.add(job["job_id"])
-            if c.get("preview_status") == "rendering" \
-                    and now - c.get("preview_started_at", now) > budget:
-                c["preview_gen"] = c.get("preview_gen", 0) + 1   # discard the stale preview's late write
-                c["preview_status"] = "failed"
-                c["preview_error"] = f"preview exceeded {int(budget)}s watchdog"
+            if c.get("status") == "rendering":
+                waited = _queued_s(c)
+                if waited is not None:
+                    if waited > RENDER_QUEUE_MAX_S:
+                        _bump_render_gen(c)                 # the waiter must not submit now
+                        c.pop("render_queued_at", None)
+                        _fail_clip(c, "render_stalled",
+                                   f"no render slot freed up within {int(RENDER_QUEUE_MAX_S)}s")
+                        if job.get("job_id"): _touched.add(job["job_id"])
+                elif now - _render_anchor(c, job) > _clip_budget(c):
+                    # Bump the render generation so the still-running task's late write is
+                    # discarded (_is_current_render fails) — else it could flip the clip back
+                    # to ready with contradictory state (audit D8).
+                    _bump_render_gen(c)
+                    _fail_clip(c, "render_stalled", f"render exceeded {int(_clip_budget(c))}s watchdog")
+                    if job.get("job_id"): _touched.add(job["job_id"])
+            if c.get("preview_status") == "rendering":
+                pwaited = _queued_s(c, "preview")
+                pbudget = max(budget, float(c.get("preview_budget_s") or 0.0))
+                if (pwaited is not None and pwaited > RENDER_QUEUE_MAX_S) or \
+                        (pwaited is None and now - c.get("preview_started_at", now) > pbudget):
+                    c["preview_gen"] = c.get("preview_gen", 0) + 1   # discard the stale preview's late write
+                    c.pop("preview_queued_at", None)
+                    c["preview_status"] = "failed"
+                    c["preview_error"] = f"preview exceeded {int(pbudget)}s watchdog"
         # "analyzing" and "processing" (one-tap submit) were MISSING from this set — a
         # deploy restart mid-analysis stranded the job in "analyzing" forever (observed
         # in prod 2026-07-12: job 2b0fc44c). Now every non-terminal pipeline stage is
@@ -5657,7 +5742,9 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
                 # Same per-clip scaled budget + anchor fallback as the clip sweep above:
                 # a long render inside ITS OWN earned window must keep sparing the job,
                 # and a stamp-less clip must not read as "actively rendering" forever.
-                and now - _render_anchor(c, job) <= _clip_budget(c)
+                # LV-23: a clip still waiting for a render slot spares the job too.
+                and (_queued_s(c) is not None
+                     or now - _render_anchor(c, job) <= _clip_budget(c))
                 for c in job.get("clips", []))
             # LV-22: a LIVE pipeline is exempt up to its duration-scaled ceiling; the
             # orphan backstop (no owning task) stays at 2×budget.
@@ -7657,19 +7744,19 @@ async def _render_all_clips(job_id: str) -> None:
         clip["render_started_at"] = time.time()
         my_gen = _bump_render_gen(clip)
         try:
-            async with _render_semaphore:   # G7: bound cross-job Lambda concurrency
+            # G7: bound cross-job Lambda concurrency. LV-23: while it waits for a slot
+            # the clip is marked render_queued_at and the watchdog leaves it alone —
+            # queue time is not render time (under a burst the wait alone exceeded
+            # RENDER_WATCHDOG_S and OTHER creators' never-submitted renders were
+            # killed as render_stalled). render_started_at re-stamps at acquisition;
+            # the pre-queue stamp above still covers a task that dies in the queue
+            # (the marker is cleared on exit, so the sweep then sees the old stamp).
+            async with _render_slot(clip, lambda: _is_current_render(clip, my_gen)):
                 # Superseded while queued (watchdog fail + retry started a newer
                 # attempt)? Don't spend a Lambda render whose result every write
                 # site would discard anyway.
                 if not _is_current_render(clip, my_gen):
                     continue
-                # Queue time is not render time: under a burst, waiting on the
-                # semaphore can alone exceed RENDER_WATCHDOG_S and get a render
-                # that never even submitted falsely killed as render_stalled.
-                # Re-stamp at acquisition so the watchdog measures the actual
-                # render. (The pre-queue stamp above still covers a task that
-                # dies IN the queue — the sweep sees it and fails the clip.)
-                clip["render_started_at"] = time.time()
                 submission = await _submit_remotion_render(
                     job["source_url"], edl_data, clip["format"], job["style"])
                 if not submission:
@@ -7679,9 +7766,10 @@ async def _render_all_clips(job_id: str) -> None:
                 clip["render_total_frames"] = submission.get("total_frames")
                 # Stamp the SAME scaled budget the poller below runs under, so the sweep
                 # watchdog (_sweep_stuck_renders) can't kill a long render the poll is
-                # still legitimately inside of (flat 480s vs scaled up to the poll ceiling).
-                clip["render_budget_s"] = _scaled_render_budgets(
-                    submission.get("total_frames"))[0]
+                # still legitimately inside of (flat 480s vs scaled up to the poll ceiling)
+                # — plus the post-render tail (finalize/QC/poster) the clip stays
+                # `rendering` through (LV-23).
+                clip["render_budget_s"] = _clip_render_budget_s(submission.get("total_frames"))
                 if job.get("job_id"):
                     _spawn(_persist_clip_job(job["job_id"]))   # durable render_id -> restart re-attach
                 render_url = await _poll_remotion_render(
@@ -7711,11 +7799,14 @@ async def _render_all_clips(job_id: str) -> None:
                         try:
                             edl_data.setdefault("layout", {})["speaker_treatment"] = "pip_rounded_rect"
                             job["edl"] = edl_data
-                            async with _render_semaphore:
+                            async with _render_slot(clip, lambda: _is_current_render(clip, my_gen)):
                                 if _is_current_render(clip, my_gen):
                                     sub2 = await _submit_remotion_render(
                                         job["source_url"], edl_data, clip["format"], job["style"])
                                     if sub2:
+                                        # A second full render: its own watchdog window.
+                                        clip["render_budget_s"] = _clip_render_budget_s(
+                                            sub2.get("total_frames"))
                                         url2 = await _poll_remotion_render(
                                             sub2["render_id"], sub2["bucket_name"],
                                             total_frames=sub2.get("total_frames"))
@@ -7735,7 +7826,8 @@ async def _render_all_clips(job_id: str) -> None:
                 # the timeout path degrades to the old behavior instead of stalling.
                 try:
                     await asyncio.wait_for(
-                        _attach_poster(job_id, clip, render_url, my_gen), timeout=8)
+                        _attach_poster(job_id, clip, render_url, my_gen),
+                        timeout=POSTER_INLINE_WAIT_S)
                 except (asyncio.TimeoutError, Exception):
                     _spawn(_attach_poster(job_id, clip, render_url, my_gen))
                 clip["status"] = "ready"
