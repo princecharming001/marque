@@ -135,11 +135,18 @@ export const AudioMix: React.FC<{ audio?: AudioPlan | null; sourceUrl?: string }
     return g;
   };
 
+  // LV-28 (editor audit 2026-09-24): loopVolumeCurveBehavior="extend" is load-bearing.
+  // Remotion's default ("repeat") hands the volume callback the LOOP-LOCAL frame
+  // (useFrameForVolumeProp: frame + startsAt, no loop.iteration term), but every gate
+  // above is keyed to COMPOSITION frames (speech_frames, dropouts, durationInFrames).
+  // After the track's first loop the start gate re-silenced the bed, the duck followed
+  // the wrong words and the end fade never fired. "extend" passes the continuous frame.
+  // (The room-tone bed has a constant volume, so its loop needs no curve behavior.)
   return (
     <>
       {toneBed}
       {music && music.url && (
-        <Audio src={music.url} loop
+        <Audio src={music.url} loop loopVolumeCurveBehavior="extend"
                volume={(f) => music.volume * duckAt(f) * envAt(f) * startGate(f) * dropoutAt(f)} />
       )}
       {sfx.length > 0 && <SfxLayer sfx={sfx} />}
