@@ -936,3 +936,69 @@ def test_bad_storage_limit_never_advertises_zero(monkeypatch):
         monkeypatch.setattr(main, "STORAGE_OBJECT_LIMIT_BYTES", bad)
         cap = main._advertised_upload_cap_bytes()
         assert 0 < cap <= 52_428_800
+
+
+# ── Ship check 2026-09-24: a long MEASURED pause inside a plan keep is tightened ─────────
+
+def _pw(word, s, e):
+    return {"word": word, "start_ms": s, "end_ms": e, "confidence": 0.99, "type": None}
+
+
+def _run(words, t0):
+    out, t = [], t0
+    for tok in words:
+        out.append(_pw(tok, t, t + 280))
+        t += 320
+    return out
+
+
+def _dead_air(edl_dict):
+    return [d for d in edl_dict["drops"] if d["reason"] == "dead_air"]
+
+
+def test_prod_multitake_retake_join_blank_is_tightened_inside_a_keep():
+    # Real timings from the prod multitake run (job d90af32b): "...hang that proof" ends at
+    # 29.115 s, the next word lands at 30.554 s; silencedetect measured 29.100–30.564 s.
+    # The plan kept the whole sentence, and the keep veto left the 1.44 s blank in the cut.
+    from app import edl as E
+    before = _run("your story is just the frame you hang that".split(), 26_235)
+    words = before + [_pw("proof", 28_990, 29_115), _pw("on.", 30_554, 30_570)] \
+        + _run("they buy the outcome they want".split(), 30_600)
+    plan = {"keeps": [[E.ms_to_frame(26_000), E.ms_to_frame(33_000)]], "cuts": []}
+    spans = [(29_100, 30_564)]
+    d = E.assemble_edl(plan, words, "talking_head", "myth-buster", silent_spans=spans).model_dump()
+    da = _dead_air(d)
+    assert da, "the 1.44 s measured pause inside the keep was not tightened"
+    gap_f = E.ms_to_frame(30_554) - E.ms_to_frame(29_115)
+    removed = sum(x["src_out"] - x["src_in"] for x in da)
+    assert removed >= gap_f - 12, "most of the blank goes"
+    assert removed <= gap_f - 8, "a natural pause (keep_pause_frames) survives"
+
+
+def test_short_measured_beat_inside_a_keep_stays_protected():
+    from app import edl as E
+    words = _run("one two three four five".split(), 0) + _run("six seven eight nine".split(), 2_400)
+    # 0.82 s pause (1.58 s .. 2.40 s), measured silent — a beat, not a blank
+    plan = {"keeps": [[0, E.ms_to_frame(4_000)]], "cuts": []}
+    d = E.assemble_edl(plan, words, "talking_head", "myth-buster", silent_spans=[(1_560, 2_410)]).model_dump()
+    assert not _dead_air(d)
+
+
+def test_long_pause_inside_a_keep_without_a_silence_measurement_stays_protected():
+    from app import edl as E
+    words = _run("one two three four five".split(), 0) + _run("six seven eight".split(), 4_000)
+    plan = {"keeps": [[0, E.ms_to_frame(6_000)]], "cuts": []}
+    d = E.assemble_edl(plan, words, "talking_head", "myth-buster", silent_spans=None).model_dump()
+    assert not _dead_air(d), "unmeasured gaps may hide a dropped word: the keep veto holds"
+
+
+def test_long_measured_pause_outside_keeps_still_tightened_and_fillers_in_keeps_protected():
+    from app import edl as E
+    words = (_run("so here is the thing".split(), 0) + [_pw("um", 1_700, 1_900)]
+             + _run("you plan too much".split(), 1_950) + _run("then nothing ships".split(), 5_500))
+    plan = {"keeps": [[0, E.ms_to_frame(3_300)]], "cuts": []}
+    d = E.assemble_edl(plan, words, "talking_head", "myth-buster",
+                       silent_spans=[(3_200, 5_510)]).model_dump()
+    assert _dead_air(d), "a long measured blank is tightened"
+    assert not [x for x in d["drops"] if x["reason"] == "filler"
+                and x["src_in"] < E.ms_to_frame(3_300)], "a filler inside a keep stays protected"

@@ -31,6 +31,10 @@ SFX_GAIN_DEFAULT = 10 ** (-14 / 20)   # ~0.1995
 # jarring sliver — build_render_plan drops such intervals (unless it's the only one).
 # Mirrored in ios/.../EditorModel.swift keptIntervalsWithSpeed for preview parity.
 MIN_CLIP_OUTPUT_FRAMES = 12
+# A dead-air trim this long (≈ a ≥1 s pause once keep_pause_frames of natural air is left)
+# tightens even inside a plan-protected keep, when the silence was MEASURED (see
+# assemble_edl). Shorter beats stay protected.
+LONG_DEAD_AIR_DROP_FRAMES = 20
 
 # Unambiguous fillers — never content words, safe to cut wherever they appear.
 ALWAYS_FILLERS = frozenset({"um", "uh"})
@@ -2575,8 +2579,17 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             if cl:
                 protect.append(cl)
     if protect:
+        # Ship check 2026-09-24: the plan marks whole sentences as keeps, so this veto kept
+        # a 1.4 s blank at a retake join (prod multitake run). A dead-air trim only removes
+        # MEASURED silence and still leaves keep_pause_frames of natural pause, so a long
+        # one tightens even inside a keep; fillers and short beats stay protected, and
+        # without a silence measurement the veto holds as before.
+        def _long_verified_dead_air(d: dict) -> bool:
+            return (silent_spans is not None and d.get("reason") == "dead_air"
+                    and d["src_out"] - d["src_in"] >= LONG_DEAD_AIR_DROP_FRAMES)
         filler_dicts = [d for d in filler_dicts
-                        if not (d.get("reason") in ("filler", "dead_air")
+                        if _long_verified_dead_air(d)
+                        or not (d.get("reason") in ("filler", "dead_air")
                                 and _range_overlaps_any((d["src_in"], d["src_out"]), protect))]
 
     # drops = content cuts (labeled) + surviving fillers, coalesced. _kept_intervals
