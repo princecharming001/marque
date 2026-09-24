@@ -1968,10 +1968,12 @@ async def judge_and_fix_pillars(brand: dict, pillars: list[dict], posts: list[di
 
 async def _judge_and_fix_pillars_raw(brand: dict, pillars: list[dict], posts: list[dict] | None) -> list[dict]:
     """Reject generic pillars. OPT-1: the INPUT set is judged first (one cheap HAIKU
-    call) and returned when it passes — the common case. The 2-candidate OPUS
-    regeneration only runs on failure; previously EVERY call burned two extra OPUS
-    generations and never judged the input at all (~3× cost + a serial round-trip
-    of onboarding latency for nothing)."""
+    call) and returned when it passes — the common case.
+
+    2026-09-23: ONE regeneration round, not two serial ones. Two OPUS candidate sets are
+    written in parallel and judged in parallel, and the set with the fewest failures wins
+    (the original included). Measured before: ~80s for a thin profile (the judge failed
+    the first draft every time, so both rounds always ran: 5 OPUS + 5 HAIKU calls)."""
     async def _judge_failures(candidate: list[dict]) -> list[str]:
         jsys, jusr = prompts.pillar_judge_prompt(brand.get("niche", ""), candidate)
         verdicts = extract_json(await anthropic(jsys, jusr, HAIKU, 800), array=True) or []
@@ -1983,36 +1985,23 @@ async def _judge_and_fix_pillars_raw(brand: dict, pillars: list[dict], posts: li
     avoid = await _judge_failures(pillars)
     if not avoid:
         return pillars                               # first draft passed — no regen spend
-    for _ in range(2):
-        # Generate 2 candidate sets in parallel, steering away from names the judge
-        # already rejected this round (else the retry can reproduce them — audit B-10/F10).
-        sys1, usr1 = prompts.pillars_prompt(brand, posts, avoid=avoid or None)
-        sys2, usr2 = prompts.pillars_prompt(brand, posts, avoid=avoid or None)
-        results = await asyncio.gather(
-            anthropic(sys1, usr1, OPUS, 1800),
-            anthropic(sys2, usr2, OPUS, 1800),
-            return_exceptions=True
-        )
-        candidate_sets = []
-        for r in results:
-            if isinstance(r, str):
-                p = extract_json(r, array=True)
-                if p:
-                    candidate_sets.append(p)
-        if not candidate_sets:
-            return pillars
-        all_to_judge = candidate_sets[0]
-        failed = await _judge_failures(all_to_judge)
-        if not failed:
-            return all_to_judge
-        # Try the second candidate set if we have one
-        if len(candidate_sets) > 1:
-            failed2 = await _judge_failures(candidate_sets[1])
-            if len(failed2) < len(failed):
-                return candidate_sets[1]
-        pillars = all_to_judge
-        avoid = failed                # next regeneration avoids the rejected names
-    return pillars
+    # Steer away from names the judge already rejected (else the retry can reproduce
+    # them — audit B-10/F10).
+    sys1, usr1 = prompts.pillars_prompt(brand, posts, avoid=avoid or None)
+    sys2, usr2 = prompts.pillars_prompt(brand, posts, avoid=avoid or None)
+    results = await asyncio.gather(anthropic(sys1, usr1, OPUS, 1800),
+                                   anthropic(sys2, usr2, OPUS, 1800), return_exceptions=True)
+    candidate_sets = [p for p in (extract_json(r, array=True) if isinstance(r, str) else None
+                                  for r in results) if p]
+    if not candidate_sets:
+        return pillars
+    verdicts = await asyncio.gather(*(_judge_failures(c) for c in candidate_sets),
+                                    return_exceptions=True)
+    best, best_fails = pillars, len(avoid)
+    for cand, failed in zip(candidate_sets, verdicts):
+        if isinstance(failed, list) and len(failed) < best_fails:
+            best, best_fails = cand, len(failed)
+    return best
 
 
 async def generate_pillars(brand: dict, posts: list[dict] | None) -> tuple[str, list[dict]]:
@@ -8428,7 +8417,13 @@ async def _run_digest(job_id: str) -> None:
         except HTTPException:
             scan = None                        # degrade to the deterministic brand below
         scan = scan or mock_derive(brand, posts)
-        if scan.get("pillars"):
+        if not (posts or req.voice_transcript):
+            # No posts and no voice interview: template pillars are not the creator's
+            # (owner rule since build 67: pillars come only from real evidence), and judging
+            # them cost up to ~80s of Opus rewrites inside the onboarding wait. The starter
+            # scripts plan their own topics from the brand.
+            scan["pillars"] = []
+        elif scan.get("pillars"):
             try:
                 merged = {**brand, "niche": scan.get("niche", brand.get("niche", ""))}
                 scan["pillars"] = await judge_and_fix_pillars(merged, scan["pillars"], posts or None)
