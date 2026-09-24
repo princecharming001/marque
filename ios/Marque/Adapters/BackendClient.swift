@@ -557,6 +557,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         let scan: BrandScanResp.ScanBlock?
         let scripts: [ScriptDTO]?
         let pillar: String?
+        let mode: String?           // "mock" = the scripts are template fallbacks
     }
 
     /// Kick off the comprehensive onboarding digest (scrape recent reels → transcribe
@@ -592,7 +593,10 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
               r.status != nil else { return nil }
         let scanResult = r.scan.map(mapScan)
         let style = brand.preferredStyles.first ?? .talkingHead
-        let scripts = (r.scripts ?? []).map { script($0, pillar: r.pillar ?? "", style: style) }
+        // Template fallbacks never replace the starter drafts (the backend now reports the
+        // digest's real mode; it used to say "live" regardless).
+        let scripts = r.mode == "mock" ? []
+            : (r.scripts ?? []).map { script($0, pillar: r.pillar ?? "", style: style) }
         return DigestStatus(status: r.status ?? "failed", stage: r.stage ?? "",
                             scan: scanResult, scripts: scripts)
     }
