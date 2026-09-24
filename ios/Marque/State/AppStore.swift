@@ -190,6 +190,14 @@ final class AppStore {
             // preserved exactly for the untouched (no override) path — backend tests
             // assert on that literal string (test_demo_editor_job_synthesized_keyless).
             clip.jobId = demoJobOverride ?? demoStyleOverride.map { "demo-\($0)" } ?? "demo-clip-job"
+            // A demo-src clip also starts with a "render" (the same served source), so the
+            // clip detail's Share / Versions / export paths are drivable in QA runs; the
+            // keyless backend hands back a new ?v=N render URL after every committed Save.
+            if let job = demoJobOverride, job.hasPrefix("demo-src-"),
+               let secs = job.dropFirst("demo-src-".count).split(separator: "-").first {
+                let base = UserDefaults.standard.string(forKey: "backend.url") ?? "http://127.0.0.1:8001"
+                clip.remoteURL = "\(base)/v1/dev/media/\(secs).mov"
+            }
             clips.insert(clip, at: 0)
         }
         // Owner-bug reproduction seam (build 63): a Library with enough finished clips to

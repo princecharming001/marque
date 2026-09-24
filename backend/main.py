@@ -4448,6 +4448,15 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0, defer_ren
     can_render = bool(REMOTION_SERVE_URL and REMOTION_ACCESS_KEY and REMOTION_FUNCTION_NAME)
     preview_requested = False
     needs_render = changed and job["status"] == "ready" and can_render
+    if (not can_render and not ANTHROPIC_KEY and job_id.startswith("demo-src-") and changed
+            and not preview and not defer_render):
+        # Keyless QA seam (editor audit): model a FINISHED re-render so the app's version
+        # history, restore and share paths are drivable in the simulator — each committed
+        # edit gets a new render URL for the same served source. Never runs with keys.
+        n = len(job.get("edl_history") or [])
+        clip["render_url"] = f"{(job.get('source_url') or '').split('?')[0]}?v={n}"
+        clip["status"] = "ready"
+        needs_render = True
     if preview and changed and can_render:
         # G9: preview=1 asks for a cheap proof render of the CANDIDATE edl (AF-6:
         # nothing was committed above) — never touches render_url/status/render_gen,

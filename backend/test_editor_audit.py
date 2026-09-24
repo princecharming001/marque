@@ -878,3 +878,24 @@ def test_known_duration_is_never_reprobed_and_bad_sources_fail_first(monkeypatch
     _aio.run(main._run_pipeline("lv27-dead"))
     assert job["error"] == "source_unreachable" and probes == []   # no probe on a dead URL
     main._clip_jobs.pop("lv27-dead", None)
+
+
+def test_demo_src_tweak_models_a_finished_render(tmp_path, monkeypatch):
+    """Keyless QA seam: a committed direct edit on a demo-src job returns needs_render with a
+    NEW render URL (version history/share drivable in the sim); defer_render does not."""
+    monkeypatch.setenv("DEMO_MEDIA_DIR", _media_dir(tmp_path, 60))
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    jid = "demo-src-60-tw"
+    main._clip_jobs.pop(jid, None)
+    client.get(f"/v1/clips/{jid}")
+    job = main._clip_jobs[jid]
+    cid = job["clips"][0]["clip_id"]
+    seg = job["edl"]["segments"][0]
+    r = client.post(f"/v1/clips/{jid}/tweak", json={
+        "clip_id": cid, "ops": [{"type": "split_segment", "index": 0, "at_frame": seg["src_in"] + 120}]})
+    b = r.json()
+    assert r.status_code == 200 and b["needs_render"] is True
+    assert job["clips"][0]["render_url"].endswith("/60.mov?v=1")
+    r2 = client.post(f"/v1/clips/{jid}/tweak", params={"defer_render": 1}, json={
+        "clip_id": cid, "ops": [{"type": "split_segment", "index": 0, "at_frame": seg["src_in"] + 60}]})
+    assert r2.json()["needs_render"] is False
