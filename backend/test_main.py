@@ -3118,24 +3118,47 @@ def test_spawn_retains_then_discards_task():
 # mock inside a proxy timeout instead of hanging for minutes.
 # ---------------------------------------------------------------------------
 
-def test_emulate_scrape_bounded_degrades_to_mock(monkeypatch):
+def test_emulate_scrape_past_budget_finishes_in_background(monkeypatch):
+    # 2026-09-23: a real scrape + transcription runs 30-60s, so cancelling at the 25s
+    # budget meant the direct call never produced a profile. Now it answers "queued"
+    # inside the budget and the SAME scrape finishes and caches in the background.
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
     monkeypatch.setattr(main, "_supabase_client", None)
+    scrapes = []
 
     async def slow_scrape(handle, platform):
-        await asyncio.sleep(5)                    # longer than our tiny test budget
-        return [{"caption": "late"}]
+        scrapes.append(handle)
+        await asyncio.sleep(1.2)                  # past the 1s floor on the budget
+        return [{"caption": "late but real"}]
+
+    async def passthrough(posts):
+        return posts
+
+    async def profile(*a, **k):
+        return '{"voice": "dry, fast", "hooks": ["cold open"]}'
     monkeypatch.setattr(main, "scrape_posts", slow_scrape)
+    monkeypatch.setattr(main, "_transcribe_top_posts", passthrough)
+    monkeypatch.setattr(main, "anthropic", profile)
     main._emulation_cache.pop("slowcreator", None)
     req = main.EmulateAnalyzeRequest(handle="slowcreator", platform="instagram")
-    r = asyncio.run(main.emulate_analyze(req, _budget_s=0.05))
-    assert r["mode"] == "mock"                    # timed out → mock
-    assert "slowcreator" not in main._emulation_cache   # not cached → retryable
+
+    async def run():
+        first = await main.emulate_analyze(req, _budget_s=0.05)
+        again = await main.emulate_analyze(req, _budget_s=0.05)    # in flight: no 2nd scrape
+        await main._emulation_inflight["slowcreator"]
+        return first, again
+    first, again = asyncio.run(run())
+    assert first["mode"] == "queued" and again["mode"] == "queued"
+    assert scrapes == ["slowcreator"]
+    assert main._emulation_cache["slowcreator"]["voice"] == "dry, fast"   # landed + cached
+    assert "slowcreator" not in main._emulation_inflight
+    main._emulation_cache.pop("slowcreator", None)
 
 
 def test_brand_scan_scrape_bounded(monkeypatch):
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
-    monkeypatch.setattr(main, "_SCRAPE_BUDGET_S", 0.05)
+    monkeypatch.setattr(main, "APIFY_KEY", "apify-key")
+    monkeypatch.setattr(main, "_BRAND_SCAN_BUDGET_S", 0.05)
 
     async def slow_scrape(handle, platform):
         await asyncio.sleep(5)
@@ -3143,6 +3166,12 @@ def test_brand_scan_scrape_bounded(monkeypatch):
     monkeypatch.setattr(main, "scrape_posts", slow_scrape)
     r = client.post("/v1/brand-scan/handle", json={"handle": "slowbrand", "platform": "instagram"}).json()
     assert r["mode"] == "mock" and r["scanned_posts"] == 0   # degraded, didn't hang
+    # ...and without real posts there are NO pillars (owner rule: never template pillars)
+    assert r["scan"]["pillars"] == []
+
+
+def test_brand_scan_budget_covers_a_real_scrape():
+    assert main._BRAND_SCAN_BUDGET_S >= 45       # Apify p90 is ~40s; the app waits 90s
 
 
 # ---------------------------------------------------------------------------

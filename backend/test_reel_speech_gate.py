@@ -98,3 +98,37 @@ def test_label_carries_forward_with_the_transcript(monkeypatch):
     assert post["transcript"] == TH and post["speech_kind"] == "lyrics"
     served = main._reel_from_post(post, "a", "instagram", 0, False)
     assert served["speech_kind"] == "lyrics" and main._is_talking_head_reel(served) is False
+
+
+def test_niche_refresh_drops_video_less_posts_before_ranking(monkeypatch):
+    """Prod 'fitness' was 11 TikTok photo slideshows (millions of views, no video) and 0
+    playable reels: ranking by views let them crowd every real video out."""
+    niche = "slideshow-niche"
+    key = main._niche_cache_key(niche)
+    main._niche_reels_cache.pop(key, None)
+    slides = [{"author": f"s{i}", "platform": "tiktok", "views": 5_000_000, "likes": 1,
+               "caption": "summer body", "video_url": "", "thumbnail_url": "https://cdn/s.jpg",
+               "id": f"s{i}"} for i in range(20)]
+    videos = [{"author": f"v{i}", "platform": "tiktok", "views": 40_000, "likes": 1,
+               "caption": "desk posture fix", "video_url": f"https://cdn/v{i}.mp4",
+               "thumbnail_url": "https://cdn/v.jpg", "id": f"v{i}"} for i in range(3)]
+
+    async def fake_scrape(n, limit=20):
+        return slides + videos
+
+    async def passthrough(ps, top_n=4, max_wait_s=180):
+        return ps
+
+    async def noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "scrape_niche_posts", fake_scrape)
+    monkeypatch.setattr(main, "_transcribe_top_posts", passthrough)
+    monkeypatch.setattr(main, "_rehost_reel_media", noop)
+    monkeypatch.setattr(main, "_classify_reel_speech", noop)
+    monkeypatch.setattr(main, "_dossier_classify_reels", noop)
+    asyncio.run(main._refresh_niche_reels(niche))
+    reels = main._niche_reels_cache[key]["reels"]
+    assert len(reels) == 3 and all(r["video_url"] for r in reels)
+    main._niche_reels_cache.pop(key, None)

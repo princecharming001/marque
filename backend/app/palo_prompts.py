@@ -181,6 +181,10 @@ PROOF LINE (only when exemplar_video_analyses contains real videos with real vie
 FORMAT MATCH: every idea is delivered by the creator talking to camera. The content sentences describe what they SAY (the story beats, the claim, the payoff), never shots to film. The editor's b-roll covers the visuals automatically.
 </idea_format>
 
+<grounding>
+The creator has to SAY this on camera, so never put a lie in their mouth. Present something as the creator's own experience ONLY when it appears in creator_signals or channel_identity. Never invent personal history, experiments they ran, results, numbers, timeframes, clients or credentials: "I tracked my lifts for 90 days and my deadlift went from 185 to 225" for a creator who never said so is exactly the failure. When the profile gives no personal material, pitch the idea as the viewer's experience ("you"), a pattern most people hit, a take, or a breakdown of how something works. First-person opinions and methods ("what I'd do instead") are fine; first-person events and results need a source.
+</grounding>
+
 <validation>
 BEFORE OUTPUTTING, CHECK EACH IDEA:
 1. Does it reference this creator's specific niche? If the idea could work for any creator, it fails.
@@ -188,6 +192,7 @@ BEFORE OUTPUTTING, CHECK EACH IDEA:
 3. Can you trace the structural skeleton back to a specific pattern?
 4. Could a viewer of this creator's content picture them making this video?
 5. If recent_catalog lists published videos: the creator has ALREADY made those. They are anti-targets — never pitch a video they've already published, and a different surface topic with the same engine is the same video. Same engine, new destination.
+6. Does any title or content claim a personal event, result, number or client the creator never gave you? Rewrite it per <grounding>.
 ANTI-PATTERN: a Minecraft PvP creator getting "I Tried Every Morning Routine Tip for 7 Days." Zero niche connection. This is a critical failure that will cause the creator to abandon the product.
 </validation>
 

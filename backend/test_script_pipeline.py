@@ -213,3 +213,23 @@ def test_est_seconds_counts_spoken_words_and_clamps():
 def test_talking_head_rubric_asks_for_real_length():
     rubric = prompts.STYLES["talking_head"]["rubric"]
     assert "35 to 55 seconds" in rubric and "18 to 40" not in rubric
+
+
+# --- voice doctrine backstops the prod smoke test found missing ----------------------
+
+def test_pillar_prose_is_dash_free_on_every_path(monkeypatch):
+    async def raw(brand, pillars, posts):
+        return pillars
+    monkeypatch.setattr(main, "_judge_and_fix_pillars_raw", raw)
+    dashed = [{"name": "Desk strength", "summary": "Lift heavy — twice a week",
+               "angle": "Consistency — not intensity", "weight": 0.3,
+               "exampleTopics": ["Why 3 days beats 6 — for desk workers", 7]}]
+    out = asyncio.run(main.judge_and_fix_pillars({"niche": "fitness"}, dashed, None))
+    blob = str(out)
+    assert "—" not in blob and "–" not in blob
+    assert out[0]["weight"] == 0.3 and out[0]["exampleTopics"][1] == 7      # non-prose untouched
+
+
+def test_no_hardcoded_dash_in_baseline_reason():
+    import inspect
+    assert "niche baseline —" not in inspect.getsource(main)

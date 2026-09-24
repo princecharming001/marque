@@ -158,6 +158,10 @@ _bg_tasks: set = set()
 # will block a request before degrading to mock — kept under typical proxy timeouts.
 # Background callers pass None to run unbounded.
 _SCRAPE_BUDGET_S = 25.0
+# "Analyze my page" waits on a real scrape: Apify's own run history (2026-09) puts the
+# Instagram profile scrape at median 22s / p90 40s and TikTok at 27s / 41s, so 25s
+# failed about half the time and served template pillars. The app allows 90s.
+_BRAND_SCAN_BUDGET_S = float(os.environ.get("BRAND_SCAN_BUDGET_S", "55"))
 
 
 def _spawn(coro):
@@ -1907,7 +1911,31 @@ def mock_trends(niche: str) -> list[dict]:
 # AI core (with the generate-then-judge specificity gate)
 # ---------------------------------------------------------------------------
 
+def _scrub_pillars(pillars: list) -> list:
+    """Voice doctrine backstop for pillar prose (name/summary/angle/exampleTopics). The
+    prod smoke test (2026-09-23) found em dashes in /v1/pillars, the digest and voice
+    finalize pillars: none of them went through a scrub."""
+    out = []
+    for p in pillars or []:
+        if isinstance(p, dict):
+            p = {**p}
+            for k in ("name", "summary", "angle"):
+                if isinstance(p.get(k), str):
+                    p[k] = prompts.scrub_em_dashes(p[k])
+            if isinstance(p.get("exampleTopics"), list):
+                p["exampleTopics"] = [prompts.scrub_em_dashes(t) if isinstance(t, str) else t
+                                      for t in p["exampleTopics"]]
+        out.append(p)
+    return out
+
+
 async def judge_and_fix_pillars(brand: dict, pillars: list[dict], posts: list[dict] | None) -> list[dict]:
+    """Every generated pillar set flows through here (brand scan, digest, voice
+    finalize, /v1/pillars), so the dash scrub lives here too."""
+    return _scrub_pillars(await _judge_and_fix_pillars_raw(brand, pillars, posts))
+
+
+async def _judge_and_fix_pillars_raw(brand: dict, pillars: list[dict], posts: list[dict] | None) -> list[dict]:
     """Reject generic pillars. OPT-1: the INPUT set is judged first (one cheap HAIKU
     call) and returned when it passes — the common case. The 2-candidate OPUS
     regeneration only runs on failure; previously EVERY call burned two extra OPUS
@@ -8020,15 +8048,44 @@ async def emulate_analyze(req: EmulateAnalyzeRequest, _budget_s: float | None = 
             return {"mode": "cached", "ok": True}
 
     budget = None if _budget_s is None else max(1.0, min(float(_budget_s), 60.0))  # clamp client input
+    if handle in _emulation_inflight:
+        return {"mode": "queued", "ok": True}     # an analysis for this handle is running
+
     async def _scrape_and_transcribe():
         p = await scrape_posts(handle, req.platform)
         return await _transcribe_top_posts(p)
+
+    if budget is None:                            # background caller (digest): unbounded
+        return {"mode": await _derive_and_cache_emulation(handle, req.platform,
+                                                          await _scrape_and_transcribe()),
+                "ok": True}
+    # A real scrape + transcription routinely runs 30-60s, so cancelling at the budget
+    # meant the direct call NEVER produced a profile. Past the budget the work keeps
+    # going in the background and caches when it lands; the caller is fire-and-forget.
+    task = asyncio.ensure_future(_scrape_and_transcribe())
     try:
-        posts = (await asyncio.wait_for(_scrape_and_transcribe(), timeout=budget)
-                 if budget else await _scrape_and_transcribe())
+        posts = await asyncio.wait_for(asyncio.shield(task), timeout=budget)
     except asyncio.TimeoutError:
-        logging.warning("emulate scrape exceeded %ss budget for %s — degrading", _budget_s, handle)
-        posts = []                                # → un-cached mock below, client can re-trigger
+        logging.info("emulate scrape past %ss for %s, finishing in the background", _budget_s, handle)
+
+        async def _finish():
+            try:
+                await _derive_and_cache_emulation(handle, req.platform, await task)
+            except Exception as e:
+                logging.warning("emulate background analysis failed for %s: %s", handle, e)
+            finally:
+                _emulation_inflight.pop(handle, None)
+
+        _emulation_inflight[handle] = _spawn(_finish())
+        return {"mode": "queued", "ok": True}
+    return {"mode": await _derive_and_cache_emulation(handle, req.platform, posts), "ok": True}
+
+
+_emulation_inflight: dict[str, asyncio.Task] = {}
+
+
+async def _derive_and_cache_emulation(handle: str, platform: str, posts: list[dict]) -> str:
+    """Style profile from scraped posts, cached only when real (or keyless). Returns mode."""
     real = False                                  # True only for a genuine live analysis
     if not ANTHROPIC_KEY or not posts:
         profile = _mock_emulation_profile(handle)
@@ -8052,8 +8109,8 @@ async def emulate_analyze(req: EmulateAnalyzeRequest, _budget_s: float | None = 
         _emulation_cache[handle] = profile
         _cap_evict(_emulation_cache, _EMULATION_CACHE_CAP)
     if real and _supabase_client:
-        await _supabase_client.upsert_emulation_profile(handle, req.platform, profile)
-    return {"mode": mode, "ok": True}
+        await _supabase_client.upsert_emulation_profile(handle, platform, profile)
+    return mode
 
 
 async def _resolve_emulation_profiles(targets: list[dict]) -> list[dict]:
@@ -8091,15 +8148,23 @@ async def brand_scan_handle(req: ScanRequest):
     else:
         try:                                       # B-09: bound the scrape (proxy-timeout safety)
             posts = await asyncio.wait_for(scrape_posts(req.handle, req.platform),
-                                           timeout=_SCRAPE_BUDGET_S)
+                                           timeout=_BRAND_SCAN_BUDGET_S)
         except asyncio.TimeoutError:
-            logging.warning("brand-scan scrape exceeded budget for %s — degrading", req.handle)
+            logging.warning("brand-scan scrape exceeded budget for %s, degrading", req.handle)
             posts = []
     if posts:
         # B3: persist real scraped posts so the feed/mimic/analyze-video/converse prompts
         # can pull verbatim voice exemplars later, without the client ever holding them.
         _spawn(_persist_creator_posts(req.creator_id, posts))
     brand = req.d()
+    if not posts and APIFY_KEY:
+        # A real scrape came back empty (or ran out of time): no posts, no pillars.
+        # OWNER (build 67): pillars come ONLY from real posts; template pillars read as
+        # "random stuff". The app applies a scan only when it carries pillars, so an
+        # empty list keeps its honest empty state. (Keyless dev keeps the demo below.)
+        scan = mock_derive(brand, posts)
+        scan["pillars"] = []
+        return {"mode": "mock", "scanned_posts": 0, "scan": scan}
     if not ANTHROPIC_KEY or not posts:
         # No evidence (or no key) → niche-aware fallback so onboarding never dead-ends.
         return {"mode": "mock", "scanned_posts": len(posts), "scan": mock_derive(brand, posts)}
@@ -8472,7 +8537,8 @@ async def connect_channel_read(req: ConnectPreviewRequest):
         sys_p, usr = palo_prompts.channel_read_prompt(
             req.platform or "instagram", handle, int(prof.get("followers", 0) or 0), rows)
         data = extract_json(await anthropic(sys_p, usr, SONNET, 900), array=False) or {}
-        lines = [str(l)[:300] for l in (data.get("lines") or []) if str(l).strip()][:4]
+        lines = [prompts.scrub_em_dashes(str(l)[:300])
+                 for l in (data.get("lines") or []) if str(l).strip()][:4]
         return {"mode": "live" if lines else "mock", "lines": lines}
     except HTTPException:
         return {"mode": "mock", "lines": []}
@@ -10789,7 +10855,7 @@ def _cold_recommendations(niche: str) -> list[dict]:
             "pillar": pillars[i],
             "style": styles[i % len(styles)],
             "reason": (f"{sig} hooks + {fmts[i % len(fmts)]} tend to over-index in {niche_label} "
-                       "(niche baseline — refines to your own data as you post)"),
+                       "(niche baseline, refines to your own data as you post)"),
         })
     return arms
 
@@ -11903,6 +11969,7 @@ async def _refresh_watched_creator(platform: str, handle: str) -> None:
     key = f"{platform}:{handle}"
     try:
         posts = await scrape_posts(handle, platform, limit=8)
+        posts = [p for p in posts if p.get("video_url")]      # slideshows can't play
         if not posts:
             return
         posts.sort(key=lambda p: (p.get("views", 0), p.get("likes", 0)), reverse=True)
@@ -12117,7 +12184,10 @@ async def _refresh_niche_reels(niche: str) -> None:
     key = _niche_cache_key(niche)
     try:
         posts = await scrape_niche_posts(niche, limit=20)
-        posts = [p for p in posts if p.get("views", 0) >= 10_000]
+        # A reel card needs a VIDEO. TikTok photo slideshows (and IG image posts) carry
+        # millions of views and no video at all, so ranking by views let them take every
+        # slot: prod's "fitness" entry was 11 slideshows, 0 playable (2026-09-23).
+        posts = [p for p in posts if p.get("views", 0) >= 10_000 and p.get("video_url")]
         posts.sort(key=lambda p: (p.get("views", 0), p.get("likes", 0)), reverse=True)
         posts = posts[:18]
         # Carry forward transcripts + durable media from the previous cycle first,
