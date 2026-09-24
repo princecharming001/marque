@@ -12,36 +12,66 @@ import asyncio
 import json
 import shutil
 
+from app.subproc import communicate_or_kill
+
 DEFAULT_TARGET_LUFS = -14.0     # TikTok/YouTube published loudness target
 DEFAULT_CLAMP_DB = 12.0         # never boost/cut more than this (avoids pumping/clipping)
 
+# LV-20 (editor audit 2026-09-24): every AUDIO-ONLY analysis pass maps no video/subtitle/
+# data stream. Without these, `-f null -` auto-selects the video stream too and ffmpeg
+# fully DECODES it (null muxer = wrapped_avframe "encode") just to throw it away — on a
+# long 1080p take that is minutes of 0.5-CPU work, so the flat 60s probes timed out and
+# silently shipped gain 0 / no verified silence / no room tone. Output options: they sit
+# after `-i` and apply to the `-f null -` output.
+AUDIO_ONLY_OUTPUT_ARGS = ("-vn", "-sn", "-dn")
+# Probe timeouts scale with the media's duration where it's known: floor, or this many
+# seconds per second of media (audio-only decode + download stays far below it).
+ANALYSIS_TIMEOUT_PER_MEDIA_S = 0.25
 
-async def probe_loudness(url: str, timeout_s: float = 60.0) -> float | None:
-    """Integrated loudness (LUFS) of the audio at `url`, or None if unmeasurable.
 
-    Uses `ffmpeg -af loudnorm=...:print_format=json -f null -`, which prints a JSON
-    block (with `input_i` = measured integrated LUFS) to stderr and decodes no output.
-    """
-    if not url or shutil.which("ffmpeg") is None:
-        return None
-    cmd = [
-        "ffmpeg", "-hide_banner", "-nostats", "-i", url,
-        "-af", f"loudnorm=I={DEFAULT_TARGET_LUFS}:print_format=json",
-        "-f", "null", "-",
-    ]
-    proc = None
+def analysis_timeout_s(duration_s: float | None, floor_s: float = 60.0,
+                       per_media_s: float = ANALYSIS_TIMEOUT_PER_MEDIA_S) -> float:
+    """Timeout for an ffmpeg pass over `duration_s` seconds of media: max(floor,
+    per_media_s × duration). Unknown/invalid duration → the floor (the old flat value)."""
+    try:
+        d = float(duration_s or 0.0)
+    except (TypeError, ValueError):
+        d = 0.0
+    return max(float(floor_s), per_media_s * d) if d > 0 else float(floor_s)
+
+
+def loudness_probe_args(url: str, target_lufs: float = DEFAULT_TARGET_LUFS) -> list[str]:
+    """ffmpeg argv for the pre-render integrated-loudness probe (audio only)."""
+    return ["ffmpeg", "-hide_banner", "-nostats", "-i", url, *AUDIO_ONLY_OUTPUT_ARGS,
+            "-af", f"loudnorm=I={target_lufs}:print_format=json",
+            "-f", "null", "-"]
+
+
+async def _run_probe(cmd: list[str], timeout_s: float) -> str | None:
+    """Run an analysis ffmpeg, return its stderr text, or None on any failure. A timeout
+    KILLS + reaps the child (communicate_or_kill) instead of leaving it decoding."""
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        _, stderr = await communicate_or_kill(proc, timeout_s)
     except Exception:
-        if proc is not None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
         return None
-    return _parse_input_i(stderr.decode("utf-8", "ignore"))
+    return (stderr or b"").decode("utf-8", "ignore")
+
+
+async def probe_loudness(url: str, timeout_s: float | None = None,
+                         duration_s: float | None = None) -> float | None:
+    """Integrated loudness (LUFS) of the audio at `url`, or None if unmeasurable.
+
+    Uses `ffmpeg -vn -af loudnorm=...:print_format=json -f null -`, which prints a JSON
+    block (with `input_i` = measured integrated LUFS) to stderr and decodes no output.
+    `timeout_s` defaults to analysis_timeout_s(duration_s) (60s floor).
+    """
+    if not url or shutil.which("ffmpeg") is None:
+        return None
+    t = timeout_s if timeout_s is not None else analysis_timeout_s(duration_s)
+    text = await _run_probe(loudness_probe_args(url), t)
+    return _parse_input_i(text) if text is not None else None
 
 
 def _parse_input_i(text: str) -> float | None:
@@ -57,9 +87,18 @@ def _parse_input_i(text: str) -> float | None:
     return val if val > -70.0 else None
 
 
+def silence_detect_args(url: str, noise_db: float = -30.0,
+                        min_silence_s: float = 0.12) -> list[str]:
+    """ffmpeg argv for the verified-silence scan (audio only)."""
+    return ["ffmpeg", "-hide_banner", "-nostats", "-i", url, *AUDIO_ONLY_OUTPUT_ARGS,
+            "-af", f"silencedetect=noise={noise_db}dB:d={min_silence_s}",
+            "-f", "null", "-"]
+
+
 async def detect_silence_spans(url: str, noise_db: float = -30.0,
                                min_silence_s: float = 0.12,
-                               timeout_s: float = 60.0) -> list[tuple[int, int]] | None:
+                               timeout_s: float | None = None,
+                               duration_s: float | None = None) -> list[tuple[int, int]] | None:
     """Verified-silent spans (start_ms, end_ms) in the audio at `url`, or None if
     unmeasurable. Uses ffmpeg's `silencedetect` filter, which logs `silence_start:` and
     `silence_end:` (seconds) to stderr for every run of audio quieter than `noise_db`
@@ -69,27 +108,13 @@ async def detect_silence_spans(url: str, noise_db: float = -30.0,
     the transcriber simply DROPPED a word — that gap still carries speech energy, so it
     will NOT appear as a silent span and the dead-air trim skips it (protecting the word).
     Fails soft to None (no ffmpeg / unfetchable / timeout) → caller keeps prior behavior.
+    `timeout_s` defaults to analysis_timeout_s(duration_s) (60s floor).
     """
     if not url or shutil.which("ffmpeg") is None:
         return None
-    cmd = [
-        "ffmpeg", "-hide_banner", "-nostats", "-i", url,
-        "-af", f"silencedetect=noise={noise_db}dB:d={min_silence_s}",
-        "-f", "null", "-",
-    ]
-    proc = None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-    except Exception:
-        if proc is not None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-        return None
-    return _parse_silence_spans(stderr.decode("utf-8", "ignore"))
+    t = timeout_s if timeout_s is not None else analysis_timeout_s(duration_s)
+    text = await _run_probe(silence_detect_args(url, noise_db, min_silence_s), t)
+    return _parse_silence_spans(text) if text is not None else None
 
 
 def _parse_silence_spans(text: str) -> list[tuple[int, int]]:
@@ -132,8 +157,9 @@ def gain_db(integrated_lufs: float | None,
 def loudnorm_pass1_args(url: str, target_lufs: float = DEFAULT_TARGET_LUFS) -> list[str]:
     """ffmpeg argv for loudnorm ANALYSIS pass 1 — measures the take's actual
     loudness stats (input_i/input_tp/input_lra/input_thresh), printed as a
-    JSON block on stderr (parse with `parse_loudnorm_json`)."""
-    return ["ffmpeg", "-hide_banner", "-nostats", "-i", url, "-af",
+    JSON block on stderr (parse with `parse_loudnorm_json`). Audio only (LV-20):
+    the rendered video is never decoded just to be discarded."""
+    return ["ffmpeg", "-hide_banner", "-nostats", "-i", url, *AUDIO_ONLY_OUTPUT_ARGS, "-af",
             f"loudnorm=I={target_lufs}:TP=-1.0:LRA=11:print_format=json", "-f", "null", "-"]
 
 
@@ -222,8 +248,9 @@ def loudnorm_pass2_args(url: str, measured: dict, out_path: str,
 SNR_ENHANCE_THRESHOLD_DB = 25.0
 
 def snr_probe_args(url: str) -> list[str]:
-    """ffmpeg argv that prints astats measurements (incl. RMS level/trough) to stderr."""
-    return ["ffmpeg", "-hide_banner", "-nostats", "-i", url,
+    """ffmpeg argv that prints astats measurements (incl. RMS level/trough) to stderr.
+    Audio only (LV-20)."""
+    return ["ffmpeg", "-hide_banner", "-nostats", "-i", url, *AUDIO_ONLY_OUTPUT_ARGS,
             "-af", "astats=measure_perchannel=none", "-f", "null", "-"]
 
 

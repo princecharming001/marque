@@ -40,6 +40,7 @@ from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      _BROLL_MEME_CAPS, clamp_opening_overcut, snap_cut_ends_to_takes,
                      enforce_sentence_integrity)
 from app import audio as audio_mod
+from app.subproc import communicate_or_kill
 from app import enhance as enhance_mod
 from app import multipart as multipart_mod
 from app import knowledge as knowledge_mod
@@ -5313,6 +5314,24 @@ def _log_stage_timings(job_id: str, job: dict) -> None:
                           sorted(acc.items(), key=lambda kv: -kv[1])))
 
 
+def _source_duration_s(job: dict) -> float | None:
+    """Best-known duration (seconds) of the job's SOURCE take: the probed
+    job["duration_ms"] when present, else the transcript's last word end, else None.
+    Feeds every duration-scaled budget (audio probe timeouts, transcription poll, the
+    live-pipeline watchdog ceiling) so a long take gets proportionate time."""
+    try:
+        ms = float(job.get("duration_ms") or 0)
+    except (TypeError, ValueError):
+        ms = 0.0
+    if ms <= 0:
+        words = job.get("words") or []
+        try:
+            ms = float(max((w.get("end_ms", 0) or 0 for w in words), default=0))
+        except (TypeError, ValueError, AttributeError):
+            ms = 0.0
+    return ms / 1000.0 if ms > 0 else None
+
+
 def _job_eta_seconds(job: dict) -> int | None:
     """Remaining-time estimate for a non-terminal job, or None once terminal or
     parked on user action. Stage baseline minus elapsed-IN-STAGE, floored at 20s.
@@ -5750,7 +5769,8 @@ async def _analyze_to_brief(job_id: str, briefless_on_error: bool = False) -> li
     # the transcribe wait for nothing.
     words, lufs, dossier, _ = await asyncio.gather(
         _transcribe_job(job_id),
-        audio_mod.probe_loudness(job.get("source_url") or ""),
+        audio_mod.probe_loudness(job.get("source_url") or "",
+                                 duration_s=_source_duration_s(job)),
         _dossier_job(job_id),
         _resolve_reference_patterns(job))
     job["loudness_lufs"] = lufs
@@ -5837,7 +5857,8 @@ async def _run_pipeline(job_id: str):
         with _timed(job, "transcribe"):
             words, lufs, dossier = await asyncio.gather(
                 _transcribe_job(job_id),
-                audio_mod.probe_loudness(job.get("source_url") or ""),
+                audio_mod.probe_loudness(job.get("source_url") or "",
+                                         duration_s=_source_duration_s(job)),
                 _dossier_job(job_id))
         job["loudness_lufs"] = lufs
         job["dossier"] = dossier
@@ -5981,7 +6002,10 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
     if "_silent_spans" not in job:
         try:
             from app.audio import detect_silence_spans
-            job["_silent_spans"] = await detect_silence_spans(job.get("source_url") or "")
+            # LV-20: audio-only scan, timeout scaled by the take's duration (the flat
+            # 60s over a full video decode timed out on long takes → no verified silence).
+            job["_silent_spans"] = await detect_silence_spans(
+                job.get("source_url") or "", duration_s=_source_duration_s(job))
         except Exception:
             job["_silent_spans"] = None
     try:
@@ -7171,22 +7195,27 @@ async def _ffprobe_duration_s(src: str, timeout_s: float = 30.0) -> float | None
         return None
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
           "-of", "csv=p=0", src]   # ffmpeg 8: singular 'noprint_wrapper' is REJECTED -> empty stdout -> None (silently killed finalize/enhance/matte-qc durations)
-    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        # LV-20: a timeout KILLS + reaps ffprobe (communicate_or_kill), never orphans it.
+        stdout, _ = await communicate_or_kill(proc, timeout_s)
         return float(stdout.decode("utf-8", "ignore").strip())
     except Exception:
-        if proc is not None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
         return None
 
 
-async def _probe_speech_snr(url: str) -> float | None:
+# LV-20: floors for the post-render ffmpeg passes (the old flat values), scaled up by the
+# output's duration via audio_mod.analysis_timeout_s — a 10-min render no longer races a
+# timeout sized for a 30s clip. Every pass KILLS its child on timeout (communicate_or_kill).
+FINALIZE_PASS1_TIMEOUT_S = float(os.environ.get("FINALIZE_PASS1_TIMEOUT_S", "180"))
+FINALIZE_PASS2_TIMEOUT_S = float(os.environ.get("FINALIZE_PASS2_TIMEOUT_S", "90"))
+SNR_PROBE_TIMEOUT_S = 60.0
+ENHANCE_FFMPEG_TIMEOUT_S = 90.0
+FFPROBE_TIMEOUT_S = 30.0
+
+
+async def _probe_speech_snr(url: str, duration_s: float | None = None) -> float | None:
     """WS1: astats SNR proxy (RMS level − RMS trough, dB) for the enhancement gate.
     None = unmeasurable → callers must NOT enhance (fail-closed)."""
     if not url or shutil.which("ffmpeg") is None:
@@ -7195,22 +7224,25 @@ async def _probe_speech_snr(url: str) -> float | None:
         p = await asyncio.create_subprocess_exec(
             *audio_mod.snr_probe_args(url),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        _, stderr = await asyncio.wait_for(p.communicate(), timeout=60)
+        _, stderr = await communicate_or_kill(
+            p, audio_mod.analysis_timeout_s(duration_s, floor_s=SNR_PROBE_TIMEOUT_S))
         stats = audio_mod.parse_astats_snr(stderr.decode("utf-8", "ignore"))
         return stats["snr_db"] if stats else None
     except Exception:
         return None
 
 
-async def _enhance_render_audio(render_url: str, job_id: str) -> str | None:
+async def _enhance_render_audio(render_url: str, job_id: str,
+                                duration_s: float | None = None) -> str | None:
     """WS1 (keyless-armed): SNR-gated DeepFilterNet3 denoise of the final render's audio.
     Gate 1: measured SNR proxy below threshold (clean takes are never touched — enhancers
     smear clean audio). Gate 2: the enhanced remux must RE-MEASURE better by ≥3dB AND
     duration-match, else it's discarded. Returns a hosted enhanced mp4 URL or None.
     Every failure path returns None; never raises; never load-bearing."""
-    snr = await _probe_speech_snr(render_url)
+    snr = await _probe_speech_snr(render_url, duration_s=duration_s)
     if snr is None or snr >= audio_mod.SNR_ENHANCE_THRESHOLD_DB:
         return None
+    ff_timeout = audio_mod.analysis_timeout_s(duration_s, floor_s=ENHANCE_FFMPEG_TIMEOUT_S)
     try:
         base = SUPABASE_URL.rstrip("/")
         with tempfile.TemporaryDirectory() as td:
@@ -7218,7 +7250,7 @@ async def _enhance_render_audio(render_url: str, job_id: str) -> str | None:
             p = await asyncio.create_subprocess_exec(
                 *audio_mod.extract_audio_args(render_url, wav),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await asyncio.wait_for(p.communicate(), timeout=90)
+            await communicate_or_kill(p, ff_timeout)
             if p.returncode != 0 or not os.path.exists(wav):
                 return None
             # Host the wav so fal can fetch it (temp object; GC'd with uploads/ sweeps).
@@ -7255,14 +7287,14 @@ async def _enhance_render_audio(render_url: str, job_id: str) -> str | None:
             p2 = await asyncio.create_subprocess_exec(
                 *audio_mod.remux_enhanced_audio_args(render_url, enhanced_path, remuxed),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await asyncio.wait_for(p2.communicate(), timeout=90)
+            await communicate_or_kill(p2, ff_timeout)
             if p2.returncode != 0 or not os.path.exists(remuxed):
                 return None
             orig_dur = await _ffprobe_duration_s(render_url)
             new_dur = await _ffprobe_duration_s(remuxed)
             if orig_dur is None or new_dur is None or abs(orig_dur - new_dur) > 0.15:
                 return None
-            new_snr = await _probe_speech_snr(remuxed)
+            new_snr = await _probe_speech_snr(remuxed, duration_s=duration_s)
             if new_snr is None or new_snr < snr + 3.0:
                 logging.info("[enhance] job=%s not adopted (snr %.1f→%s)", job_id, snr, new_snr)
                 return None
@@ -7283,14 +7315,23 @@ async def _enhance_render_audio(render_url: str, job_id: str) -> str | None:
     return None
 
 
-async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
+def _finalize_timeouts_s(duration_s: float | None) -> tuple[float, float]:
+    """(pass-1, pass-2) ffmpeg timeouts for finalizing a render of `duration_s` seconds:
+    the historical floors (180s/90s) or 0.25s per second of output, whichever is larger."""
+    return (audio_mod.analysis_timeout_s(duration_s, floor_s=FINALIZE_PASS1_TIMEOUT_S),
+            audio_mod.analysis_timeout_s(duration_s, floor_s=FINALIZE_PASS2_TIMEOUT_S))
+
+
+async def _finalize_audio_loudness(render_url: str, job_id: str,
+                                   duration_s: float | None = None) -> str | None:
     """A5b: true 2-pass loudness normalization on the FINAL rendered mp4 (the
     Lambda output). Video is stream-copied (untouched) throughout; the audio is
     re-encoded to -14 LUFS using ffmpeg's loudnorm filter in its accurate
     2-pass mode. Fail-soft at every step — any missing binary, unmeasurable
     take, subprocess failure, or duration mismatch (the stream-copy guard)
     returns None and the caller keeps the un-normalized Lambda URL. Never
-    raises; never fails the job over this."""
+    raises; never fails the job over this. `duration_s` (the render's output
+    length, when known) scales the ffmpeg timeouts (LV-20)."""
     # Runs when globally armed (AUDIO_FINALIZE) OR when this job's pre-render
     # static gain saturated the ±12dB clamp — the only path to target loudness
     # for a very quiet raw take (ralph round-1 lufs_drift).
@@ -7311,16 +7352,19 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
         # enhanced source only when it re-measures better. Fail-soft to the original.
         source_url = render_url
         if VOICE_ENHANCE and enhance_mod.armed():
-            enhanced = await _enhance_render_audio(render_url, job_id)
+            enhanced = await _enhance_render_audio(render_url, job_id, duration_s=duration_s)
             if enhanced:
                 source_url = enhanced
         logging.warning("[audio-finalize] starting for %s (clamped=%s)", job_id, _clamped)
+        pass1_timeout, pass2_timeout = _finalize_timeouts_s(duration_s)
         p1 = await asyncio.create_subprocess_exec(
             *audio_mod.loudnorm_pass1_args(source_url),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         # 60s was too tight for pass-1 over a network mp4 (ralph round-2: the
-        # clamped-gain job silently kept its -17.8 LUFS render).
-        _, stderr1 = await asyncio.wait_for(p1.communicate(), timeout=180)
+        # clamped-gain job silently kept its -17.8 LUFS render). LV-20: audio-only
+        # (-vn), duration-scaled, and a timeout now KILLS the child instead of leaving
+        # it decoding on the 0.5-CPU box.
+        _, stderr1 = await communicate_or_kill(p1, pass1_timeout)
         measured = audio_mod.parse_loudnorm_json(stderr1.decode("utf-8", "ignore"))
         if not measured:
             logging.warning("audio finalize: pass-1 unmeasurable for %s", job_id)
@@ -7345,11 +7389,11 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
                 return None
             p2 = await asyncio.create_subprocess_exec(
                 *args2, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await asyncio.wait_for(p2.communicate(), timeout=90)
+            await communicate_or_kill(p2, pass2_timeout)
             if p2.returncode != 0 or not os.path.exists(out_path):
                 return None
-            orig_dur = await _ffprobe_duration_s(render_url)
-            new_dur = await _ffprobe_duration_s(out_path)
+            orig_dur = await _ffprobe_duration_s(render_url, timeout_s=FFPROBE_TIMEOUT_S)
+            new_dur = await _ffprobe_duration_s(out_path, timeout_s=FFPROBE_TIMEOUT_S)
             if orig_dur is None or new_dur is None or abs(orig_dur - new_dur) > 0.1:
                 return None
             # Host on the SAME S3 bucket that serves the Lambda renders — the
@@ -7448,7 +7492,9 @@ async def _generate_poster(render_url: str, job_id: str, clip_id: str) -> str | 
                         "-frames:v", "1", "-vf", "scale=540:-2", "-q:v", "4",
                         "-f", "image2", cand,
                         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                    await asyncio.wait_for(p.communicate(), timeout=30)
+                    # LV-20: kill on timeout AND on cancellation — the caller's 8s
+                    # wait_for cancels this task mid-seek, which used to orphan ffmpeg.
+                    await communicate_or_kill(p, 30)
                     if p.returncode != 0 or not os.path.exists(cand) or os.path.getsize(cand) == 0:
                         continue
                     # Audit (build 53): cv2 Laplacian + YuNet scoring is CPU-blocking — off
@@ -7465,7 +7511,7 @@ async def _generate_poster(render_url: str, job_id: str, clip_id: str) -> str | 
                         "-f", "image2", out_path]
                 p = await asyncio.create_subprocess_exec(
                     *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                await asyncio.wait_for(p.communicate(), timeout=45)
+                await communicate_or_kill(p, 45)
                 if p.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
                     return None
             with open(out_path, "rb") as f:
@@ -7563,7 +7609,9 @@ async def _render_all_clips(job_id: str) -> None:
             # work, not a Lambda call). Scoped to the main pipeline render only
             # (not tweak re-renders / preview renders / restart re-attach) for now.
             if _is_current_render(clip, my_gen):
-                finalized_url = await _finalize_audio_loudness(render_url, job_id)
+                finalized_url = await _finalize_audio_loudness(
+                    render_url, job_id,
+                    duration_s=(clip.get("render_total_frames") or 0) / 30.0 or None)
                 if finalized_url:
                     render_url = finalized_url
             # Addendum Part 6: cutout/PIP quality gates on the finished render. A failed
@@ -9294,18 +9342,12 @@ async def _ffprobe_media_stats(url: str) -> dict:
     cmd = ["ffprobe", "-v", "error",
            "-show_entries", "stream=width,height,avg_frame_rate:format=duration",
            "-of", "json", url]
-    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        stdout, _ = await communicate_or_kill(proc, FFPROBE_TIMEOUT_S)   # LV-20: kill on timeout
         data = json.loads(stdout.decode("utf-8", "ignore") or "{}")
     except Exception:
-        if proc is not None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
         return {}
     out: dict = {}
     try:
@@ -9481,7 +9523,8 @@ async def analyze_media(req: MediaAnalyzeRequest):
         return {"mode": "mock", **mock}
     if is_video:
         try:
-            lufs = await audio_mod.probe_loudness(req.public_url)
+            lufs = await audio_mod.probe_loudness(req.public_url,
+                                                  duration_s=stats.get("duration_s"))
         except Exception:
             lufs = None
         if lufs is not None:
