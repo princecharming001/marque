@@ -131,21 +131,34 @@ extension View {
                         MarqueDialogAction("Cancel", kind: .cancel),
                     ],
                     dismiss: { withAnimation(.easeOut(duration: 0.18)) { isPresented.wrappedValue = false } },
-                    content: AnyView(
-                        TextField(placeholder, text: text)
-                            .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                            .padding(.horizontal, Space.md).frame(height: 50)
-                            .background(Palette.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                                .strokeBorder(Palette.hairline, lineWidth: 1))
-                            .accessibilityIdentifier("dialog.input")
-                    )
+                    content: AnyView(MarqueDialogField(placeholder: placeholder, text: text))
                 )
                 .zIndex(999)
             }
         }
         .animation(.easeOut(duration: 0.18), value: isPresented.wrappedValue)
+    }
+}
+
+/// The input dialog's field. Editor audit: it now takes focus as it appears (cursor at the
+/// end), so fixing a caption or typing a stock query needs no extra tap — every QA sweep
+/// flagged the unfocused field, and automation typing into it silently went nowhere.
+private struct MarqueDialogField: View {
+    let placeholder: String
+    @Binding var text: String
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField(placeholder, text: $text)
+            .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+            .padding(.horizontal, Space.md).frame(height: 50)
+            .background(Palette.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 1))
+            .focused($focused)
+            .onAppear { DispatchQueue.main.async { focused = true } }
+            .accessibilityIdentifier("dialog.input")
     }
 }
 
