@@ -1,0 +1,25 @@
+appId: com.getmarque.app
+name: Audit — open the 10-minute demo-src clip in the pro editor
+# Needs the keyless backend on :8001 with DEMO_MEDIA_DIR (main.py _demo_src_job).
+---
+- launchApp:
+    clearState: true
+    stopApp: true
+    arguments:
+      demoClip: 1
+      demoClipJob: "demo-src-600"
+      demoClipSeconds: "600"
+      backend.url: "http://127.0.0.1:8001"
+    permissions:
+      all: allow
+- tapOn: { id: "tour.skip", optional: true }
+- extendedWaitUntil: { visible: "Library", timeout: 20000 }
+- tapOn: "Library"
+- waitForAnimationToEnd: { timeout: 2000 }
+- tapOn: { id: "library.clip", index: 0 }
+- waitForAnimationToEnd: { timeout: 2500 }
+- scrollUntilVisible: { element: { id: "clip.editManual" }, direction: DOWN, timeout: 10000 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 30000 }
+- waitForAnimationToEnd: { timeout: 3000 }
+- takeScreenshot: ${OUT || '/tmp'}/audit-long-open

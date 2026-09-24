@@ -175,14 +175,21 @@ final class AppStore {
                 predictedScore: 78
             )
             scripts.insert(script, at: 0)
+            // Editor audit QA seam: `demoClipJob` (e.g. "demo-src-600") points the seeded clip
+            // at a keyless job whose source is a REAL long video served by the dev backend
+            // (main.py _demo_src_job), so player/filmstrip/scrub/long-clip behavior is
+            // drivable. `demoClipSeconds` keeps the card's duration honest for that source.
+            let demoJobOverride = UserDefaults.standard.string(forKey: "demoClipJob")
+            let demoSeconds = UserDefaults.standard.integer(forKey: "demoClipSeconds")
             var clip = Clip(scriptId: script.id, formatId: script.formatId,
                             formatName: "Myth-buster", caption: script.body,
-                            predictedScore: 78, status: .ready, seconds: 22)
+                            predictedScore: 78, status: .ready,
+                            seconds: demoSeconds > 0 ? demoSeconds : 22)
             clip.title = script.title
             // non-nil ⇒ Library shows "Edit manually". The plain "demo-clip-job" id is
             // preserved exactly for the untouched (no override) path — backend tests
             // assert on that literal string (test_demo_editor_job_synthesized_keyless).
-            clip.jobId = demoStyleOverride.map { "demo-\($0)" } ?? "demo-clip-job"
+            clip.jobId = demoJobOverride ?? demoStyleOverride.map { "demo-\($0)" } ?? "demo-clip-job"
             clips.insert(clip, at: 0)
         }
         // Owner-bug reproduction seam (build 63): a Library with enough finished clips to

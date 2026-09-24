@@ -4710,10 +4710,96 @@ _DEMO_STYLES = {"talking_head", "green_screen", "broll_cutaway", "split_three",
                "duet_split", "faceless", "fast_cuts"}
 
 
+_DEMO_WORD_POOL = ("most people plan the whole week and film nothing so here is the system "
+                   "that actually ships pick one idea write three lines hit record and keep "
+                   "the first take that is good enough then post it before you talk yourself "
+                   "out of it the second part is consistency not virality").split()
+
+
+def _demo_src_job(job_id: str) -> dict | None:
+    """Keyless QA seam (editor audit 2026-09-24): `demo-src-<seconds>` synthesizes a job
+    whose source is a REAL video served by this dev server, with words and an AI-shaped
+    edit spanning the whole duration, so the editor's player, filmstrip, scrub, caption
+    lane and long-clip behavior are drivable deterministically in the simulator.
+    Needs DEMO_MEDIA_DIR/<seconds>.mov (or .mp4) and only ever runs keyless."""
+    media_dir = os.environ.get("DEMO_MEDIA_DIR", "")
+    try:
+        secs = int(job_id[len("demo-src-"):])
+    except ValueError:
+        return None
+    if not media_dir or secs <= 0:
+        return None
+    name = next((f"{secs}{ext}" for ext in (".mov", ".mp4")
+                 if os.path.exists(os.path.join(media_dir, f"{secs}{ext}"))), None)
+    if not name:
+        return None
+    base = os.environ.get("DEMO_MEDIA_BASE", "http://127.0.0.1:8001").rstrip("/")
+    total = secs * 30
+    # ~170 wpm words with a breath every sentence; deterministic.
+    words, t, i = [], 400, 0
+    while t < secs * 1000 - 600:
+        w = _DEMO_WORD_POOL[i % len(_DEMO_WORD_POOL)]
+        dur = 180 + (len(w) * 25)
+        words.append({"word": w.capitalize() if i % 12 == 0 else w, "start_ms": t,
+                      "end_ms": t + dur, "confidence": 0.97, "type": None,
+                      "is_emphasized": i % 37 == 0})
+        t += dur + (420 if i % 12 == 11 else 60)
+        i += 1
+    # An AI-shaped edit: ~20s segments separated by short dropped stumbles, a punch-in
+    # every ~15s, captions for every kept word, and a few b-roll inserts.
+    segs, drops, s_in = [], [], 0
+    while s_in < total:
+        s_out = min(total, s_in + 600)
+        segs.append({"src_in": s_in, "src_out": s_out})
+        if s_out < total:
+            drops.append({"src_in": s_out, "src_out": min(total, s_out + 12), "reason": "false_start"})
+        s_in = s_out + 12
+    caps = [{"word": w["word"], "frame": ms_to_frame(w["start_ms"]), "end_frame": ms_to_frame(w["end_ms"])}
+            for w in words]
+    punches = [{"type": "punch_in", "src_in": f, "src_out": f + 45, "scale": 1.08, "text": ""}
+               for f in range(150, total - 60, 450)]
+    broll_src = f"{base}/v1/dev/media/{name}"
+    broll = [{"src_in": f, "src_out": f + 75, "cue_text": "demo insert", "broll_query": "demo",
+              "source": "stock", "resolved_url": broll_src, "mode": "full", "need": "concept"}
+             for f in range(900, total - 150, 2700)]
+    edl = {"style": "talking_head", "format_id": "myth-buster", "segments": segs, "drops": drops,
+           "captions": caps, "speech_frames": [c["frame"] for c in caps], "overlays": punches,
+           "broll": broll, "layout": {"style": "talking_head", "panels": 1, "panel_boundaries": []},
+           "audio": {"lufs_target": -14.0}, "transitions": []}
+    script = {"hook": "Most people plan the whole week.", "body": " ".join(w["word"] for w in words[:40]),
+              "cta": "Follow for part two", "formatId": "myth-buster"}
+    job = {"status": "mock_ready", "style": "talking_head", "script": script,
+           "source_url": f"{base}/v1/dev/media/{name}",
+           "clips": [{"clip_id": f"{job_id}-c0", "format": "myth-buster", "status": "ready",
+                      "render_url": f"{base}/v1/dev/media/{name}"}],
+           "edl": _apply_edit_prefs(edl, {}), "words": words, "edl_history": [], "tweaks": [],
+           "created_at": time.time()}
+    _clip_jobs[job_id] = job
+    return job
+
+
+@app.api_route("/v1/dev/media/{name}", methods=["GET", "HEAD"])
+async def dev_media(name: str):
+    """Keyless QA seam: serve DEMO_MEDIA_DIR files (Range-capable) to the simulator.
+    404 whenever keys are set or the dir is unset, so it can never serve in prod."""
+    from fastapi.responses import FileResponse
+    media_dir = os.environ.get("DEMO_MEDIA_DIR", "")
+    if ANTHROPIC_KEY or not media_dir or "/" in name or name.startswith("."):
+        raise HTTPException(status_code=404, detail="not_found")
+    path = os.path.join(media_dir, name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="not_found")
+    return FileResponse(path, media_type="video/mp4" if name.endswith(".mp4") else "video/quicktime")
+
+
 def _synthesize_demo_clip_job(job_id: str) -> dict:
     """Keyless-only: build an in-memory mock_ready clip job for a `demo-`/`sim-`
     prefixed job id so the editor loads without the full record flow. No source
     video (placeholder player). Deterministic — safe to call repeatedly."""
+    if job_id.startswith("demo-src-"):
+        job = _demo_src_job(job_id)
+        if job:
+            return job
     script = {"hook": "Stop overthinking your content.",
               "body": "Here is the one system that actually works. Pick one idea, "
                       "film it in a single take, and ship it. Follow for more.",
