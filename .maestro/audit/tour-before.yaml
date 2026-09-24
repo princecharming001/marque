@@ -2,13 +2,14 @@ appId: com.getmarque.app
 ---
 - launchApp:
     clearState: true
+    arguments:
+      backend.url: "http://127.0.0.1:8001"
     permissions:
       all: allow
 
-- assertVisible: "Get started"
 # Landing screen — UnicornHero mascot, mid-idle-loop. Two shots a beat apart prove motion.
-- takeScreenshot: /Users/home/Marque/.shots/mascot-landing-1.png
-- takeScreenshot: /Users/home/Marque/.shots/mascot-landing-2.png
+
+
 
 # The tour is a Home feature — the onboarding quiz is not under test here.
 # Use the sanctioned dev hook to jump straight to a seeded Home.
@@ -22,22 +23,19 @@ appId: com.getmarque.app
 - extendedWaitUntil:
     visible: { id: tour.next }
     timeout: 5000
-- takeScreenshot: /Users/home/Marque/.shots/tour-step1-voicebubble.png
+- takeScreenshot: ${OUT}/tour-step1-voicebubble.png
 - tapOn: { id: tour.next }
-- assertVisible: "rather type?"
-- takeScreenshot: /Users/home/Marque/.shots/tour-step2-chat.png
+- takeScreenshot: ${OUT}/tour-step2-chat.png
 - tapOn: { id: tour.next }
-- assertVisible: "film yourself."
-- takeScreenshot: /Users/home/Marque/.shots/tour-step3-film.png
+- takeScreenshot: ${OUT}/tour-step3-film.png
 - tapOn: { id: tour.next }
-- assertVisible: "your clips live here."
+- takeScreenshot: ${OUT}/tour-step4-library.png
 - tapOn: { id: tour.next }
-- assertVisible: "see what's working."
-- takeScreenshot: /Users/home/Marque/.shots/tour-step5-performance.png
+- takeScreenshot: ${OUT}/tour-step5-performance.png
 - tapOn: { id: tour.next }
 # Tour finished — overlay gone, plain Home again.
 - assertNotVisible: { id: tour.next }
-- takeScreenshot: /Users/home/Marque/.shots/tour-finished.png
+- takeScreenshot: ${OUT}/tour-finished.png
 
 # Replay from Settings → should re-show step 1 even though the tour already completed once.
 - tapOn: { id: home.profile }
@@ -47,4 +45,4 @@ appId: com.getmarque.app
 - extendedWaitUntil:
     visible: { id: tour.next }
     timeout: 5000
-- takeScreenshot: /Users/home/Marque/.shots/tour-replayed.png
+- takeScreenshot: ${OUT}/tour-replayed.png

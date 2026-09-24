@@ -1,37 +1,42 @@
 import SwiftUI
 import Observation
 
-// Drives the guided walkthrough: same UnicornMascot that lives in onboarding, popping up
-// next to real app controls (the tab bar, the voice bubble) to introduce them. Runs once
+// Drives the guided walkthrough: a Stoic-style coach card that points at the real app
+// controls (the voice drop, the tabs, the Film button) one at a time. Runs once
 // automatically after onboarding finishes, and can be replayed from Settings any time.
+//
+// 2026-09-24 redesign: the clay-render mascot poses are gone. Each step now carries a flat
+// ink illustration (template-rendered, so it follows the ink/paper inversion in dark mode),
+// a tab-name eyebrow, and a lowercase-with-period title in the app's black-and-white voice.
 @MainActor
 @Observable
 final class TourManager {
     struct Step: Identifiable {
         let id: String            // matches the .tourAnchor(id) tag on the target control
-        let title: String
+        let eyebrow: String       // the name of the place being introduced (uppercased by DSEyebrow)
+        let title: String         // lowercase-with-period, DESIGN.md §2
         let message: String
-        let mascot: String        // per-step Yuni pose asset (distinct, static, whimsical)
+        let art: String           // ink illustration asset (template rendering)
     }
 
-    /// One pass through the things a brand-new creator needs to find. Each step gets its
-    /// own Yuni pose so it's never the same unicorn twice.
+    /// One pass through the five places a brand-new creator needs to find, in the order
+    /// they'd use them: talk an idea through, film it, find the finished clip, see how it did.
     static let steps: [Step] = [
-        Step(id: "tour.voiceBubble", title: "Talk to Yuni",
-             message: "Tap here anytime to talk it out. Scripts, ideas, or your whole day, planned.",
-             mascot: "UnicornTourTalk"),
-        Step(id: "tour.chat", title: "Prefer typing?",
-             message: "Same Yuni as the voice bubble, just in text.",
-             mascot: "UnicornTourType"),
-        Step(id: "tour.film", title: "Ready to record?",
-             message: "Tap here to film. I'll turn your take into ready-to-post clips.",
-             mascot: "UnicornTourPoint"),
-        Step(id: "tour.library", title: "Your clips live here",
-             message: "Ready clips, drafts, and saved footage all land in Library.",
-             mascot: "UnicornTourChill"),
-        Step(id: "tour.performance", title: "Track what's working",
-             message: "See how your posts are doing and what to make more of.",
-             mascot: "UnicornTourCheer"),
+        Step(id: "tour.voiceBubble", eyebrow: "Yuni", title: "talk it out.",
+             message: "Tap the drop to plan a script, riff on ideas, or map out your week out loud.",
+             art: "TourTalk"),
+        Step(id: "tour.chat", eyebrow: "Chat", title: "rather type?",
+             message: "Same Yuni in text. Ask for a script, or send a take and say how to edit it.",
+             art: "TourChat"),
+        Step(id: "tour.film", eyebrow: "Film", title: "film yourself.",
+             message: "Talk to the camera. We cut the pauses, add captions and b-roll, and hand you a finished clip.",
+             art: "TourFilm"),
+        Step(id: "tour.library", eyebrow: "Library", title: "your clips live here.",
+             message: "Finished clips, drafts and raw takes. Open any clip to tweak the edit or post it.",
+             art: "TourLibrary"),
+        Step(id: "tour.performance", eyebrow: "Performance", title: "see what's working.",
+             message: "How your posts are doing, and what to make more of next.",
+             art: "TourGrowth"),
     ]
 
     private static let completedKey = "tour.completed"
@@ -51,7 +56,7 @@ final class TourManager {
 
     /// Explicit replay (Settings → "Replay walkthrough").
     func start(router: AppRouter) {
-        router.selectedTab = .home   // the voice-bubble step needs Home's content on screen
+        router.selectedTab = .home   // the voice-drop step needs Home's content on screen
         router.homePath.removeAll()  // …and nothing pushed over it (Settings → Replay)
         index = 0
         isActive = true

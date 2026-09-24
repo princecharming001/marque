@@ -56,200 +56,169 @@ extension View {
 
 // MARK: - The tour overlay
 
+/// Stoic-style coach card (DESIGN.md §5 sheets/cards, §7 motion): a dimmed backdrop with a
+/// spotlight hole on the real control, a hairline ring around it, and ONE full-width surface
+/// card placed above or below the target so it never covers what it introduces. The card
+/// holds the progress dashes + Skip, a flat ink illustration, a tab-name eyebrow, a
+/// lowercase-with-period title, one line of copy and a centered primary capsule.
 struct TourOverlay: View {
     let tour: TourManager
     let router: AppRouter
     let anchors: [String: CGRect]
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     private let ringPad: CGFloat = -10
+    private let targetGap: CGFloat = Space.md
+
+    /// Measured coach-card height ("bubble" = the card that speaks for the step), so the
+    /// card can be placed flush above/below the target without a hardcoded guess.
+    @State private var bubbleH: CGFloat = 320
+
+    /// Full-width card: `screenH` margins on every device, so both margins match by
+    /// construction (SE through Pro Max).
+    private static func bubbleWidth(_ screenW: CGFloat) -> CGFloat {
+        max(260, screenW - 2 * Space.screenH)
+    }
 
     var body: some View {
         if let step = tour.current, let target = anchors[step.id] {
             GeometryReader { proxy in
-                overlay(step: step, target: target, screen: proxy.size)
+                overlay(step: step, target: target, screen: proxy.size,
+                        safeTop: proxy.safeAreaInsets.top)
             }
             .ignoresSafeArea()
             .transition(.opacity)
         }
     }
 
-    // OWNER (2026-08-15, "the guided walkthrough spacing on my phone is wonky…
-    // spacing, font, and the yunicorns sized/placed weird"): the cluster used to be
-    // FIXED at edge(12) + mascot(104) + gap(6) + bubble(232) = 354pt. On a 393pt
-    // iPhone that dumped all 39 leftover points on one side — 12pt margin against
-    // 39pt — and on a Pro Max the imbalance grew to 12 vs 76. The bubble width is now
-    // DERIVED from the screen, so both margins are `edge` by construction on every
-    // device, and the card self-sizes instead of being pinned to a fake 176pt.
-    private static let mascotW: CGFloat = 104
-    private static let mascotH: CGFloat = mascotW * 1.25   // one source of truth (was 132 vs 130)
-    private static let gap: CGFloat = Space.sm
-    private static let edge: CGFloat = Space.md
-
-    private static func bubbleWidth(_ screenW: CGFloat) -> CGFloat {
-        max(200, screenW - 2 * edge - mascotW - gap)
-    }
-
-    /// Measured height of the speech card, so the cluster can be bottom-anchored for
-    /// real. The old code positioned by a hardcoded 176 that the card didn't actually
-    /// honor — short steps left a hollow band above the buttons, long ones overflowed.
-    @State private var bubbleH: CGFloat = 150
-
     @ViewBuilder
-    private func overlay(step: TourManager.Step, target: CGRect, screen: CGSize) -> some View {
+    private func overlay(step: TourManager.Step, target: CGRect, screen: CGSize,
+                         safeTop: CGFloat) -> some View {
         let hole = target.insetBy(dx: ringPad, dy: ringPad)
-        let bubbleW = Self.bubbleWidth(screen.width)
-        // A target dead-center (the Film button sits at exactly screen.width/2) used to
-        // fall to the `false` branch and throw the whole cluster off-axis under a
-        // perfectly centered control. Treat near-center as "point from the left".
-        let centered = abs(target.midX - screen.width / 2) < 40
-        let peekLeft = centered ? true : target.midX < screen.width * 0.5
-        let below = target.midY < screen.height * 0.55
-        // Bottom edge the bubble + mascot both sit on (below the target up top, above it
-        // when it's down low, so the cluster never covers what it points at).
-        let bottomY: CGFloat = below ? min(target.maxY + 24 + bubbleH, screen.height - 24)
-                                     : max(target.minY - 24, 24 + bubbleH)
-        let mascotX: CGFloat = peekLeft ? Self.edge + Self.mascotW / 2
-                                        : screen.width - Self.edge - Self.mascotW / 2
-        let bubbleX: CGFloat = peekLeft
-            ? Self.edge + Self.mascotW + Self.gap + bubbleW / 2
-            : screen.width - Self.edge - Self.mascotW - Self.gap - bubbleW / 2
+        let radius = min(Radius.group + 2, min(hole.width, hole.height) / 2)
+        let cardW = Self.bubbleWidth(screen.width)
+        // Low targets (the tab bar, the Film button) get the card ABOVE them; high targets
+        // (the voice drop) get it BELOW, clamped on screen either way.
+        let above = target.midY > screen.height * 0.5
+        let topLimit = max(safeTop, 20) + Space.sm
+        let centerY: CGFloat = above
+            ? max(topLimit + bubbleH / 2, hole.minY - targetGap - bubbleH / 2)
+            : min(screen.height - 24 - bubbleH / 2, hole.maxY + targetGap + bubbleH / 2)
 
         ZStack {
-            // Dimmed backdrop with an ANIMATABLE spotlight hole — the dark cutout slides +
-            // resizes to the next control instead of snapping. Absorbs every touch so a
-            // tour tap can never leak to a paywall-gated control behind it.
-            Spotlight(hole: hole)
-                .fill(Palette.night.opacity(0.66), style: FillStyle(eoFill: true))
+            // Scrim with an ANIMATABLE spotlight hole: the cutout slides + resizes to the next
+            // control. It absorbs every touch so a tour tap can never reach a gated control.
+            Spotlight(hole: hole, radius: radius)
+                .fill(Palette.scrim, style: FillStyle(eoFill: true))
                 .contentShape(Rectangle())
                 .onTapGesture { }
+                .accessibilityHidden(true)
 
-            // Monochrome ring travels + resizes with the highlight: a white hairline
-            // on the always-dark scrim (no hue, no glow).
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(Palette.onNight, lineWidth: 2)
+            // Hairline ring on the target (no hue, no glow).
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(Palette.onNight, lineWidth: 1.5)
                 .frame(width: hole.width, height: hole.height)
                 .position(x: hole.midX, y: hole.midY)
                 .allowsHitTesting(false)
+                .accessibilityHidden(true)
 
-            // Bubble — stable identity, so its .position animates: it TRAVELS to the next
-            // step rather than fading in and out. (Its text crossfades inside — see below.)
-            bubble(step, width: bubbleW)
+            bubble(step, width: cardW, compact: screen.height < 700)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bubbleH = $0 }
-                .position(x: bubbleX, y: bottomY - bubbleH / 2)
-
-            // Mascot — the frame travels while the POSE crossfades to the next one, so Yuni
-            // glides toward the next control and changes pose on the way.
-            ZStack {
-                TourMascotView(resource: step.mascot, size: Self.mascotW, mirrored: !peekLeft)
-                    .id(step.mascot)
-                    .transition(.opacity)
-            }
-            .frame(width: Self.mascotW, height: Self.mascotH, alignment: .bottom)
-            .position(x: mascotX, y: bottomY - Self.mascotH / 2)
+                .position(x: screen.width / 2, y: centerY)
         }
-        .animation(.spring(response: 0.5, dampingFraction: 0.82), value: tour.index)
+        // Motion.standard travel between steps; Reduce Motion keeps only the crossfades.
+        .animation(reduceMotion ? nil : Motion.standard, value: tour.index)
     }
 
-    private func bubble(_ step: TourManager.Step, width: CGFloat) -> some View {
-        TourSpeechBubble(
-            step: step, width: width,
-            index: tour.index,
-            total: TourManager.steps.count,
-            isLast: tour.isLastStep,
-            onNext: { tour.next(router: router) },
-            onSkip: { tour.skip() }
-        )
+    private func bubble(_ step: TourManager.Step, width: CGFloat, compact: Bool) -> some View {
+        TourCard(step: step, index: tour.index, total: TourManager.steps.count,
+                 isLast: tour.isLastStep, compact: compact,
+                 onNext: { tour.next(router: router) }, onSkip: { tour.skip() })
+            .frame(width: width)
     }
 }
 
-// MARK: - Static per-step mascot
+// MARK: - Coach card
 
-/// A single static Yuni pose, fully visible beside the bubble. No motion — the character
-/// holds a whimsical pose (wave / lean / point / chill / cheer) that differs per step.
-private struct TourMascotView: View {
-    let resource: String
-    let size: CGFloat
-    var mirrored: Bool
-
-    var body: some View {
-        Group {
-            if UIImage(named: resource) != nil {
-                Image(resource).resizable().scaledToFit()
-                    .scaleEffect(x: mirrored ? -1 : 1, y: 1)
-            } else {
-                UnicornMascot(pose: .hero, size: size * 0.9)   // fallback keeps the tour intact
-            }
-        }
-        // The poses' natural aspects run from 0.59 (Cheer, tall) to 1.65 (Chill, wide),
-        // and scaledToFit centers the letterbox — so wide poses used to float ~34pt off
-        // the shared baseline while tall ones sat on it ("yunicorns placed weird").
-        // Bottom-aligning puts every pose's feet on the same line as the bubble's edge.
-        .frame(width: size, height: size * 1.25, alignment: .bottom)
-    }
-}
-
-// MARK: - Speech bubble
-
-private struct TourSpeechBubble: View {
+private struct TourCard: View {
     let step: TourManager.Step
-    let width: CGFloat
     let index: Int
     let total: Int
     let isLast: Bool
+    let compact: Bool            // SE-class heights: smaller art so the card never crowds the target
     let onNext: () -> Void
     let onSkip: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
-            progressDots
-            // Title + message crossfade to the next step's copy while the card travels;
-            // the progress dashes and controls stay put so buttons never double up.
-            VStack(alignment: .leading, spacing: Space.xs) {
+        VStack(spacing: 0) {
+            HStack(alignment: .center) {
+                DSProgressDashes(total: total, current: index + 1)
+                Spacer(minLength: Space.md)
+                Button("Skip", action: onSkip)
+                    .font(AppFont.supporting)
+                    .foregroundStyle(Palette.textSecondary)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("Skip walkthrough")
+                    .accessibilityIdentifier("tour.skip")
+            }
+
+            // Copy + art crossfade to the next step while the card travels; the dashes,
+            // Skip and the capsule stay put so controls never double up mid-transition.
+            VStack(spacing: Space.sm) {
+                TourArt(name: step.art, height: compact ? 72 : 104)
+                    .padding(.bottom, Space.xs)
+                DSEyebrow(text: step.eyebrow)
                 Text(step.title)
-                    .font(AppFont.headline)
+                    .font(AppFont.title2)
+                    .tracking(-0.2)
                     .foregroundStyle(Palette.textPrimary)
+                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
                 Text(step.message)
-                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                    .font(AppFont.supporting)
+                    .foregroundStyle(Palette.textSecondary)
+                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .padding(.top, compact ? Space.xs : Space.sm)
             .id(step.id)
             .transition(.opacity)
-            controls
-                .padding(.top, Space.xs)
+
+            Button(action: onNext) {
+                Text(isLast ? "Done" : "Next")
+            }
+            .buttonStyle(.ds(.primary, height: 48))
+            .accessibilityIdentifier("tour.next")
+            .padding(.top, compact ? Space.md : Space.lg)
         }
-        .padding(Space.cardPad)
-        // Self-sizing: the old fixed 176pt left a hollow band under short steps and
-        // squeezed long ones. Height now follows the copy.
-        .frame(width: width, alignment: .topLeading)
+        .padding(.horizontal, Space.cardPad)
+        .padding(.top, Space.sm)
+        .padding(.bottom, Space.cardPad)
         .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).fill(Palette.surface))
         .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isModal)
     }
+}
 
-    /// Stoic progress dashes, left-aligned in the card.
-    private var progressDots: some View {
-        DSProgressDashes(total: total, current: index + 1)
-            .padding(.bottom, Space.xs)
-    }
-
-    private var controls: some View {
-        HStack {
-            Button("Skip", action: onSkip)
-                .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
-                .frame(minHeight: 40)
-                .accessibilityIdentifier("tour.skip")
-            Spacer()
-            Button(action: onNext) { nextLabel }
-                .buttonStyle(.ds(.primary, height: 40))
-                .accessibilityIdentifier("tour.next")
-        }
-    }
-
-    private var nextLabel: some View {
-        Text(isLast ? "Got it" : "Next")
+/// Flat ink illustration, template-rendered so it is ink on paper in light mode and paper
+/// on ink in dark mode. Decorative: the title/copy carry the meaning for VoiceOver.
+private struct TourArt: View {
+    let name: String
+    let height: CGFloat
+    var body: some View {
+        Image(name)
+            .renderingMode(.template)
+            .resizable()
+            .scaledToFit()
+            .foregroundStyle(Palette.textPrimary)
+            .frame(height: height)
+            .accessibilityHidden(true)
     }
 }
 
@@ -259,6 +228,7 @@ private struct TourSpeechBubble: View {
 /// Animatable so the hole slides + resizes smoothly to the next control between steps.
 private struct Spotlight: Shape {
     var hole: CGRect
+    var radius: CGFloat = 18
     var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
         get { AnimatablePair(AnimatablePair(hole.origin.x, hole.origin.y),
                              AnimatablePair(hole.size.width, hole.size.height)) }
@@ -269,7 +239,7 @@ private struct Spotlight: Shape {
     }
     func path(in rect: CGRect) -> Path {
         var p = Path(rect)
-        p.addRoundedRect(in: hole, cornerSize: CGSize(width: 18, height: 18))
+        p.addRoundedRect(in: hole, cornerSize: CGSize(width: radius, height: radius))
         return p
     }
 }
