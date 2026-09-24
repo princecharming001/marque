@@ -226,6 +226,11 @@ struct ProEditorView: View {
         .onChange(of: mediaPickerItem) { _, item in
             if let item { Task { await importRollMedia(item) } }
         }
+        // ED-15: the Stock-clip dialog consumes a pending Replace on "Add" (the action runs
+        // before the dismissal); a Cancel must clear it too.
+        .onChange(of: showStockInput) { _, shown in
+            if !shown { replacingRoll = nil }
+        }
         .task { await load() }
         .onChange(of: phase) { _, p in
             if p == .editing { maybeHint("tapClip", icon: "hand.tap", text: "Tap a clip to select it") }
@@ -1407,7 +1412,12 @@ struct ProEditorView: View {
             HStack {
                 Text("add media.").font(AppFont.title3).foregroundStyle(Palette.textPrimary)
                 Spacer()
-                Button { withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false } } label: {
+                Button {
+                    // ED-15: a cancelled Replace must not leave the roll marked — the NEXT
+                    // "add media" used to silently replace it instead of adding.
+                    replacingRoll = nil
+                    withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
+                } label: {
                     Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                         .padding(.horizontal, Space.md).padding(.vertical, 8)
                         .contentShape(Rectangle())
@@ -1438,6 +1448,7 @@ struct ProEditorView: View {
                 .accessibilityIdentifier("editorPro.media.stock")
                 DSRowDivider(inset: Space.rowPad + 24 + Space.md)
                 Button {
+                    replacingRoll = nil                // ED-15: music never replaces a roll
                     withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
                     showMusicSheet = true
                 } label: {
