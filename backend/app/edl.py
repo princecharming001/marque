@@ -152,6 +152,20 @@ class Drop(BaseModel):
     reason: str  # filler | dead_air | false_start
 
 
+def _push_drop(drops: list, src_in: int, src_out: int, reason: str) -> None:
+    """Append Drop(src_in, src_out, reason) ONLY when it spans at least one frame.
+
+    LV-34 (prod 2026-09-24, 5-min take): AssemblyAI emits sub-frame words (a 10ms "Um"
+    at 115600-115610ms) whose start and end round to the SAME frame, so the filler drop
+    came out as Drop(3468, 3468). check_edl_invariants rightly flags src_out<=src_in as
+    a hard structural issue, and the whole tailored edit was discarded for the safe
+    default (no b-roll, ai_edit_unavailable). A zero-frame drop cuts nothing anyway —
+    skipping it loses at most one sub-frame sliver of audio. Every Drop constructor in
+    this module routes through here."""
+    if src_out > src_in:
+        drops.append(Drop(src_in=src_in, src_out=src_out, reason=reason))
+
+
 class CaptionWord(BaseModel):
     word: str
     frame: int                        # start frame for active-word highlight
@@ -625,10 +639,12 @@ def strip_fillers(words: list[dict], gap_ms: int = 600,
                 silent_spans is None
                 or _covered_by_silence(_frame_to_ms(drop_start), _frame_to_ms(drop_end), silent_spans))
             if drop_ok:
-                drops.append(Drop(src_in=drop_start, src_out=drop_end, reason="dead_air"))
+                _push_drop(drops, drop_start, drop_end, "dead_air")
             # else: too little room to usefully tighten — leave the natural gap as-is.
         if is_filler:
-            drops.append(Drop(src_in=ms_to_frame(start), src_out=ms_to_frame(end), reason="filler"))
+            # LV-34: a sub-frame filler (start/end round to one frame) yields NO drop —
+            # never a degenerate Drop(f, f). The word still leaves the caption list.
+            _push_drop(drops, ms_to_frame(start), ms_to_frame(end), "filler")
         else:
             kept.append(w)
         # Advance past THIS word regardless of filler status — otherwise a run of
@@ -685,9 +701,8 @@ def detect_disfluencies(words: list[dict], level: str = "default") -> list[Drop]
                 else (at_clause or (phrase_mode >= 1 and flanked))
             guarded = matched == ("you", "know") and i > 0 and norms[i - 1] in _YOU_KNOW_GUARD_PRECEDING
             if allow and not guarded:
-                drops.append(Drop(src_in=ms_to_frame(words[i].get("start_ms", 0)),
-                                  src_out=ms_to_frame(words[i + m - 1].get("end_ms", 0)),
-                                  reason="filler"))
+                _push_drop(drops, ms_to_frame(words[i].get("start_ms", 0)),
+                           ms_to_frame(words[i + m - 1].get("end_ms", 0)), "filler")
                 i += m
                 continue
         i += 1
@@ -701,8 +716,8 @@ def detect_disfluencies(words: list[dict], level: str = "default") -> list[Drop]
                    and (words[i].get("word", "").endswith("-")
                         or (len(norms[i]) >= 2 and norms[i + 1].startswith(norms[i]))))
         if (same or partial) and gap <= stutter_ms:
-            drops.append(Drop(src_in=ms_to_frame(words[i].get("start_ms", 0)),
-                              src_out=ms_to_frame(words[i].get("end_ms", 0)), reason="filler"))
+            _push_drop(drops, ms_to_frame(words[i].get("start_ms", 0)),
+                       ms_to_frame(words[i].get("end_ms", 0)), "filler")
             i += 1
             continue
         # bigram restart: "I think— I think" — same two-word run repeats within 1200ms.
@@ -711,8 +726,8 @@ def detect_disfluencies(words: list[dict], level: str = "default") -> list[Drop]
             second_pair = (norms[i + 2], norms[i + 3])
             restart_gap = words[i + 2].get("start_ms", 0) - words[i + 1].get("end_ms", 0)
             if first_pair == second_pair and first_pair[0] and restart_gap <= 1200:
-                drops.append(Drop(src_in=ms_to_frame(words[i].get("start_ms", 0)),
-                                  src_out=ms_to_frame(words[i + 1].get("end_ms", 0)), reason="filler"))
+                _push_drop(drops, ms_to_frame(words[i].get("start_ms", 0)),
+                           ms_to_frame(words[i + 1].get("end_ms", 0)), "filler")
                 i += 2
                 continue
         i += 1
@@ -737,8 +752,8 @@ def detect_disfluencies(words: list[dict], level: str = "default") -> list[Drop]
             # restart — cutting the fragment there ate a real clause (word-eater).
             content_or_marker = (overlap - PROTECTED_STOPWORDS) or (overlap & DISCOURSE_MARKERS)
             if overlap and content_or_marker:
-                drops.append(Drop(src_in=ms_to_frame(words[i].get("start_ms", 0)),
-                                  src_out=ms_to_frame(words[j - 1].get("end_ms", 0)), reason="false_start"))
+                _push_drop(drops, ms_to_frame(words[i].get("start_ms", 0)),
+                           ms_to_frame(words[j - 1].get("end_ms", 0)), "false_start")
                 i = j
                 break
         else:
@@ -754,8 +769,8 @@ def detect_disfluencies(words: list[dict], level: str = "default") -> list[Drop]
             run_start = j
             j -= 1
         if run_start < n and pause_before(run_start) >= 400:
-            drops.append(Drop(src_in=ms_to_frame(words[run_start].get("start_ms", 0)),
-                              src_out=ms_to_frame(words[n - 1].get("end_ms", 0)), reason="filler"))
+            _push_drop(drops, ms_to_frame(words[run_start].get("start_ms", 0)),
+                       ms_to_frame(words[n - 1].get("end_ms", 0)), "filler")
         # Multi-word sign-off phrases ("hope this helped", "thanks for watching") — spec §9
         # says these are ALWAYS cut. Match the tail against the phrase list (longest first)
         # and drop from the phrase start to the end. No pause gate: a spoken sign-off is a
@@ -765,8 +780,8 @@ def detect_disfluencies(words: list[dict], level: str = "default") -> list[Drop]
             plen = len(phrase)
             if plen <= n and tuple(tail_norms[n - plen:n]) == phrase:
                 start_i = n - plen
-                drops.append(Drop(src_in=ms_to_frame(words[start_i].get("start_ms", 0)),
-                                  src_out=ms_to_frame(words[n - 1].get("end_ms", 0)), reason="false_start"))
+                _push_drop(drops, ms_to_frame(words[start_i].get("start_ms", 0)),
+                           ms_to_frame(words[n - 1].get("end_ms", 0)), "false_start")
                 break
 
     # --- confidence-aware cut: short, unemphasized, low-confidence garbles ---
@@ -780,8 +795,8 @@ def detect_disfluencies(words: list[dict], level: str = "default") -> list[Drop]
             if _norm_word(w.get("word", "")) in PROTECTED_STOPWORDS:
                 continue
             if conf < conf_cut and 0 < dur <= 250 and not w.get("is_emphasized"):
-                drops.append(Drop(src_in=ms_to_frame(w.get("start_ms", 0)),
-                                  src_out=ms_to_frame(w.get("end_ms", 0)), reason="filler"))
+                _push_drop(drops, ms_to_frame(w.get("start_ms", 0)),
+                           ms_to_frame(w.get("end_ms", 0)), "filler")
 
     return drops
 
@@ -2908,7 +2923,8 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
     edl = EDL(
         style=style, format_id=format_id or "myth-buster",
         segments=[Segment(**s) for s in segments],
-        drops=[Drop(**d) for d in drops],
+        # LV-34 backstop: a zero-frame drop cuts nothing but fails the hard invariant.
+        drops=[Drop(**d) for d in drops if d["src_out"] > d["src_in"]],
         captions=[CaptionWord(**c) for c in captions],
         speech_frames=[ms_to_frame(w.get("start_ms", 0)) for w in clean_words if w.get("word")],
         overlays=[Overlay(**o) for o in overlays],

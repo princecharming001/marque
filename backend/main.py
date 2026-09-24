@@ -22,6 +22,7 @@ import random
 import logging
 import shutil
 import tempfile
+from collections import deque
 from datetime import datetime, timezone
 
 import httpx
@@ -40,6 +41,7 @@ from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      _BROLL_MEME_CAPS, clamp_opening_overcut, snap_cut_ends_to_takes,
                      enforce_sentence_integrity)
 from app import audio as audio_mod
+from app.subproc import communicate_or_kill
 from app import enhance as enhance_mod
 from app import multipart as multipart_mod
 from app import knowledge as knowledge_mod
@@ -140,7 +142,31 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 # can't compress under the cap, so ">1min takes" simply died client-side). 150MB keeps
 # ~100MB of headroom under the bucket limit and lets a typical 60-90s 1080p capture
 # upload with NO on-device transcode at all (faster submit, no quality loss).
+# MAX_UPLOAD_BYTES is now the PRODUCT ceiling only — what mint advertises is
+# _advertised_upload_cap_bytes() below (LV-1).
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "150000000"))
+# LV-1 (editor audit 2026-09-24): the binding limit is NOT the bucket's 256MB — it is the
+# Supabase PROJECT-wide upload limit, measured live at exactly 50 MiB (52,428,800 bytes
+# stores; 52,428,801 → HTTP 400 {"statusCode":"413","code":"EntityTooLarge"}). Mint used
+# to advertise the 150MB product ceiling, so the app skipped compression for anything
+# under 150MB and PUT 50-150MB takes raw — every one of them died on that 413 (the
+# in-app camera records ~90MB/min, so every take over ~35s). The advertised cap is now
+# min(product ceiling, storage limit − 2 MiB headroom for encoder bitrate overshoot).
+# To allow bigger uploads: raise the global file size limit in the Supabase dashboard
+# (Storage → Settings; Pro plan) FIRST, then set STORAGE_OBJECT_LIMIT_BYTES to match —
+# never the other way round, or the app is told to PUT objects storage rejects.
+STORAGE_OBJECT_LIMIT_BYTES = int(os.environ.get("STORAGE_OBJECT_LIMIT_BYTES", "52428800"))
+_UPLOAD_CAP_HEADROOM_BYTES = 2 * 1024 * 1024
+
+
+def _advertised_upload_cap_bytes() -> int:
+    """The `max_upload_bytes` every mint response carries (live and mock): the product
+    ceiling, clamped under what storage will actually accept. The only source of that
+    number — the iOS upload ladder compresses to fit whatever this returns."""
+    cap = min(MAX_UPLOAD_BYTES, STORAGE_OBJECT_LIMIT_BYTES - _UPLOAD_CAP_HEADROOM_BYTES)
+    # A storage limit smaller than the headroom itself (misconfiguration) degrades to the
+    # raw limit rather than advertising zero/negative bytes.
+    return cap if cap > 0 else min(MAX_UPLOAD_BYTES, STORAGE_OBJECT_LIMIT_BYTES)
 # Inference-time quality gate (generate -> judge -> targeted self-repair). On by
 # default; set AI_QUALITY=0 to fall back to raw single-shot generation.
 AI_QUALITY = os.environ.get("AI_QUALITY", "1") != "0"
@@ -1238,6 +1264,28 @@ def _get_anthropic_client() -> httpx.AsyncClient:
     return _anthropic_client
 
 
+# LV-21 (editor audit 2026-09-24): the shared client's flat 90s timeout also bounded the
+# READ of every non-streaming generation, while the edit calls' max_tokens scale with the
+# transcript (plan min(16000, 3000+4w), brief, legacy EDL). A long take's plan legitimately
+# needs minutes of generation, so it ReadTimeout'd on all 4 attempts (~370s burned) and
+# degraded to the safe-default cut / a silent mock brief. The read budget now scales with
+# the call's own output budget (~40 tok/s worst-case throughput + 60s of headroom),
+# clamped to [90, 420]; connect/write/pool stay short and fixed.
+ANTHROPIC_READ_TIMEOUT_MIN_S = 90.0
+ANTHROPIC_READ_TIMEOUT_MAX_S = float(os.environ.get("ANTHROPIC_READ_TIMEOUT_MAX_S", "420"))
+
+
+def _anthropic_timeout(max_tokens: int) -> httpx.Timeout:
+    """Per-request httpx timeout for a non-streaming Messages call of `max_tokens`."""
+    try:
+        mt = max(0, int(max_tokens or 0))
+    except (TypeError, ValueError):
+        mt = 0
+    read = min(ANTHROPIC_READ_TIMEOUT_MAX_S,
+               max(ANTHROPIC_READ_TIMEOUT_MIN_S, 60.0 + mt / 40.0))
+    return httpx.Timeout(connect=15.0, read=read, write=30.0, pool=30.0)
+
+
 _SCHEMA_STRIPPED_ONCE = False
 
 
@@ -1286,6 +1334,7 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
         # edit to the default cut. Strip the unsupported keywords (the corresponding
         # shape checks live in code) so no future schema edit can resurrect that class.
         body["output_config"] = {"format": {"type": "json_schema", "schema": _sanitize_schema(schema)}}
+    timeout = _anthropic_timeout(max_tokens)          # LV-21: read budget ∝ output budget
     for attempt, delay in enumerate(delays + [None]):
         try:
             client = _get_anthropic_client()
@@ -1294,6 +1343,7 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
                 headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
                          "content-type": "application/json"},
                 json=body,
+                timeout=timeout,
             )
             if r.status_code == 200:
                 try:
@@ -3334,6 +3384,12 @@ async def _restore_clip_job(job_id: str) -> dict | None:
     # (double-spend + "server restarted"). The persisted render_id/bucket_name (now
     # written mid-render) make this possible; _poll_remotion_render is idempotent.
     if job is state:                    # we won the restore (first to materialize it)
+        # LV-23: a "waiting for a render slot" marker only means something in the process
+        # that is waiting. A restored clip is never waiting HERE — drop it so the
+        # watchdog judges the clip by its render clock instead of sparing it forever.
+        for _c in job.get("clips") or []:
+            _c.pop("render_queued_at", None)
+            _c.pop("preview_queued_at", None)
         # A7: _theme (the resolved Theme object) is nulled before persist (it's a runtime-only
         # pydantic object; theme_id is the durable record). Re-resolve it from theme_id here so
         # a restored themed job actually renders themed — omitting this made every job restored
@@ -3355,8 +3411,7 @@ def _reattach_in_flight_renders(job: dict) -> None:
             # re-attached poll runs under the SAME scaled window as the original, so
             # the sweep must keep honoring it (a restored 4min render otherwise gets
             # the flat 480s watchdog against a ~1100s legitimate poll).
-            clip["render_budget_s"] = _scaled_render_budgets(
-                clip.get("render_total_frames"))[0]
+            clip["render_budget_s"] = _clip_render_budget_s(clip.get("render_total_frames"))
             my_gen = _bump_render_gen(clip)
             try:
                 _spawn(_reattach_one_render(job, clip, my_gen))
@@ -3433,7 +3488,7 @@ async def _mint_supabase_upload(filename: str) -> dict | None:
         "upload_url": f"{base}/storage/v1{signed_path}",
         "key": key,
         "public_url": f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}",
-        "max_upload_bytes": MAX_UPLOAD_BYTES,
+        "max_upload_bytes": _advertised_upload_cap_bytes(),
         # Build 49: the client tracks signed-URL expiry with SERVER-relative time (never the
         # device clock) so it re-mints proactively. Supabase upload tokens default to ~2h.
         "expires_in": SUPABASE_UPLOAD_TTL,
@@ -3488,7 +3543,7 @@ async def mint_upload_url(req: UploadMintRequest):
     # source can never be fetched.
     key = f"mock/{uuid.uuid4()}/{req.filename}"
     return {"mode": "mock", "upload_url": "", "key": key, "public_url": "",
-            "max_upload_bytes": MAX_UPLOAD_BYTES,
+            "max_upload_bytes": _advertised_upload_cap_bytes(),
             "expires_in": SUPABASE_UPLOAD_TTL, "server_time": time.time()}
 
 
@@ -4535,14 +4590,14 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             # clock so slow (but succeeding) resolution can't get the render falsely
             # failed as stalled and its good result discarded.
             clip["render_started_at"] = time.time()
-        async with _render_semaphore:   # G7: bound cross-job Lambda concurrency
+        # G7: bound cross-job Lambda concurrency. Same queue-time exemption as
+        # _render_all_clips (LV-23): marked render_queued_at while waiting (the sweep
+        # skips it), render_started_at re-stamped at acquisition.
+        async with _render_slot(clip, lambda: _is_current_render(clip, my_gen)):
             # Superseded while queued? Bail before spending a Lambda render whose
             # result every write site (incl. our finally) would discard anyway.
             if not _is_current_render(clip, my_gen):
                 return
-            # Same queue-time exemption as _render_all_clips: re-stamp at acquisition
-            # so semaphore wait never counts against the render watchdog.
-            clip["render_started_at"] = time.time()
             submission = await _submit_remotion_render(
                 job["source_url"], job["edl"], clip["format"], job["style"])
             if not submission:
@@ -4551,9 +4606,9 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             clip["bucket_name"] = submission["bucket_name"]
             clip["render_total_frames"] = submission.get("total_frames")
             # Same watchdog/poller budget agreement as _render_all_clips: the sweep must
-            # honor the scaled window this render's poll actually runs under.
-            clip["render_budget_s"] = _scaled_render_budgets(
-                submission.get("total_frames"))[0]
+            # honor the scaled window this render's poll actually runs under (+ the
+            # post-render tail, LV-23).
+            clip["render_budget_s"] = _clip_render_budget_s(submission.get("total_frames"))
             if job.get("job_id"):
                 _spawn(_persist_clip_job(job["job_id"]))   # durable render_id -> restart re-attach
             render_url = await _poll_remotion_render(
@@ -4571,7 +4626,7 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             try:
                 await asyncio.wait_for(
                     _attach_poster(job.get("job_id", ""), clip, render_url, my_gen),
-                    timeout=8)
+                    timeout=POSTER_INLINE_WAIT_S)
             except (asyncio.TimeoutError, Exception):
                 _spawn(_attach_poster(job.get("job_id", ""), clip, render_url, my_gen))
             # A tweak (e.g. a fresh cut) can newly straddle an existing duet react
@@ -4621,14 +4676,18 @@ async def _preview_rerender_clip(job_id: str, clip_id: str,
     clip["preview_started_at"] = time.time()          # G-09: watchdog can now fail a stranded preview
     my_gen = clip["preview_gen"] = clip.get("preview_gen", 0) + 1   # guard: newest preview wins
     try:
-        async with _render_semaphore:
-            if clip.get("preview_gen") == my_gen:   # queue time ≠ render time (see _render_all_clips)
-                clip["preview_started_at"] = time.time()
+        # Queue time ≠ render time (LV-23, see _render_all_clips): preview_queued_at while
+        # waiting for a slot, preview_started_at re-stamped at acquisition.
+        async with _render_slot(clip, lambda: clip.get("preview_gen") == my_gen,
+                                prefix="preview"):
             submission = await _submit_remotion_render(
                 job["source_url"], edl_override or job["edl"], clip["format"], job["style"],
                 preview=True)
             if not submission:
                 raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
+            if clip.get("preview_gen") == my_gen:
+                # The sweep honors the scaled window this preview's poll runs under.
+                clip["preview_budget_s"] = _scaled_render_budgets(submission.get("total_frames"))[0]
             preview_url = await _poll_remotion_render(
                 submission["render_id"], submission["bucket_name"],
                 total_frames=submission.get("total_frames"))
@@ -5169,6 +5228,14 @@ ERROR_CODES = [
 # Fail-fast budgets — env-tunable, monkeypatchable in tests.
 SOURCE_PROBE_TIMEOUT_S = float(os.environ.get("SOURCE_PROBE_TIMEOUT_S", "5"))
 TRANSCRIBE_MAX_S = int(os.environ.get("TRANSCRIBE_MAX_S", "300"))
+# LV-27 (editor audit 2026-09-24): TRANSCRIBE_MAX_S is now the FLOOR of the poll budget.
+# Measured prod AssemblyAI turnaround is ~1x realtime (31s for a 30s take, 62s for 60s),
+# so a flat 300s timed out every take over ~5 min. The budget scales with the source
+# duration probed at pipeline start: max(TRANSCRIBE_MAX_S, 90 + 1.2 s per source
+# second), capped at TRANSCRIBE_CEIL_S (never below the configured floor).
+TRANSCRIBE_CEIL_S = int(os.environ.get("TRANSCRIBE_CEIL_S", "2400"))
+# ffprobe of the source's container header at pipeline start (fail-soft, bounded).
+SOURCE_DURATION_PROBE_S = float(os.environ.get("SOURCE_DURATION_PROBE_S", "10"))
 RENDER_POLL_MAX_S = int(os.environ.get("RENDER_POLL_MAX_S", "240"))
 RENDER_STALL_S = int(os.environ.get("RENDER_STALL_S", "75"))
 BRIDGE_CALL_TIMEOUT_S = float(os.environ.get("BRIDGE_CALL_TIMEOUT_S", "30"))
@@ -5181,7 +5248,9 @@ RENDER_POLL_PER_FRAME_S = float(os.environ.get("RENDER_POLL_PER_FRAME_S", "0.12"
 # 1200 (was 900): with uploads unlocked to 150MB a 4-5min output is a legitimate render,
 # and at 0.12s/frame its scaled budget WANTS ~1100s+ — the 900 ceiling was killing those
 # renders at the cap while Lambda was still making progress (long-take audit 2026-08-22).
-RENDER_POLL_CEIL_S = int(os.environ.get("RENDER_POLL_CEIL_S", "1200"))
+# 2400 (was 1200, LV-23 2026-09-24): 1200 stopped the scaling at 8000 frames (~4.4 min
+# of output); a 10-min output (18000 frames) now gets its full 240 + 0.12 s/frame.
+RENDER_POLL_CEIL_S = int(os.environ.get("RENDER_POLL_CEIL_S", "2400"))
 # #18: renderMediaOnLambda DISPATCHES the render as part of the submit call, so a
 # killed-and-retried submit starts a SECOND, orphaned render. Give the submit a
 # generous cold-start-covering budget and never auto-retry it (_submit_remotion_render).
@@ -5210,6 +5279,57 @@ def _scaled_render_budgets(total_frames: int | None) -> tuple[int, int]:
 # and tweak-triggered re-render all funnel through _submit_remotion_render).
 RENDER_CONCURRENCY_CAP = int(os.environ.get("RENDER_CONCURRENCY_CAP", "3"))
 _render_semaphore = asyncio.Semaphore(RENDER_CONCURRENCY_CAP)
+
+# LV-23 (editor audit 2026-09-24): time spent WAITING for one of the render slots is not
+# render time. Every render path stamped render_started_at before queueing, so under a
+# burst (3 slots held by long renders) the watchdog failed OTHER creators' queued clips
+# as render_stalled before they ever submitted. A clip waiting for a slot now carries
+# `<prefix>_queued_at` (set by _render_slot, cleared the moment the slot is acquired,
+# which is also when the render clock re-stamps); the sweep leaves it alone unless it
+# has waited longer than RENDER_QUEUE_MAX_S. The marker is dropped on restore (a
+# restored clip is never waiting in THIS process), so it can't immunize a dead clip.
+RENDER_QUEUE_MAX_S = float(os.environ.get("RENDER_QUEUE_MAX_S", "3600"))
+# The clip stays `rendering` through the post-render tail (loudness finalize, matte QC,
+# poster), so the per-clip watchdog window = poll budget + this allowance (LV-23): the
+# sum of that tail's own bounded steps, so the watchdog never pre-empts a fail-soft
+# step that is still inside its own timeout.
+POSTER_INLINE_WAIT_S = 8.0
+_FINALIZE_UPLOAD_ALLOWANCE_S = 120.0    # S3 upload of the finalized mp4
+_MATTE_QC_ALLOWANCE_S = 210.0           # frame sampler (120s) + one vision call (90s)
+
+
+def _post_render_allowance_s(total_frames: int | None) -> int:
+    """Worst-case seconds of the post-render tail for an output of `total_frames`."""
+    dur_s = max(0.0, float(total_frames or 0) / 30.0)
+    pass1, pass2 = _finalize_timeouts_s(dur_s or None)
+    return int(pass1 + pass2 + 2 * FFPROBE_TIMEOUT_S + _FINALIZE_UPLOAD_ALLOWANCE_S
+               + _MATTE_QC_ALLOWANCE_S + POSTER_INLINE_WAIT_S)
+
+
+def _clip_render_budget_s(total_frames: int | None) -> int:
+    """render_budget_s stamped at submit: the SAME scaled poll budget the poller runs
+    under, plus the post-render allowance — the whole window the clip stays `rendering`
+    after its slot is acquired."""
+    return _scaled_render_budgets(total_frames)[0] + _post_render_allowance_s(total_frames)
+
+
+@asynccontextmanager
+async def _render_slot(clip: dict, is_current, prefix: str = "render"):
+    """`async with _render_slot(clip, is_current):` — acquire a render slot, marking the
+    clip `<prefix>_queued_at` while it waits and (re-)stamping `<prefix>_started_at` the
+    moment the slot is acquired. `is_current()` gates every write so a superseded
+    attempt never touches a newer attempt's markers (render_gen/preview_gen discipline)."""
+    queued_key, started_key = f"{prefix}_queued_at", f"{prefix}_started_at"
+    clip[queued_key] = time.time()
+    try:
+        async with _render_semaphore:
+            if is_current():
+                clip.pop(queued_key, None)
+                clip[started_key] = time.time()
+            yield
+    finally:
+        if is_current():
+            clip.pop(queued_key, None)
 
 
 def _fail_clip(clip: dict, code: str, detail: str = "") -> None:
@@ -5287,6 +5407,24 @@ def _log_stage_timings(job_id: str, job: dict) -> None:
     logging.info("[timing] job=%s total=%.1fs %s", job_id, sum(acc.values()),
                  " ".join(f"{k}={v:.1f}s" for k, v in
                           sorted(acc.items(), key=lambda kv: -kv[1])))
+
+
+def _source_duration_s(job: dict) -> float | None:
+    """Best-known duration (seconds) of the job's SOURCE take: the probed
+    job["duration_ms"] when present, else the transcript's last word end, else None.
+    Feeds every duration-scaled budget (audio probe timeouts, transcription poll, the
+    live-pipeline watchdog ceiling) so a long take gets proportionate time."""
+    try:
+        ms = float(job.get("duration_ms") or 0)
+    except (TypeError, ValueError):
+        ms = 0.0
+    if ms <= 0:
+        words = job.get("words") or []
+        try:
+            ms = float(max((w.get("end_ms", 0) or 0 for w in words), default=0))
+        except (TypeError, ValueError, AttributeError):
+            ms = 0.0
+    return ms / 1000.0 if ms > 0 else None
 
 
 def _job_eta_seconds(job: dict) -> int | None:
@@ -5467,12 +5605,46 @@ async def _validate_source_url(url: str) -> None:
     raise PipelineError("source_unreachable", last or "unreachable", "transcribe")
 
 
-# Max orphan RESUMES per sweep pass (2026-08-22 post-mortem): the first liveness deploy
+# Max orphan RESUMES per window (2026-08-22 post-mortem): the first liveness deploy
 # resumed all 3 stranded jobs + 1 live job simultaneously on the 512MiB instance — the
 # stampede OOM'd the box, which killed the resumed runs, which burned everyone's resume
-# budget on self-inflicted crashes. The sweeper runs every 60s, so capping resumes per
-# pass staggers the backlog (2/min) at zero cost to the common one-orphan case.
-_RESUME_PER_SWEEP = int(os.environ.get("RESUME_PER_SWEEP", "2"))
+# budget on self-inflicted crashes. Capping resumes staggers the backlog (2/min) at zero
+# cost to the common one-orphan case.
+# LV-26 (editor audit 2026-09-24): the cap used to be a counter LOCAL to one
+# _sweep_stuck_renders call — but every GET /v1/clips/{id} poll runs a sweep too, so N
+# polling clients resumed 2N orphans at once: exactly the stampede the cap exists to
+# stop. It is now one process-wide rate limit shared by every caller (the 60s liveness
+# loop and every poll): at most _RESUME_RATE_MAX resumes per _RESUME_RATE_WINDOW_S.
+_RESUME_RATE_MAX = int(os.environ.get("RESUME_RATE_MAX",
+                                      os.environ.get("RESUME_PER_SWEEP", "2")))
+_RESUME_RATE_WINDOW_S = float(os.environ.get("RESUME_RATE_WINDOW_S", "60"))
+_resume_log: deque = deque()             # monotonic timestamps of recent resumes
+
+
+def _resume_slot_available(now: float) -> bool:
+    """True while fewer than _RESUME_RATE_MAX resumes happened in the trailing window."""
+    while _resume_log and now - _resume_log[0] >= _RESUME_RATE_WINDOW_S:
+        _resume_log.popleft()
+    return len(_resume_log) < _RESUME_RATE_MAX
+
+# LV-22 (editor audit 2026-09-24): the job watchdog failed ANY non-terminal job whose
+# stage outlived 2×RENDER_WATCHDOG_S (960s) — including jobs whose owning pipeline task
+# is ALIVE and working. A long take legitimately spends longer than that in `editing`
+# (brief + plan + b-roll + self-review over thousands of words), so live edits were
+# killed as pipeline_interrupted mid-flight. A live pipeline now gets a ceiling scaled
+# by its source duration: 2×budget + JOB_LIVE_PER_SOURCE_S per source second, capped
+# at JOB_LIVE_CEIL_S. Orphans (no live task) keep the unchanged 2×budget backstop.
+JOB_LIVE_PER_SOURCE_S = float(os.environ.get("JOB_LIVE_PER_SOURCE_S", "3"))
+JOB_LIVE_CEIL_S = float(os.environ.get("JOB_LIVE_CEIL_S", "3600"))
+
+
+def _live_pipeline_ceiling_s(job: dict, budget: float) -> float:
+    """Stage-age ceiling for a job whose pipeline task is alive: 2×budget + 3 s per
+    second of source (e.g. 960 + 1800 = 2760s for a 10-min take), capped at 3600s,
+    never below the orphan backstop (2×budget). Unknown duration → 2×budget."""
+    base = float(budget) * 2
+    dur_s = _source_duration_s(job) or 0.0
+    return max(base, min(JOB_LIVE_CEIL_S, base + JOB_LIVE_PER_SOURCE_S * dur_s))
 
 
 def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
@@ -5482,7 +5654,7 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
     task death, pre-finally crash) that used to leave clips spinning forever."""
     budget = max_render_s if max_render_s is not None else RENDER_WATCHDOG_S
     now = time.time()
-    resumed_this_pass = 0               # orphan-resume stampede cap (see _RESUME_PER_SWEEP)
+    mono = time.monotonic()             # the resume rate limit's clock (LV-26, process-wide)
     _touched: set[str] = set()          # jobs whose terminal state must be persisted (below)
 
     def _clip_budget(c: dict) -> float:
@@ -5504,20 +5676,43 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
         return float(c.get("render_started_at") or job.get("stage_started_at")
                      or job.get("created_at") or now)
 
+    def _queued_s(c: dict, prefix: str = "render") -> float | None:
+        # LV-23: seconds this clip has been WAITING for a render slot (None = not
+        # queued). Waiting is not rendering — the watchdog leaves a queued clip alone
+        # until RENDER_QUEUE_MAX_S (a backstop, never hit by a healthy queue).
+        qa = c.get(f"{prefix}_queued_at")
+        try:
+            return max(0.0, now - float(qa)) if qa else None
+        except (TypeError, ValueError):
+            return None
+
     for job in jobs.values():
         for c in job.get("clips", []):
-            if c.get("status") == "rendering" and now - _render_anchor(c, job) > _clip_budget(c):
-                # Bump the render generation so the still-running task's late write is
-                # discarded (_is_current_render fails) — else it could flip the clip back
-                # to ready with contradictory state (audit D8).
-                _bump_render_gen(c)
-                _fail_clip(c, "render_stalled", f"render exceeded {int(_clip_budget(c))}s watchdog")
-                if job.get("job_id"): _touched.add(job["job_id"])
-            if c.get("preview_status") == "rendering" \
-                    and now - c.get("preview_started_at", now) > budget:
-                c["preview_gen"] = c.get("preview_gen", 0) + 1   # discard the stale preview's late write
-                c["preview_status"] = "failed"
-                c["preview_error"] = f"preview exceeded {int(budget)}s watchdog"
+            if c.get("status") == "rendering":
+                waited = _queued_s(c)
+                if waited is not None:
+                    if waited > RENDER_QUEUE_MAX_S:
+                        _bump_render_gen(c)                 # the waiter must not submit now
+                        c.pop("render_queued_at", None)
+                        _fail_clip(c, "render_stalled",
+                                   f"no render slot freed up within {int(RENDER_QUEUE_MAX_S)}s")
+                        if job.get("job_id"): _touched.add(job["job_id"])
+                elif now - _render_anchor(c, job) > _clip_budget(c):
+                    # Bump the render generation so the still-running task's late write is
+                    # discarded (_is_current_render fails) — else it could flip the clip back
+                    # to ready with contradictory state (audit D8).
+                    _bump_render_gen(c)
+                    _fail_clip(c, "render_stalled", f"render exceeded {int(_clip_budget(c))}s watchdog")
+                    if job.get("job_id"): _touched.add(job["job_id"])
+            if c.get("preview_status") == "rendering":
+                pwaited = _queued_s(c, "preview")
+                pbudget = max(budget, float(c.get("preview_budget_s") or 0.0))
+                if (pwaited is not None and pwaited > RENDER_QUEUE_MAX_S) or \
+                        (pwaited is None and now - c.get("preview_started_at", now) > pbudget):
+                    c["preview_gen"] = c.get("preview_gen", 0) + 1   # discard the stale preview's late write
+                    c.pop("preview_queued_at", None)
+                    c["preview_status"] = "failed"
+                    c["preview_error"] = f"preview exceeded {int(pbudget)}s watchdog"
         # "analyzing" and "processing" (one-tap submit) were MISSING from this set — a
         # deploy restart mid-analysis stranded the job in "analyzing" forever (observed
         # in prod 2026-07-12: job 2b0fc44c). Now every non-terminal pipeline stage is
@@ -5539,24 +5734,26 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
             # creator who wasn't polling never even got the failure). Resume it from
             # its persisted stage instead; the 2×budget fail below stays as the
             # backstop once resumes are exhausted.
+            alive = _pipeline_alive(job.get("job_id") or "")
             if job.get("status") != "rendering" and now - anchor > _ORPHAN_GRACE_S \
-                    and not _pipeline_alive(job.get("job_id") or ""):
+                    and not alive:
                 resumed = False
-                # Stagger the backlog: past the per-pass cap the orphan is simply left
-                # for the NEXT pass (60s) — untouched, not failed — so a post-deploy
-                # backlog drains at a pace the instance survives (see _RESUME_PER_SWEEP).
+                # Stagger the backlog: past the rate limit the orphan is simply left
+                # for a later sweep — untouched, not failed — so a post-deploy backlog
+                # drains at a pace the instance survives (see _RESUME_RATE_MAX; the
+                # limit is process-wide, so polling clients can't multiply it).
                 # Only a CAP-deferred orphan is skipped below; an orphan whose resume
                 # was ATTEMPTED and didn't take (budget exhausted, or a sync caller
                 # with no loop) falls through to the 2×budget fail — the pre-stagger
                 # semantics every existing watchdog test pins.
-                attempted = resumed_this_pass < _RESUME_PER_SWEEP
+                attempted = _resume_slot_available(mono)
                 if attempted:
                     try:
                         resumed = _try_resume_pipeline(job)
                     except RuntimeError:
                         pass                   # no running loop (sync test caller)
                 if resumed:
-                    resumed_this_pass += 1
+                    _resume_log.append(mono)
                     if job.get("job_id"): _touched.add(job["job_id"])
                     continue
                 if not attempted:
@@ -5570,14 +5767,21 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
                 # Same per-clip scaled budget + anchor fallback as the clip sweep above:
                 # a long render inside ITS OWN earned window must keep sparing the job,
                 # and a stamp-less clip must not read as "actively rendering" forever.
-                and now - _render_anchor(c, job) <= _clip_budget(c)
+                # LV-23: a clip still waiting for a render slot spares the job too.
+                and (_queued_s(c) is not None
+                     or now - _render_anchor(c, job) <= _clip_budget(c))
                 for c in job.get("clips", []))
-            if now - anchor > budget * 2 and not clip_actively_rendering:
+            # LV-22: a LIVE pipeline is exempt up to its duration-scaled ceiling; the
+            # orphan backstop (no owning task) stays at 2×budget.
+            limit = _live_pipeline_ceiling_s(job, budget) if alive else budget * 2
+            if now - anchor > limit and not clip_actively_rendering:
                 # Take ownership before failing: the stalled task (if it's alive at
                 # all) must not overwrite this terminal state when it wakes up —
                 # same discipline as the clip sweep's _bump_render_gen above.
                 _bump_pipeline_gen(job)
                 _fail_job(job, "pipeline_interrupted",
+                          f"the edit ran past its {int(limit)}s time limit. Retry to restart it"
+                          if alive else
                           "the edit was interrupted (server restart or stall) — retry to restart it")
                 if job.get("job_id"): _touched.add(job["job_id"])
     # Persist the terminal writes (restart-fragility audit): the watchdog used to fail
@@ -5651,14 +5855,61 @@ def _transcript_cache_path(source_url: str) -> str:
                         hashlib.sha1(source_url.encode()).hexdigest() + ".json")
 
 
+def _transcribe_budget_s(duration_s: float | None) -> int:
+    """AssemblyAI poll budget for a source of `duration_s` seconds (LV-27): the flat
+    TRANSCRIBE_MAX_S when the duration is unknown, else max(floor, 90 + 1.2 s/s),
+    capped at TRANSCRIBE_CEIL_S — but never below the configured floor."""
+    if not duration_s or duration_s <= 0:
+        return TRANSCRIBE_MAX_S
+    return max(TRANSCRIBE_MAX_S, min(TRANSCRIBE_CEIL_S, int(90 + 1.2 * float(duration_s))))
+
+
+async def _probe_source_duration_s(url: str) -> float | None:
+    """Source duration (seconds) from ffprobe's read of the container header — no decode,
+    SOURCE_DURATION_PROBE_S timeout (the child is killed on timeout). Fail-soft: None for
+    a non-http source (mock/dev paths), a missing ffprobe, or anything unparseable."""
+    if not url or not url.startswith(("http://", "https://")):
+        return None
+    dur = await _ffprobe_duration_s(url, timeout_s=SOURCE_DURATION_PROBE_S)
+    try:
+        dur = float(dur) if dur is not None else None
+    except (TypeError, ValueError):
+        return None
+    return dur if dur is not None and math.isfinite(dur) and dur > 0 else None
+
+
+async def _ensure_source_duration(job: dict) -> float | None:
+    """Probe the source duration ONCE per job and persist it as job["duration_ms"] (read by
+    the dossier, the transcription budget, the audio-probe timeouts and the live-pipeline
+    watchdog ceiling). A resumed/retried job that already knows it never re-probes."""
+    if job.get("duration_ms"):
+        return float(job["duration_ms"]) / 1000.0
+    try:
+        dur = await _probe_source_duration_s(job.get("source_url") or "")
+    except Exception as e:                     # belt+braces: the probe is already fail-soft
+        logging.info("source duration probe failed for %s: %s", job.get("job_id"), e)
+        dur = None
+    if dur:
+        job["duration_ms"] = int(round(dur * 1000))
+    return dur
+
+
+async def _prepare_source(job: dict) -> None:
+    """Pipeline start (LV-27): validate the source (fails fast on a dead URL — before any
+    probe is spent on it), then learn its duration once so every budget downstream (the
+    parallel loudness probe included) can scale with the take."""
+    await _validate_source_url(job["source_url"])
+    await _ensure_source_duration(job)
+
+
 async def _transcribe_job(job_id: str) -> list[dict]:
     """Transcribe the job's source into word-frames (shared by the full pipeline and the
-    analyze-first flow). Sets job['words'] + stashes the transcript's auto_highlights."""
+    analyze-first flow). Sets job['words'] + stashes the transcript's auto_highlights.
+    The source was validated + duration-probed by _prepare_source before this runs."""
     job = _clip_jobs[job_id]
     _mark_stage(job, "transcribing")
     for c in job["clips"]:
         c["status"] = "transcribing"
-    await _validate_source_url(job["source_url"])
     if TRANSCRIPT_CACHE:
         cp = _transcript_cache_path(job["source_url"])
         try:
@@ -5673,7 +5924,9 @@ async def _transcribe_job(job_id: str) -> list[dict]:
     transcript_id = await _submit_transcription(job["source_url"])
     if not transcript_id:
         raise PipelineError("transcribe_submit_failed", "AssemblyAI rejected the submission", "transcribe")
-    transcript = await _poll_transcription(transcript_id)
+    # LV-27: the poll budget scales with the take (flat 300s timed out takes > ~5 min).
+    transcript = await _poll_transcription(
+        transcript_id, max_wait_s=_transcribe_budget_s(_source_duration_s(job)))
     job["words"] = transcript["words"]     # kept for conversational tweaks + the edit brief
     job["_auto_highlights"] = transcript.get("auto_highlights")
     if TRANSCRIPT_CACHE and transcript["words"]:
@@ -5717,6 +5970,9 @@ async def _analyze_to_brief(job_id: str, briefless_on_error: bool = False) -> li
     one-tap pipeline proceeds with edit_brief=None instead — a briefless auto edit
     still beats a dead job."""
     job = _clip_jobs[job_id]
+    # LV-27: validate + learn the source duration BEFORE the gather, so the parallel
+    # loudness probe and the transcription poll both get duration-scaled budgets.
+    await _prepare_source(job)
     # P0.6: measure the take's loudness IN PARALLEL with transcription (user accepts
     # the wait; overlapping it costs no extra wall-clock). Fails soft to None → no
     # gain. transcribe raising propagates to the caller; probe never raises.
@@ -5726,7 +5982,8 @@ async def _analyze_to_brief(job_id: str, briefless_on_error: bool = False) -> li
     # the transcribe wait for nothing.
     words, lufs, dossier, _ = await asyncio.gather(
         _transcribe_job(job_id),
-        audio_mod.probe_loudness(job.get("source_url") or ""),
+        audio_mod.probe_loudness(job.get("source_url") or "",
+                                 duration_s=_source_duration_s(job)),
         _dossier_job(job_id),
         _resolve_reference_patterns(job))
     job["loudness_lufs"] = lufs
@@ -5808,12 +6065,15 @@ async def _run_pipeline(job_id: str):
     job = _clip_jobs[job_id]
     my_pgen = job.get("pipeline_gen", 0)
     try:
+        # LV-27: validate + probe the source duration first (see _analyze_to_brief).
+        await _prepare_source(job)
         # P0.6: loudness probe parallel with transcription (same as _run_analysis).
         # P1.2: + visual dossier in the same gather (all fail-soft).
         with _timed(job, "transcribe"):
             words, lufs, dossier = await asyncio.gather(
                 _transcribe_job(job_id),
-                audio_mod.probe_loudness(job.get("source_url") or ""),
+                audio_mod.probe_loudness(job.get("source_url") or "",
+                                         duration_s=_source_duration_s(job)),
                 _dossier_job(job_id))
         job["loudness_lufs"] = lufs
         job["dossier"] = dossier
@@ -5901,6 +6161,54 @@ async def _log_shadow_diff(job_id: str, job: dict, legacy_edl: dict, style: str,
         logging.info("[shadow] job=%s shadow_diff_failed=%s", job_id, str(e)[:200])
 
 
+_REPAIRABLE_EDL_ISSUE = re.compile(
+    r"^(?:(overlay|broll) (\d+) window falls outside every kept segment"
+    r"|(drop|segment) (\d+) has src_out<=src_in)$")
+
+
+def _repair_edl_hard_issues(edl_data: dict, words: list[dict]) -> tuple[dict, list[str]]:
+    """Check the assembled EDL's invariants and STRIP the offenders that are local defects
+    rather than a broken edit, then re-check. Returns (edl, remaining hard issues); the
+    caller falls back to the safe default only if anything hard remains.
+
+    Repairable: an overlay/b-roll window outside every kept segment (a decoration bug —
+    nuking the tailored cut over one bad punch-in threw away the whole edit); a drop with
+    src_out<=src_in (LV-34: a zero-frame drop cuts nothing — a 10ms "Um" rounding to one
+    frame discarded a 5-minute take's entire tailored edit + b-roll for the generic
+    default); a zero-length segment when real segments remain (segment_order remapped).
+    Everything else (overlaps, out-of-bounds, bad permutation, no segments) stays hard."""
+    issues = check_edl_invariants(edl_data, words)
+    hard = [i for i in issues if "kept duration" not in i]
+    if not hard:
+        return edl_data, []
+    bad: dict[str, set[int]] = {"overlay": set(), "broll": set(), "drop": set(), "segment": set()}
+    for issue in hard:
+        m = _REPAIRABLE_EDL_ISSUE.match(issue)
+        if m:
+            kind, idx = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+            bad[kind].add(int(idx))
+    segments = list(edl_data.get("segments") or [])
+    if bad["segment"] and len(bad["segment"]) >= len(segments):
+        bad["segment"] = set()           # stripping every segment is not a repair
+    if not any(bad.values()):
+        return edl_data, hard
+    repaired = dict(edl_data)
+    for key, kind in (("overlays", "overlay"), ("broll", "broll"), ("drops", "drop")):
+        if bad[kind]:
+            repaired[key] = [x for k, x in enumerate(edl_data.get(key) or []) if k not in bad[kind]]
+    if bad["segment"]:
+        keep_idx = [k for k in range(len(segments)) if k not in bad["segment"]]
+        repaired["segments"] = [segments[k] for k in keep_idx]
+        order = edl_data.get("segment_order")
+        if order is not None:
+            remap = {old: new for new, old in enumerate(keep_idx)}
+            repaired["segment_order"] = [remap[k] for k in order if k in remap]
+    logging.warning("assemble_edl repaired hard invariant issues by stripping %s",
+                    {k: sorted(v) for k, v in bad.items() if v})
+    issues = check_edl_invariants(repaired, words)
+    return repaired, [i for i in issues if "kept duration" not in i]
+
+
 async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[dict],
                                prefs: dict, emphasis_spans: list | None) -> tuple[dict | None, bool, dict]:
     """P3 authoring path: the LLM emits a typed EDIT PLAN; code assembles the EDL. The
@@ -5957,7 +6265,10 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
     if "_silent_spans" not in job:
         try:
             from app.audio import detect_silence_spans
-            job["_silent_spans"] = await detect_silence_spans(job.get("source_url") or "")
+            # LV-20: audio-only scan, timeout scaled by the take's duration (the flat
+            # 60s over a full video decode timed out on long takes → no verified silence).
+            job["_silent_spans"] = await detect_silence_spans(
+                job.get("source_url") or "", duration_s=_source_duration_s(job))
         except Exception:
             job["_silent_spans"] = None
     try:
@@ -5973,22 +6284,9 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
     # so only HARD structural issues (overlaps, out-of-bounds, invalid perm) justify bailing
     # to the safe default — the "kept duration <3s" advisory is legitimate for a short take
     # and bailing there would only lose the assembler's brief-cut folds for nothing.
-    issues = check_edl_invariants(edl_data, words)
-    hard = [i for i in issues if "kept duration" not in i]
-    if hard and all(("overlay" in i or "broll" in i) for i in hard):
-        # A stray overlay/b-roll window is a DECORATION bug, not an edit bug —
-        # stripping the offenders keeps the tailored cut. Nuking the whole plan
-        # to the untailored safe default over one bad punch-in threw away the
-        # entire edit the creator was promised.
-        bad_ov = {int(m.group(1)) for i in hard if (m := re.match(r"overlay (\d+)", i))}
-        bad_br = {int(m.group(1)) for i in hard if (m := re.match(r"broll (\d+)", i))}
-        edl_data["overlays"] = [o for k, o in enumerate(edl_data.get("overlays") or [])
-                                if k not in bad_ov]
-        edl_data["broll"] = [b for k, b in enumerate(edl_data.get("broll") or [])
-                             if k not in bad_br]
-        logging.warning("assemble_edl stripped %d incoherent overlay/broll windows", len(hard))
-        issues = check_edl_invariants(edl_data, words)
-        hard = [i for i in issues if "kept duration" not in i]
+    # Repairable offenders (stray overlay/b-roll windows, zero-frame drops, a zero-length
+    # segment beside real ones) are stripped first — see _repair_edl_hard_issues.
+    edl_data, hard = _repair_edl_hard_issues(edl_data, words)
     if hard:
         logging.warning("assemble_edl hard invariant issues %s → safe default", hard[:4])
         return None, llm_contributed, plan
@@ -6847,6 +7145,12 @@ async def _run_edit(job_id: str, words: list[dict]):
 
 SELF_REVIEW = os.environ.get("SELF_REVIEW", "0").lower() in ("1", "true", "yes")
 SELF_REVIEW_THRESHOLD = int(os.environ.get("SELF_REVIEW_THRESHOLD", "70"))
+# LV-24 (editor audit 2026-09-24): self-review renders a FULL-LENGTH preview of the edit
+# (a Lambda render + one of the 3 render slots + minutes inside the `editing` stage) just
+# to look at ~10 frames. On a long take that cost dominates the edit and competes with
+# every creator's real renders, so outputs longer than this many frames (5400 = 3 min at
+# 30fps) skip it, recording why on job["self_review"]. <= 0 disables the cap.
+SELF_REVIEW_MAX_FRAMES = int(os.environ.get("SELF_REVIEW_MAX_FRAMES", "5400"))
 
 
 async def _sample_render_frames(url: str, n: int = 6) -> list[bytes]:
@@ -7073,6 +7377,18 @@ async def _self_review_edl(job_id: str, is_rerender: bool = False) -> None:
     clip = next((c for c in job.get("clips") or [] if c.get("format")), None)
     if not clip:
         return
+    # LV-24: gate on the OUTPUT length before spending a render slot on the preview.
+    try:
+        out_frames = int(build_render_plan(job["edl"]).get("total_frames") or 0)
+    except Exception as e:
+        logging.warning("self-review: render plan failed (%s) — skipped", e)
+        return                                   # the preview submit would fail on it too
+    if SELF_REVIEW_MAX_FRAMES > 0 and out_frames > SELF_REVIEW_MAX_FRAMES:
+        job["self_review"] = {"skipped": "long_take", "output_frames": out_frames,
+                              "max_frames": SELF_REVIEW_MAX_FRAMES}
+        logging.info("[self-review] job=%s skipped: %d output frames > %d (long take)",
+                     job_id, out_frames, SELF_REVIEW_MAX_FRAMES)
+        return
     try:
         async with _render_semaphore:
             submission = await _submit_remotion_render(
@@ -7147,22 +7463,27 @@ async def _ffprobe_duration_s(src: str, timeout_s: float = 30.0) -> float | None
         return None
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
           "-of", "csv=p=0", src]   # ffmpeg 8: singular 'noprint_wrapper' is REJECTED -> empty stdout -> None (silently killed finalize/enhance/matte-qc durations)
-    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        # LV-20: a timeout KILLS + reaps ffprobe (communicate_or_kill), never orphans it.
+        stdout, _ = await communicate_or_kill(proc, timeout_s)
         return float(stdout.decode("utf-8", "ignore").strip())
     except Exception:
-        if proc is not None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
         return None
 
 
-async def _probe_speech_snr(url: str) -> float | None:
+# LV-20: floors for the post-render ffmpeg passes (the old flat values), scaled up by the
+# output's duration via audio_mod.analysis_timeout_s — a 10-min render no longer races a
+# timeout sized for a 30s clip. Every pass KILLS its child on timeout (communicate_or_kill).
+FINALIZE_PASS1_TIMEOUT_S = float(os.environ.get("FINALIZE_PASS1_TIMEOUT_S", "180"))
+FINALIZE_PASS2_TIMEOUT_S = float(os.environ.get("FINALIZE_PASS2_TIMEOUT_S", "90"))
+SNR_PROBE_TIMEOUT_S = 60.0
+ENHANCE_FFMPEG_TIMEOUT_S = 90.0
+FFPROBE_TIMEOUT_S = 30.0
+
+
+async def _probe_speech_snr(url: str, duration_s: float | None = None) -> float | None:
     """WS1: astats SNR proxy (RMS level − RMS trough, dB) for the enhancement gate.
     None = unmeasurable → callers must NOT enhance (fail-closed)."""
     if not url or shutil.which("ffmpeg") is None:
@@ -7171,22 +7492,25 @@ async def _probe_speech_snr(url: str) -> float | None:
         p = await asyncio.create_subprocess_exec(
             *audio_mod.snr_probe_args(url),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        _, stderr = await asyncio.wait_for(p.communicate(), timeout=60)
+        _, stderr = await communicate_or_kill(
+            p, audio_mod.analysis_timeout_s(duration_s, floor_s=SNR_PROBE_TIMEOUT_S))
         stats = audio_mod.parse_astats_snr(stderr.decode("utf-8", "ignore"))
         return stats["snr_db"] if stats else None
     except Exception:
         return None
 
 
-async def _enhance_render_audio(render_url: str, job_id: str) -> str | None:
+async def _enhance_render_audio(render_url: str, job_id: str,
+                                duration_s: float | None = None) -> str | None:
     """WS1 (keyless-armed): SNR-gated DeepFilterNet3 denoise of the final render's audio.
     Gate 1: measured SNR proxy below threshold (clean takes are never touched — enhancers
     smear clean audio). Gate 2: the enhanced remux must RE-MEASURE better by ≥3dB AND
     duration-match, else it's discarded. Returns a hosted enhanced mp4 URL or None.
     Every failure path returns None; never raises; never load-bearing."""
-    snr = await _probe_speech_snr(render_url)
+    snr = await _probe_speech_snr(render_url, duration_s=duration_s)
     if snr is None or snr >= audio_mod.SNR_ENHANCE_THRESHOLD_DB:
         return None
+    ff_timeout = audio_mod.analysis_timeout_s(duration_s, floor_s=ENHANCE_FFMPEG_TIMEOUT_S)
     try:
         base = SUPABASE_URL.rstrip("/")
         with tempfile.TemporaryDirectory() as td:
@@ -7194,7 +7518,7 @@ async def _enhance_render_audio(render_url: str, job_id: str) -> str | None:
             p = await asyncio.create_subprocess_exec(
                 *audio_mod.extract_audio_args(render_url, wav),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await asyncio.wait_for(p.communicate(), timeout=90)
+            await communicate_or_kill(p, ff_timeout)
             if p.returncode != 0 or not os.path.exists(wav):
                 return None
             # Host the wav so fal can fetch it (temp object; GC'd with uploads/ sweeps).
@@ -7231,14 +7555,14 @@ async def _enhance_render_audio(render_url: str, job_id: str) -> str | None:
             p2 = await asyncio.create_subprocess_exec(
                 *audio_mod.remux_enhanced_audio_args(render_url, enhanced_path, remuxed),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await asyncio.wait_for(p2.communicate(), timeout=90)
+            await communicate_or_kill(p2, ff_timeout)
             if p2.returncode != 0 or not os.path.exists(remuxed):
                 return None
             orig_dur = await _ffprobe_duration_s(render_url)
             new_dur = await _ffprobe_duration_s(remuxed)
             if orig_dur is None or new_dur is None or abs(orig_dur - new_dur) > 0.15:
                 return None
-            new_snr = await _probe_speech_snr(remuxed)
+            new_snr = await _probe_speech_snr(remuxed, duration_s=duration_s)
             if new_snr is None or new_snr < snr + 3.0:
                 logging.info("[enhance] job=%s not adopted (snr %.1f→%s)", job_id, snr, new_snr)
                 return None
@@ -7259,14 +7583,23 @@ async def _enhance_render_audio(render_url: str, job_id: str) -> str | None:
     return None
 
 
-async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
+def _finalize_timeouts_s(duration_s: float | None) -> tuple[float, float]:
+    """(pass-1, pass-2) ffmpeg timeouts for finalizing a render of `duration_s` seconds:
+    the historical floors (180s/90s) or 0.25s per second of output, whichever is larger."""
+    return (audio_mod.analysis_timeout_s(duration_s, floor_s=FINALIZE_PASS1_TIMEOUT_S),
+            audio_mod.analysis_timeout_s(duration_s, floor_s=FINALIZE_PASS2_TIMEOUT_S))
+
+
+async def _finalize_audio_loudness(render_url: str, job_id: str,
+                                   duration_s: float | None = None) -> str | None:
     """A5b: true 2-pass loudness normalization on the FINAL rendered mp4 (the
     Lambda output). Video is stream-copied (untouched) throughout; the audio is
     re-encoded to -14 LUFS using ffmpeg's loudnorm filter in its accurate
     2-pass mode. Fail-soft at every step — any missing binary, unmeasurable
     take, subprocess failure, or duration mismatch (the stream-copy guard)
     returns None and the caller keeps the un-normalized Lambda URL. Never
-    raises; never fails the job over this."""
+    raises; never fails the job over this. `duration_s` (the render's output
+    length, when known) scales the ffmpeg timeouts (LV-20)."""
     # Runs when globally armed (AUDIO_FINALIZE) OR when this job's pre-render
     # static gain saturated the ±12dB clamp — the only path to target loudness
     # for a very quiet raw take (ralph round-1 lufs_drift).
@@ -7287,16 +7620,19 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
         # enhanced source only when it re-measures better. Fail-soft to the original.
         source_url = render_url
         if VOICE_ENHANCE and enhance_mod.armed():
-            enhanced = await _enhance_render_audio(render_url, job_id)
+            enhanced = await _enhance_render_audio(render_url, job_id, duration_s=duration_s)
             if enhanced:
                 source_url = enhanced
         logging.warning("[audio-finalize] starting for %s (clamped=%s)", job_id, _clamped)
+        pass1_timeout, pass2_timeout = _finalize_timeouts_s(duration_s)
         p1 = await asyncio.create_subprocess_exec(
             *audio_mod.loudnorm_pass1_args(source_url),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         # 60s was too tight for pass-1 over a network mp4 (ralph round-2: the
-        # clamped-gain job silently kept its -17.8 LUFS render).
-        _, stderr1 = await asyncio.wait_for(p1.communicate(), timeout=180)
+        # clamped-gain job silently kept its -17.8 LUFS render). LV-20: audio-only
+        # (-vn), duration-scaled, and a timeout now KILLS the child instead of leaving
+        # it decoding on the 0.5-CPU box.
+        _, stderr1 = await communicate_or_kill(p1, pass1_timeout)
         measured = audio_mod.parse_loudnorm_json(stderr1.decode("utf-8", "ignore"))
         if not measured:
             logging.warning("audio finalize: pass-1 unmeasurable for %s", job_id)
@@ -7321,11 +7657,11 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
                 return None
             p2 = await asyncio.create_subprocess_exec(
                 *args2, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await asyncio.wait_for(p2.communicate(), timeout=90)
+            await communicate_or_kill(p2, pass2_timeout)
             if p2.returncode != 0 or not os.path.exists(out_path):
                 return None
-            orig_dur = await _ffprobe_duration_s(render_url)
-            new_dur = await _ffprobe_duration_s(out_path)
+            orig_dur = await _ffprobe_duration_s(render_url, timeout_s=FFPROBE_TIMEOUT_S)
+            new_dur = await _ffprobe_duration_s(out_path, timeout_s=FFPROBE_TIMEOUT_S)
             if orig_dur is None or new_dur is None or abs(orig_dur - new_dur) > 0.1:
                 return None
             # Host on the SAME S3 bucket that serves the Lambda renders — the
@@ -7424,7 +7760,9 @@ async def _generate_poster(render_url: str, job_id: str, clip_id: str) -> str | 
                         "-frames:v", "1", "-vf", "scale=540:-2", "-q:v", "4",
                         "-f", "image2", cand,
                         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                    await asyncio.wait_for(p.communicate(), timeout=30)
+                    # LV-20: kill on timeout AND on cancellation — the caller's 8s
+                    # wait_for cancels this task mid-seek, which used to orphan ffmpeg.
+                    await communicate_or_kill(p, 30)
                     if p.returncode != 0 or not os.path.exists(cand) or os.path.getsize(cand) == 0:
                         continue
                     # Audit (build 53): cv2 Laplacian + YuNet scoring is CPU-blocking — off
@@ -7441,7 +7779,7 @@ async def _generate_poster(render_url: str, job_id: str, clip_id: str) -> str | 
                         "-f", "image2", out_path]
                 p = await asyncio.create_subprocess_exec(
                     *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                await asyncio.wait_for(p.communicate(), timeout=45)
+                await communicate_or_kill(p, 45)
                 if p.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
                     return None
             with open(out_path, "rb") as f:
@@ -7503,19 +7841,19 @@ async def _render_all_clips(job_id: str) -> None:
         clip["render_started_at"] = time.time()
         my_gen = _bump_render_gen(clip)
         try:
-            async with _render_semaphore:   # G7: bound cross-job Lambda concurrency
+            # G7: bound cross-job Lambda concurrency. LV-23: while it waits for a slot
+            # the clip is marked render_queued_at and the watchdog leaves it alone —
+            # queue time is not render time (under a burst the wait alone exceeded
+            # RENDER_WATCHDOG_S and OTHER creators' never-submitted renders were
+            # killed as render_stalled). render_started_at re-stamps at acquisition;
+            # the pre-queue stamp above still covers a task that dies in the queue
+            # (the marker is cleared on exit, so the sweep then sees the old stamp).
+            async with _render_slot(clip, lambda: _is_current_render(clip, my_gen)):
                 # Superseded while queued (watchdog fail + retry started a newer
                 # attempt)? Don't spend a Lambda render whose result every write
                 # site would discard anyway.
                 if not _is_current_render(clip, my_gen):
                     continue
-                # Queue time is not render time: under a burst, waiting on the
-                # semaphore can alone exceed RENDER_WATCHDOG_S and get a render
-                # that never even submitted falsely killed as render_stalled.
-                # Re-stamp at acquisition so the watchdog measures the actual
-                # render. (The pre-queue stamp above still covers a task that
-                # dies IN the queue — the sweep sees it and fails the clip.)
-                clip["render_started_at"] = time.time()
                 submission = await _submit_remotion_render(
                     job["source_url"], edl_data, clip["format"], job["style"])
                 if not submission:
@@ -7525,9 +7863,10 @@ async def _render_all_clips(job_id: str) -> None:
                 clip["render_total_frames"] = submission.get("total_frames")
                 # Stamp the SAME scaled budget the poller below runs under, so the sweep
                 # watchdog (_sweep_stuck_renders) can't kill a long render the poll is
-                # still legitimately inside of (flat 480s vs scaled up to the poll ceiling).
-                clip["render_budget_s"] = _scaled_render_budgets(
-                    submission.get("total_frames"))[0]
+                # still legitimately inside of (flat 480s vs scaled up to the poll ceiling)
+                # — plus the post-render tail (finalize/QC/poster) the clip stays
+                # `rendering` through (LV-23).
+                clip["render_budget_s"] = _clip_render_budget_s(submission.get("total_frames"))
                 if job.get("job_id"):
                     _spawn(_persist_clip_job(job["job_id"]))   # durable render_id -> restart re-attach
                 render_url = await _poll_remotion_render(
@@ -7539,7 +7878,9 @@ async def _render_all_clips(job_id: str) -> None:
             # work, not a Lambda call). Scoped to the main pipeline render only
             # (not tweak re-renders / preview renders / restart re-attach) for now.
             if _is_current_render(clip, my_gen):
-                finalized_url = await _finalize_audio_loudness(render_url, job_id)
+                finalized_url = await _finalize_audio_loudness(
+                    render_url, job_id,
+                    duration_s=(clip.get("render_total_frames") or 0) / 30.0 or None)
                 if finalized_url:
                     render_url = finalized_url
             # Addendum Part 6: cutout/PIP quality gates on the finished render. A failed
@@ -7555,11 +7896,14 @@ async def _render_all_clips(job_id: str) -> None:
                         try:
                             edl_data.setdefault("layout", {})["speaker_treatment"] = "pip_rounded_rect"
                             job["edl"] = edl_data
-                            async with _render_semaphore:
+                            async with _render_slot(clip, lambda: _is_current_render(clip, my_gen)):
                                 if _is_current_render(clip, my_gen):
                                     sub2 = await _submit_remotion_render(
                                         job["source_url"], edl_data, clip["format"], job["style"])
                                     if sub2:
+                                        # A second full render: its own watchdog window.
+                                        clip["render_budget_s"] = _clip_render_budget_s(
+                                            sub2.get("total_frames"))
                                         url2 = await _poll_remotion_render(
                                             sub2["render_id"], sub2["bucket_name"],
                                             total_frames=sub2.get("total_frames"))
@@ -7579,7 +7923,8 @@ async def _render_all_clips(job_id: str) -> None:
                 # the timeout path degrades to the old behavior instead of stalling.
                 try:
                     await asyncio.wait_for(
-                        _attach_poster(job_id, clip, render_url, my_gen), timeout=8)
+                        _attach_poster(job_id, clip, render_url, my_gen),
+                        timeout=POSTER_INLINE_WAIT_S)
                 except (asyncio.TimeoutError, Exception):
                     _spawn(_attach_poster(job_id, clip, render_url, my_gen))
                 clip["status"] = "ready"
@@ -9270,18 +9615,12 @@ async def _ffprobe_media_stats(url: str) -> dict:
     cmd = ["ffprobe", "-v", "error",
            "-show_entries", "stream=width,height,avg_frame_rate:format=duration",
            "-of", "json", url]
-    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        stdout, _ = await communicate_or_kill(proc, FFPROBE_TIMEOUT_S)   # LV-20: kill on timeout
         data = json.loads(stdout.decode("utf-8", "ignore") or "{}")
     except Exception:
-        if proc is not None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
         return {}
     out: dict = {}
     try:
@@ -9457,7 +9796,8 @@ async def analyze_media(req: MediaAnalyzeRequest):
         return {"mode": "mock", **mock}
     if is_video:
         try:
-            lufs = await audio_mod.probe_loudness(req.public_url)
+            lufs = await audio_mod.probe_loudness(req.public_url,
+                                                  duration_s=stats.get("duration_s"))
         except Exception:
             lufs = None
         if lufs is not None:

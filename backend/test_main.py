@@ -1143,15 +1143,24 @@ def test_mint_upload_url():
     assert b["mode"] in ("live", "mock")
     # P0.1: the cap is server-driven so the iOS upload ladder can target a fitting
     # bitrate — every mint response (mock or live) must carry it.
-    assert b["max_upload_bytes"] == main.MAX_UPLOAD_BYTES
+    # LV-1 (2026-09-24): it is the STORAGE-clamped cap, never the raw 150MB product
+    # ceiling — Supabase's project limit (50 MiB) 413s anything bigger.
+    assert b["max_upload_bytes"] == main._advertised_upload_cap_bytes()
+    assert b["max_upload_bytes"] <= main.STORAGE_OBJECT_LIMIT_BYTES
 
 
 def test_mint_upload_url_cap_is_env_driven(monkeypatch):
-    # Raising the Supabase tier is backend-only: bump MAX_UPLOAD_BYTES, the client fits to it.
+    # Raising the Supabase tier is still backend-only, but it takes BOTH knobs now (LV-1):
+    # the storage limit (after raising it in the Supabase dashboard) and the product
+    # ceiling. Bumping MAX_UPLOAD_BYTES alone can no longer advertise more than storage
+    # accepts.
+    body = {"filename": "test.mov", "content_type": "video/quicktime"}
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 96_000_000)
-    b = client.post("/v1/uploads/mint",
-                    json={"filename": "test.mov", "content_type": "video/quicktime"}).json()
-    assert b["max_upload_bytes"] == 96_000_000
+    b = client.post("/v1/uploads/mint", json=body).json()
+    assert b["max_upload_bytes"] == 52_428_800 - 2 * 1024 * 1024      # storage-clamped
+    monkeypatch.setattr(main, "STORAGE_OBJECT_LIMIT_BYTES", 256 * 1024 * 1024)
+    b = client.post("/v1/uploads/mint", json=body).json()
+    assert b["max_upload_bytes"] == 96_000_000                          # product ceiling binds
 
 
 def test_mint_upload_url_mock_returns_empty_urls_when_no_storage(monkeypatch):
@@ -2520,7 +2529,8 @@ def test_hooks_prompt_injects_memory():
 def test_anthropic_passes_output_config_when_schema_given(monkeypatch):
     captured = {}
 
-    async def fake_post(self, url, headers=None, json=None):
+    # **kw: anthropic() now passes a per-request `timeout=` (LV-21, max_tokens-scaled).
+    async def fake_post(self, url, headers=None, json=None, **kw):
         captured["body"] = json
         class R:
             status_code = 200
@@ -4127,7 +4137,7 @@ def test_timing_middleware_does_not_break_requests():
 def test_anthropic_client_recreated_across_event_loops(monkeypatch):
     """The loop-aware shared client must not raise 'Event loop is closed' when
     reused across the asyncio.run()-per-test pattern this suite already uses."""
-    async def fake_post(self, url, headers=None, json=None):
+    async def fake_post(self, url, headers=None, json=None, **kw):   # **kw: LV-21 timeout=
         class R:
             status_code = 200
             def json(self_): return {"content": [{"text": "ok"}]}
@@ -7237,8 +7247,10 @@ def test_cross_niche_reel_fallback_is_flagged_off_niche(monkeypatch):
 def test_sweep_staggers_orphan_resumes(monkeypatch):
     # Post-mortem 2026-08-22: the first liveness deploy resumed every orphan at once
     # and the stampede OOM'd the 512MiB instance, burning the whole fleet's resume
-    # budget on self-inflicted crashes. Max _RESUME_PER_SWEEP per pass; the rest are
-    # DEFERRED (untouched, never failed early) until a later pass.
+    # budget on self-inflicted crashes. Max _RESUME_RATE_MAX per window; the rest are
+    # DEFERRED (untouched, never failed early) until the window frees up.
+    # LV-26 (2026-09-24): the limit is process-wide, not per sweep call — a second
+    # sweep INSIDE the same window (e.g. the next GET poll) must not resume more.
     calls = []
 
     async def fake_auto(jid):
@@ -7257,24 +7269,30 @@ def test_sweep_staggers_orphan_resumes(monkeypatch):
         main._sweep_stuck_renders(jobs, max_render_s=1)
         await asyncio.sleep(0.01)
         first = list(calls), {k: (j["status"], j.get("resume_count")) for k, j in jobs.items()}
-        # Simulate the resumed tasks finishing before the next pass, then sweep again:
-        # the deferred third job gets its turn instead of being starved or failed.
+        # Simulate the resumed tasks finishing before the next pass.
         main._pipeline_tasks.clear()
         for j in jobs.values():
             if j["status"] == "processing" and j.get("resume_count"):
                 j["status"] = "ready"          # the two resumed runs completed
+        # Same window: the global limit still holds the deferred orphan back.
         main._sweep_stuck_renders(jobs, max_render_s=1)
         await asyncio.sleep(0.01)
-        return first, calls, jobs
-    (first_calls, first_states), all_calls, jobs = asyncio.run(run())
-    assert len(first_calls) == 0 or True  # (calls is a list; see assertions below)
+        within_window = list(calls)
+        # Window elapsed: the deferred third job gets its turn (starved/failed never).
+        for i in range(len(main._resume_log)):
+            main._resume_log[i] -= main._RESUME_RATE_WINDOW_S + 1
+        main._sweep_stuck_renders(jobs, max_render_s=1)
+        await asyncio.sleep(0.01)
+        return first, within_window, calls, jobs
+    (first_calls, first_states), within_window, all_calls, jobs = asyncio.run(run())
     resumed_first = [k for k, (s, rc) in first_states.items() if rc]
     deferred_first = [k for k, (s, rc) in first_states.items() if not rc]
-    assert len(resumed_first) == main._RESUME_PER_SWEEP, "cap must bound resumes per pass"
+    assert len(resumed_first) == main._RESUME_RATE_MAX, "cap must bound resumes per window"
     assert len(deferred_first) == 1
     d = deferred_first[0]
     assert first_states[d][0] == "processing", "deferred orphan must be untouched, never failed"
-    assert d in all_calls, "the deferred orphan is resumed on the NEXT pass"
+    assert d not in within_window, "a second sweep inside the window must not resume more"
+    assert d in all_calls, "the deferred orphan is resumed once the window frees up"
 
 
 # ---------------------------------------------------------------------------

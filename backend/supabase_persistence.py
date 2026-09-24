@@ -432,7 +432,14 @@ class SupabaseClient:
     # for why this is a blob rather than a column-per-field table.
 
     async def upsert_clip_job(self, job_id: str, job: dict) -> bool:
-        row = {"job_id": job_id, "state": job}
+        # LV-25 (editor audit 2026-09-24): `updated_at` has only a DEFAULT NOW() — no
+        # trigger — and the merge-duplicates upsert used to send just job_id,state, so the
+        # column froze at INSERT time (proven live: a job finished 09:00 still read its
+        # 08:56 insert stamp). load_stale_clip_sessions' "gone quiet" scan therefore keyed
+        # on creation time. Every write now stamps it explicitly (UTC, ISO 8601).
+        import datetime as _dt
+        row = {"job_id": job_id, "state": job,
+               "updated_at": _dt.datetime.now(_dt.timezone.utc).isoformat()}
         r = await self._request(
             "POST", "/clip_edit_sessions", params={"on_conflict": "job_id"}, json=row,
             headers={"Prefer": "resolution=merge-duplicates,return=minimal"})

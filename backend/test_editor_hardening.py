@@ -51,6 +51,12 @@ def _make_live_job(monkeypatch, **env):
     monkeypatch.setattr(main, "ASSEMBLY_KEY", "test-key")
     for k, v in env.items():
         monkeypatch.setattr(main, k, v)
+
+    # LV-27: pipelines now ffprobe the source duration at start. This fixture's source is
+    # a real host (example.com) — keep these tests offline and deterministic.
+    async def _no_duration_probe(url):
+        return None
+    monkeypatch.setattr(main, "_probe_source_duration_s", _no_duration_probe)
     job_id = str(uuid.uuid4())
     main._clip_jobs[job_id] = {
         "job_id": job_id, "source_id": "src1", "status": "queued",

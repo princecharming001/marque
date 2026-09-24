@@ -155,19 +155,26 @@ def test_render_start_stamps_scaled_budget(monkeypatch):
         await main._render_all_clips(job_id)
         clip = main._clip_jobs[job_id]["clips"][0]
         assert clip["status"] == "ready"
-        assert clip["render_budget_s"] == \
-            main._scaled_render_budgets(clip["render_total_frames"])[0]
+        # LV-23 (2026-09-24): the stamped window = the poller's own scaled budget PLUS
+        # the post-render tail (finalize/QC/poster) the clip stays `rendering` through.
+        frames = clip["render_total_frames"]
+        assert clip["render_budget_s"] == main._clip_render_budget_s(frames) == \
+            main._scaled_render_budgets(frames)[0] + main._post_render_allowance_s(frames)
         _cleanup(job_id)
     _run(scenario())
 
 
 def test_poll_ceiling_covers_long_outputs():
     """#4: the scaled poll budget's ceiling must admit a 4-5min output (was 900,
-    which killed those renders at the cap while Lambda was still progressing)."""
-    assert main.RENDER_POLL_CEIL_S >= 1200
-    # a ~5min output at 30fps: 9000 frames → wants 240 + 9000*0.12 = 1320s, capped
+    which killed those renders at the cap while Lambda was still progressing).
+    LV-23 (2026-09-24): the 1200 ceiling itself stopped the scaling at 8000 frames —
+    raised to 2400, so a ~5min output now gets its FULL scaled budget, uncapped."""
+    assert main.RENDER_POLL_CEIL_S >= 2400
+    # a ~5min output at 30fps: 9000 frames → 240 + 9000*0.12 = 1320s (no longer capped)
     budget, _stall = main._scaled_render_budgets(9000)
-    assert budget == main.RENDER_POLL_CEIL_S
+    assert budget == 1320
+    # the cap still binds far out (a ~16min output)
+    assert main._scaled_render_budgets(30000)[0] == main.RENDER_POLL_CEIL_S
 
 
 # ---------------------------------------------------------------------------
