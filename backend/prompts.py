@@ -266,10 +266,11 @@ STYLES = {
         "label": "Talking-Head",
         "formats": ["myth-buster", "listicle", "pov-story", "green-screen"],
         "rubric": (
-            "The creator speaks DIRECTLY TO CAMERA. Write `body` as first-person spoken words, "
-            "the exact sentences they'd say out loud, in their voice. No stage directions inside the body. "
+            "The creator speaks DIRECTLY TO CAMERA. Write `body` as the exact sentences they say out loud, "
+            "in their voice. No stage directions inside the body. "
             "Cold-open on the hook (never 'hey guys', never an intro). One core idea, backed by ONE specific "
-            "lived detail or number, landing a single clear takeaway. Keep it tight: 18 to 40 seconds. "
+            "concrete detail (a number, a mechanism, or an everyday situation the audience will recognize; a "
+            "personal detail ONLY if the creator's memory or posts give it), landing a single clear takeaway. LENGTH: 35 to 55 seconds spoken, about 90 to 140 words across hook, body and CTA: enough to make the point, give the reason behind it, and walk through one concrete example the way you'd explain it to a friend. Never pad to hit it. "
             "`shotPlan` is a note to the AI EDITOR about the single face take it will receive, never a "
             "shot list for the creator: e.g. ['hold on face for the hook, no overlays', "
             "'punch in on the line \"...\"', 'caption emphasis on the number', 'stay on face for the CTA']."
@@ -277,13 +278,16 @@ STYLES = {
         "exemplar": (
             '{"title":"the 2-minute inbox rule","summary":"A talking-head myth-buster on email overwhelm.",'
             '"hook":"You don\'t have an inbox problem. You have a decision problem.","hookSignal":"contrarian",'
-            '"formatId":"myth-buster","body":"Everyone tells you to check email less. Wrong. The reason your '
-            'inbox stresses you out is that every message is an open loop. So I do this: if it takes under two '
-            'minutes, I answer it right now. If it doesn\'t, it goes on one list with a date. That\'s it. I '
-            'stopped \'managing\' email and started closing loops, and my inbox went from 300 to zero in a week.",'
+            '"formatId":"myth-buster","body":"Everyone tells you to check email less. That\'s not the problem. '
+            'The reason your inbox stresses you out is that every unread message is an open loop, and your '
+            'brain keeps a tab running for each one.\\n\\nSo here\'s what I do instead. If an email takes under '
+            'two minutes, I answer it right then, no starring it for later. If it takes longer, it goes on one '
+            'list with a date next to it. That\'s the whole system.\\n\\nThe first week it feels like it\'s going '
+            'to eat your whole day. It won\'t. Most emails really are two-minute emails. You\'ve just been '
+            'rereading them five times before you answer, and that rereading is the stress.",'
             '"cta":"Try the two-minute rule tomorrow and tell me your inbox number.","shotPlan":["hold on face '
             'for the hook, no overlays","punch in on \'if it takes under two minutes\'","caption emphasis on '
-            '\'300 to zero\'","stay on face for the CTA"],"targetSeconds":28,'
+            '\'two-minute emails\'","stay on face for the CTA"],"targetSeconds":44,'
             '"predictedScore":86}'
         ),
     },
@@ -374,7 +378,7 @@ STYLES = {
             "screen-record anything. `shotPlan` is a note to the editor: which screenshot to key and when, "
             "which phrase to zoom the keyed asset on, and where to stay on the face. "
             "e.g. ['key the referenced post behind them from the hook', 'zoom the keyed asset on the quoted "
-            "line', 'drop the key and hold on face for the verdict']. 18 to 30 seconds."
+            "line', 'drop the key and hold on face for the verdict']. 30 to 45 seconds."
         ),
         "exemplar": (
             '{"title":"reacting to bad advice","summary":"A green-screen react to a viral fitness claim.",'
@@ -401,7 +405,7 @@ STYLES = {
             "cues in a 30s script (one roughly every 4 to 6s). The HOOK line and the CTA line carry NO bracket "
             "cues, those beats stay on the face. Never write abstract lines with nothing to show. `shotPlan` is "
             "the editor's cue list in order, each entry naming the b-roll to source and the line it lands on. "
-            "22 to 34 seconds."
+            "30 to 50 seconds."
         ),
         "exemplar": (
             '{"title":"why your deadlift stalls","summary":"A talking-head with b-roll cutaways on 3 deadlift '
@@ -432,7 +436,7 @@ STYLES = {
             "the source clip in the top panel. `shotPlan` is a note to the editor about that play/freeze rhythm: "
             "e.g. ['let the source clip play 2s on its own audio', 'freeze the top panel on the stance line', "
             "'release the source clip under the rebuttal', 'punch in on the payoff line', 'full frame on face for "
-            "the CTA']. 22 to 35 seconds."
+            "the CTA']. 30 to 50 seconds."
         ),
         "exemplar": (
             '{"title":"reacting to failure advice","summary":"A duet react to a viral train-to-failure claim.",'
@@ -1868,12 +1872,89 @@ def pillar_judge_prompt(niche: str, pillars: list[dict]) -> tuple[str, str]:
 # Scripts (style-aware)
 # ---------------------------------------------------------------------------
 
+# --- Topic planner (2026-09-23) ------------------------------------------------
+# The script-realism eval found the feed writing three takes on ONE topic in ONE format
+# (distinct formats per page = 1.1; every cold-start pillar was "Myth-bust the common
+# advice"). The planner fixes the page's variety BEFORE anyone writes: formats are
+# assigned in code (deterministic), the planner only picks a distinct, specific topic
+# for each slot. Writers then get one slot each (parallel on the fast path).
+
+# What each talking-head format IS, shared by the planner and the per-slot writer. The
+# writer used to get only a formatId, so every slot drifted into the page pillar's
+# "you've been told X, actually Y" reframe (realism eval v5: the judge's top complaint).
+TH_FORMAT_SHAPES = (
+    "myth-buster = name one belief the audience holds, say plainly why it's wrong, then give the better "
+    "move with one concrete example (the ONLY format that corrects a belief); "
+    "listicle = 3 to 5 concrete, parallel items, each with a one-line reason, never framed as 'you've been "
+    "told X'; "
+    "pov-story = one relatable moment told as 'you' in the present tense ('You get home at seven, you open "
+    "the fridge...') or as a pattern most people hit, then the turn and the lesson; never 'I' plus an event "
+    "that happened to the creator; "
+    "do-this-not-that = one swap, the reason, and what changes when they make it; "
+    "green-screen = react to one kind of post or claim the viewer has seen (named generically, never a fake "
+    "quote or statistic), then the creator's own take."
+)
+
+SLOT_PLAN_SYSTEM = (
+    "You plan short-form TALKING-HEAD videos for ONE creator. They film only themselves talking to "
+    "camera in one take; an AI editor adds captions and b-roll. Plan one video per slot.\n"
+    "RULES:\n"
+    "- Every slot gets a DIFFERENT specific topic: a concrete claim, mistake, question, or moment this "
+    "creator's audience actually runs into. Not a category ('skincare tips') and not a template ('the "
+    "mistake everyone makes'): a specific thing ('why your SPF stops working by lunch').\n"
+    "- Different SUB-AREAS across slots. First name each slot's `subarea` (the part of the niche it lives "
+    "in, e.g. for a strength coach: training, food, sleep and recovery, motivation, gym logistics; for "
+    "personal finance: budgeting, debt, investing, earning, credit), and NO two slots may share a subarea "
+    "or a core lesson. Three angles on one lesson is the failure this rule exists to prevent.\n"
+    "- Fit THIS creator: niche, audience, goal, and the identity/context given. A thin profile means pick "
+    "topics any credible creator in that niche can speak to honestly from general knowledge.\n"
+    "- Honest: never plan a topic that only works with a personal result, client story, or credential the "
+    "creator hasn't given.\n"
+    "- Talking head only: nothing that needs a demo, props, a location, or a second angle to land.\n"
+    "- Shape each topic to its slot's format: " + TH_FORMAT_SHAPES + "\n"
+    "- Vary the SHAPE as well as the topic: only the myth-buster slot corrects a belief. The other slots "
+    "teach, list, swap, or tell a moment; none of them is a 'you think X, it's actually Y' reframe.\n"
+    "- `angle` is one line: the specific take and why it is worth 45 seconds of someone's time.\n"
+    "Reply with ONLY valid JSON."
+)
+
+SLOT_PLAN_JSON = {
+    "type": "object", "additionalProperties": False, "required": ["slots"],
+    "properties": {"slots": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False,
+        "required": ["slot", "formatId", "subarea", "topic", "angle"],
+        "properties": {"slot": _INT, "formatId": _STR, "subarea": _STR, "topic": _STR,
+                       "angle": _STR}}}},
+}
+
+
+def slot_plan_prompt(brand: dict, pillar: dict, formats: list[str], *,
+                     context: str = "", memory: dict | None = None,
+                     avoid: list[str] | None = None) -> tuple[str, str]:
+    mem = memory_block(memory) if memory else ""
+    avoid_line = ("\nDo NOT repeat or closely echo these recent topics: "
+                  + "; ".join(a for a in (avoid or [])[:12] if a) + "\n") if avoid else ""
+    slots = "\n".join(f"  slot {i + 1}: formatId = {f}" for i, f in enumerate(formats))
+    user = (
+        f"{brand_block(brand, None)}\n"
+        + (f"\n{context}\n" if context else "")
+        + (f"\n{mem}\n" if mem else "")
+        + f"\nToday's theme (a starting direction, not a constraint on every slot): "
+          f"{pillar.get('name', '')}. {pillar.get('angle', '')}\n"
+        + avoid_line
+        + f"\nSlots:\n{slots}\n\nReturn {{\"slots\": [...]}} with one entry per slot, in order."
+    )
+    return SLOT_PLAN_SYSTEM, user
+
+
 def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
                    media_context: str = "", posts: list[dict] | None = None,
                    arm_stats: list[dict] | None = None,
                    memory: dict | None = None,
                    mandated_hooks: list[dict] | None = None,
-                   emulation: list[dict] | None = None) -> tuple[str, str]:
+                   emulation: list[dict] | None = None,
+                   slots: list[dict] | None = None,
+                   context: str = "") -> tuple[str, str]:
     # Retired styles never generate: coerce anything outside ACTIVE_STYLES to talking_head.
     style = style if style in ACTIVE_STYLES else "talking_head"
     s = STYLES.get(style, STYLES["talking_head"])
@@ -1925,18 +2006,42 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
             "grammar), set \"hookSignal\" to match, and write the body + CTA to deliver on it:\n"
             f"{picks}\n"
         )
+    ctx_section = f"\n{context}\n" if context else ""
+    if slots:
+        # Planned page (see SLOT_PLAN_SYSTEM): each script has an assigned format + topic,
+        # so the set is varied by construction instead of three takes on the pillar.
+        plan = "\n".join(
+            f"  • Script {i + 1}: formatId \"{sl.get('formatId', '')}\". Topic: {sl.get('topic', '')}. "
+            f"Angle: {sl.get('angle', '')}"
+            for i, sl in enumerate(slots))
+        task = (
+            f"Write exactly {len(slots)} {s['label']} script(s), one per assignment below, in order. "
+            "Use the assigned formatId and stay on the assigned topic; the page theme above is background only.\n"
+            f"{plan}\n"
+            f"FORMAT SHAPES (write each script in the shape of its assigned format): {TH_FORMAT_SHAPES}\n"
+            "LENGTH BUDGET (hard): hook + body + CTA together are 90 to 140 words, about 35 to 55 seconds "
+            "spoken. Count before you answer. Over 150 words is too long for this format; trim the weakest "
+            "beat, never the example.\n"
+            f"Set \"style\":\"{style}\" on each. Return ONLY a JSON array. {SCRIPT_SCHEMA}"
+        )
+    else:
+        task = (
+            f"Write {count} {s['label']} scripts on this pillar, each a distinct angle. Set \"style\":\"{style}\" on "
+            f"each. Return ONLY a JSON array. {SCRIPT_SCHEMA}"
+        )
     user = (
         f"{learn_section}"
         f"{mem_section}"
         f"{emul_section}"
         f"{brand_block(brand, posts)}\n"
-        f"Content pillar: {pillar.get('name','')}. {pillar.get('summary','')}\n"
-        f"Their angle on it: {pillar.get('angle','')}\n"
-        f"Example directions: {'; '.join(pillar.get('exampleTopics', []) or [])}{media}\n"
-        f"Allowed formatIds for this style: {', '.join(s['formats'])}\n"
+        f"{ctx_section}"
+        + (f"Page theme: {pillar.get('name','')}.{media}\n" if slots else
+           f"Content pillar: {pillar.get('name','')}. {pillar.get('summary','')}\n"
+           f"Their angle on it: {pillar.get('angle','')}\n"
+           f"Example directions: {'; '.join(pillar.get('exampleTopics', []) or [])}{media}\n")
+        + f"Allowed formatIds for this style: {', '.join(s['formats'])}\n"
         f"{mandate}\n"
-        f"Write {count} {s['label']} scripts on this pillar, each a distinct angle. Set \"style\":\"{style}\" on "
-        f"each. Return ONLY a JSON array. {SCRIPT_SCHEMA}"
+        f"{task}"
     )
     return system, user
 
@@ -3260,7 +3365,16 @@ _STAGE_ANYWHERE_RE = _sr_re.compile(
     r"describe (?:how|the|a)|walk (?:them|the viewer|us) through|point out (?:that|the|how)|"
     r"cut to (?:a |the |some )?(?:footage|b-?roll|a shot|the shot|a clip|a chart|a graph|the screen|an image)|"
     r"(?:film|record|shoot) (?:yourself|this|a )|voice ?over (?:of|about|:)|"
-    r"you'?(?:ll| will)? (?:want to )?(?:say|talk about|explain|show|mention))\b",
+    # Directive to the CREATOR ("you'll say...", "you want to show..."). The modal is
+    # REQUIRED: plain present tense addressed to the VIEWER ("you show up gassed",
+    # "the second you say everyone is your customer") is ordinary speech, and matching
+    # it dropped ~3% of good scripts (realism eval, 2026-09-23).
+    # "show up" is an idiom, and "you'll say you're too busy" is reported speech aimed at
+    # the viewer, so those two shapes are excluded too.
+    r"you(?:'ll(?: want to)?| will(?: want to)?| want to)\s+(?:talk about|explain|mention)\b|"
+    r"you(?:'ll(?: want to)?| will(?: want to)?| want to)\s+show\b(?!\s+up\b)|"
+    r"you(?:'ll(?: want to)?| will(?: want to)?| want to)\s+say\b"
+    r"(?!\s+(?:you|you're|it|it's|that|no|yes|i|i'm|we|they|nothing)\b))\b",
     _sr_re.I)
 # Broader directives that only read as stage direction at a CLAUSE start (first word,
 # after a period/newline) — mid-sentence they're often real spoken content.
@@ -3376,6 +3490,10 @@ GROUNDING_BLOCK = (
     "about their life, history, clients, or results exists.\n"
     "- NEVER invent personal history, credentials, client stories, testimonials, experiments they ran, or "
     "specific numbers / dollar figures / timeframes presented as lived experience.\n"
+    "- First person is FINE for opinions, habits and methods ('here's what I do', 'I'd never', 'what "
+    "actually works is'). What's banned is first-person EVENTS and RESULTS the sources above don't give "
+    "you: 'last week I...', 'I watched a founder...', 'my client went from X to Y', 'I went from 300 to "
+    "zero'. Stories default to 'you' (POV) or 'most people' framing.\n"
     "- When a beat needs a receipt you don't have, do ONE of these instead:\n"
     "  (a) a bracketed fill-in the creator completes before filming, '[your result]', '[how long it took "
     "you]', '[number of clients]';\n"
@@ -3383,7 +3501,9 @@ GROUNDING_BLOCK = (
     "receipt;\n"
     "  (c) a general, verifiable fact about the niche, attributed to the niche, not to the creator.\n"
     "- A bracketed placeholder is a FEATURE, not a failure: one honest '[your number]' beats a fabricated "
-    "'$3,180' every time. Make the STRUCTURE specific; pull real specifics only from the sources above."
+    "'$3,180' every time. But prefer (b) or (c), and use AT MOST ONE bracketed fill-in per script: a "
+    "script full of blanks reads as a template. Make the STRUCTURE specific; pull real specifics only "
+    "from the sources above."
 )
 
 

@@ -6152,15 +6152,23 @@ def test_fast_feed_scripts_uses_haiku_lean_schema_and_synthesizes_extras(monkeyp
     # The 12-field SONNET call measured ~23-30s in prod (always past the budget -> mock
     # forever). First paint must be HAIKU + the lean schema, with the dropped extras
     # synthesized so the wire shape is unchanged.
+    # 2026-09-23: the draft is now PLANNED + one call per slot through palo_llm's cached
+    # writer (the realism eval measured the single 3-script call timing out to the mock).
+    from app import palo_llm
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "x")
     cap = {}
 
-    async def fake_json(sys, usr, schema, model, max_tokens, array_key=None):
+    async def fake_cached(system, user, schema, model, max_tokens=4000, temperature=None):
         cap["model"] = model
         cap["schema"] = schema
-        return [{"title": "T", "summary": "S", "hook": "H", "hookSignal": "curiosity",
-                 "formatId": "pov-story", "body": "B", "cta": "C", "style": "talking_head"}]
-    monkeypatch.setattr(main, "anthropic_json", fake_json)
+        return {"scripts": [{"title": "T", "summary": "S", "hook": "H", "hookSignal": "curiosity",
+                             "formatId": "pov-story", "body": "B", "cta": "C",
+                             "style": "talking_head"}]}
+    monkeypatch.setattr(palo_llm, "anthropic_cached_json", fake_cached)
+
+    async def no_plan(*a, **k):
+        raise main.HTTPException(502, "planner down")  # pillar-slot fallback
+    monkeypatch.setattr(main, "anthropic_json", no_plan)
     sreq = main.ScriptRequest(creator_id="c_lean", pillar="Hot takes",
                               style="talking_head", count=1)
     out = asyncio.run(main._fast_feed_scripts(sreq))
@@ -6180,7 +6188,7 @@ def test_feed_cold_paint_is_single_flight(monkeypatch):
     main._feed_cache.clear(); main._feed_refreshing.clear(); main._feed_inflight.clear()
     calls = {"n": 0}
 
-    async def slow_fast(sreq):
+    async def slow_fast(sreq, cursor=0):
         calls["n"] += 1
         await asyncio.sleep(0.05)
         return {"mode": "mock", "scripts": main.mock_scripts(sreq)}
@@ -6505,29 +6513,50 @@ def test_restore_reattaches_in_flight_render(monkeypatch):
     main._clip_jobs.pop("jr", None)
 
 
+def _fake_slot_writer(monkeypatch, fail_on=None):
+    from app import palo_llm
+    n = {"i": 0}
+
+    async def fake_cached(system, user, schema, model, max_tokens=4000, temperature=None):
+        n["i"] += 1
+        if fail_on and fail_on in user:
+            return None
+        return {"scripts": [{"title": f"T{n['i']}", "summary": "S", "hook": "H",
+                             "hookSignal": "curiosity", "formatId": "pov-story", "body": "B",
+                             "cta": "C", "style": "talking_head"}]}
+    monkeypatch.setattr(palo_llm, "anthropic_cached_json", fake_cached)
+
+    async def no_plan(*a, **k):
+        # The planner must never reach the network in a unit test: a real call with the
+        # fake key leaves a pooled connection on a closed loop (later lifespan exits fail).
+        raise main.HTTPException(502, "planner stubbed")
+    monkeypatch.setattr(main, "anthropic_json", no_plan)
+
+
 def test_fast_paint_mode_is_live_fast(monkeypatch):
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "x")
-
-    async def fake_json(sys, usr, schema, model, max_tokens, array_key=None):
-        return [{"title": "T", "summary": "S", "hook": "H", "hookSignal": "curiosity",
-                 "formatId": "pov-story", "body": "B", "cta": "C", "style": "talking_head"}
-                for _ in range(3)]
-    monkeypatch.setattr(main, "anthropic_json", fake_json)
+    _fake_slot_writer(monkeypatch)
     sreq = main.ScriptRequest(creator_id="c_lf", pillar="Hot takes", style="talking_head", count=3)
     out = asyncio.run(main._fast_feed_scripts(sreq))
     assert out["mode"] == "live_fast"              # draft marker, NOT plain "live"
+    assert len(out["scripts"]) == 3
 
 
-def test_fast_paint_pads_short_array_to_count(monkeypatch):
+def test_fast_paint_never_pads_with_mock_copy(monkeypatch):
+    # Reversed 2026-09-23: padding a short page with "Most {niche} advice is backwards"
+    # template cards is exactly what the owner flagged as unrealistic. A failed slot is
+    # dropped; only an ALL-failed page falls back to the mock.
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "x")
 
-    async def one_script(sys, usr, schema, model, max_tokens, array_key=None):
-        return [{"title": "T", "summary": "S", "hook": "H", "hookSignal": "curiosity",
-                 "formatId": "pov-story", "body": "B", "cta": "C", "style": "talking_head"}]
-    monkeypatch.setattr(main, "anthropic_json", one_script)
+    async def plan(sreq, cursor=0, context="", avoid=None):
+        return [{"formatId": f, "topic": t, "subarea": "", "angle": ""}
+                for f, t in (("myth-buster", "alpha"), ("pov-story", "bravo"), ("listicle", "charlie"))]
+    monkeypatch.setattr(main, "_plan_slots", plan)
+    _fake_slot_writer(monkeypatch, fail_on="bravo")
     sreq = main.ScriptRequest(creator_id="c_pad", pillar="Hot takes", style="talking_head", count=3)
     out = asyncio.run(main._fast_feed_scripts(sreq))
-    assert len(out["scripts"]) == 3                # padded, never a lonely single card
+    assert out["mode"] == "live_fast" and len(out["scripts"]) == 2
+    assert [s["formatId"] for s in out["scripts"]] == ["myth-buster", "listicle"]
 
 
 def test_refresh_feed_page_never_downgrades_to_mock(monkeypatch):
@@ -7367,6 +7396,16 @@ def test_reels_health_requires_the_cron_token(monkeypatch):
     assert client.post("/internal/reels/health", json={}).status_code == 403
 
 
+_REAL_TH_TRANSCRIPT = (
+    "If you sit at a desk all day, your hips get tight and your back starts to round, and "
+    "that's why your squat feels awful the first time you try it. Here's what I'd do instead. "
+    "Before you load anything heavy, spend five minutes opening your hips up with a couple of "
+    "slow lunges and a deep squat hold. It sounds boring, and it is, but the difference in how "
+    "the first working set feels is huge. Try it for two weeks and tell me if your knees still "
+    "complain when you get to the bottom of the rep."
+)
+
+
 def test_reels_health_reports_the_serve_gate(monkeypatch):
     monkeypatch.setattr(main, "INTERNAL_CRON_TOKEN", "secret")
     monkeypatch.setattr(main, "_supabase_client", None)
@@ -7376,11 +7415,11 @@ def test_reels_health_reports_the_serve_gate(monkeypatch):
         # servable: playable + transcribed + reads as a talking head
         {"id": "r1", "video_url": "https://cdn/a.mp4", "transcribed": True,
          "edit_format": "talking_head", "duration_s": 30,
-         "transcript": " ".join(["word"] * 90)},
+         "transcript": _REAL_TH_TRANSCRIPT},
         # transcribed but no video -> not servable
         {"id": "r2", "video_url": "", "transcribed": True,
          "edit_format": "talking_head", "duration_s": 30,
-         "transcript": " ".join(["word"] * 90)},
+         "transcript": _REAL_TH_TRANSCRIPT},
         # never transcribed -> not servable
         {"id": "r3", "video_url": "https://cdn/c.mp4", "transcribed": False},
     ]}

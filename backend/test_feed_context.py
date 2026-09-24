@@ -72,7 +72,7 @@ def test_feed_post_body_reaches_fast_feed_scripts(monkeypatch):
     _reset_feed_caches()
     captured = {}
 
-    async def fake_fast(sreq):
+    async def fake_fast(sreq, cursor=0):
         captured["sreq"] = sreq
         return {"mode": "mock", "scripts": main.mock_scripts(sreq)}
     monkeypatch.setattr(main, "_fast_feed_scripts", fake_fast)
@@ -165,7 +165,7 @@ def test_get_feed_hydrates_brand_from_stored_profile(monkeypatch):
     monkeypatch.setattr(main, "_supabase_client", fake)
     captured = {}
 
-    async def fake_fast(sreq):
+    async def fake_fast(sreq, cursor=0):
         captured["sreq"] = sreq
         return {"mode": "mock", "scripts": main.mock_scripts(sreq)}
     monkeypatch.setattr(main, "_fast_feed_scripts", fake_fast)
@@ -187,7 +187,7 @@ def test_get_feed_query_niche_overrides_stored_profile(monkeypatch):
     monkeypatch.setattr(main, "_supabase_client", fake)
     captured = {}
 
-    async def fake_fast(sreq):
+    async def fake_fast(sreq, cursor=0):
         captured["sreq"] = sreq
         return {"mode": "mock", "scripts": main.mock_scripts(sreq)}
     monkeypatch.setattr(main, "_fast_feed_scripts", fake_fast)

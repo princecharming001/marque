@@ -1445,6 +1445,10 @@ class ScriptRequest(Brand):
     posts: list[dict] = []
     creator_id: str = "default"
     memory: dict = {}                  # client-held creator memory (facts/angle/ideas/...)
+    # Planned page: [{formatId, topic, angle}] per script (see prompts.SLOT_PLAN_SYSTEM).
+    # Declared so pydantic keeps it; set by the planner, reused by the background upgrade
+    # so the full-quality pass keeps the topics the creator already saw.
+    slots: list[dict] = []
 
 
 class FeedRequest(Brand):
@@ -2049,6 +2053,13 @@ _DRAFT_SLOP_OPENERS = (
 )
 
 
+def _est_seconds(script: dict) -> int:
+    """Spoken length of a script at a talking-head pace (~150 wpm) across hook, body and
+    CTA. Drafts used to hard-code 30s regardless of what was written."""
+    words = sum(len(str(script.get(k) or "").split()) for k in ("hook", "body", "cta"))
+    return max(10, min(120, round(words / 2.5)))
+
+
 def _draft_score(creator_id: str, script: dict) -> int:
     """Honest draft-tier predictedScore — no LLM. A DRAFT may never outrank the judged
     tier's typical floor (clamped 40..74), since it hasn't been through best-of-N +
@@ -2317,6 +2328,7 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
     # caller's brand snapshot should also be kept fresh for GET-feed hydration + the
     # T3 cron. Dedup'd on unchanged hash inside _persist_creator_profile.
     _spawn(_persist_creator_profile(req.creator_id, _brand_only(req.d())))
+    _spawn(_ensure_account_context(req.creator_id, _brand_only(req.d())))
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "scripts": mock_scripts(req)}
     pillar = {"name": req.pillar, "summary": req.pillar_summary,
@@ -2334,22 +2346,53 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
         # concurrently with each other and the brain overlaps best_hooks too, instead
         # of the old four serial awaits before the write call.
         brain_task = asyncio.ensure_future(_inject_brain("", req.creator_id))
+        # Planned page: reuse the first paint's slots when this is its background upgrade
+        # (the creator keeps the topics they already saw), else plan now. Planning runs
+        # concurrently with the context fetches.
+        plan_task = (None if (req.slots or req.count < 2) else asyncio.ensure_future(
+            _plan_slots(req, 0, await _account_context(req.creator_id))))
         stats, emulation = await asyncio.gather(
             _arms_for_prompt(req.creator_id),
             _resolve_emulation_profiles(req.emulation_targets))
+        if plan_task is not None:
+            req.slots = await plan_task
         _lap("context")
         # Best-of-N: pre-select the strongest openers, then write bodies around them.
-        topic = req.pillar or req.niche or "your next post"
-        mandated = await best_hooks(req.d(), topic, req.style, req.creator_id, n=min(2, req.count),
-                                    memory=req.memory or None, emulation=emulation or None)
+        # With a plan, one vetted hook PER SLOT (its own topic), in parallel.
+        if req.slots:
+            per_slot = await asyncio.gather(*(
+                best_hooks(req.d(), f"{sl.get('topic', '')}. {sl.get('angle', '')}".strip(". "),
+                           req.style, req.creator_id, n=1, memory=req.memory or None,
+                           emulation=emulation or None) for sl in req.slots))
+            mandated = [h[0] for h in per_slot if h] if all(per_slot) else []
+        else:
+            topic = req.pillar or req.niche or "your next post"
+            mandated = await best_hooks(req.d(), topic, req.style, req.creator_id,
+                                        n=min(2, req.count), memory=req.memory or None,
+                                        emulation=emulation or None)
         _lap("hooks")
-        sys, usr = prompts.scripts_prompt(req.d(), pillar, req.style, req.count,
-                                          req.media_context, req.posts or None,
-                                          arm_stats=stats, memory=req.memory or None,
-                                          mandated_hooks=mandated or None, emulation=emulation or None)
-        sys += await brain_task
-        out = await anthropic_json(sys, usr, _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
-                                   OPUS, 3800, array_key="scripts")
+        brain = await brain_task
+        if req.slots:
+            # One OPUS call per planned slot, in parallel: every topic is attempted (a
+            # single N-script call was measured returning 1 of 3), and write latency is
+            # one script's, not three. Hooks line up with slots only when all landed.
+            hooks = (mandated if mandated and len(mandated) == len(req.slots)
+                     else [None] * len(req.slots))
+            written = await asyncio.gather(*(
+                _write_slot(req, sl, model=OPUS, schema=prompts.SCRIPT_JSON_ELEMENT,
+                            max_tokens=2200, sys_suffix=brain, stats=stats, hook=hooks[i],
+                            emulation=emulation, tag="full")
+                for i, sl in enumerate(req.slots)))
+            out = [w for w in written if w]
+        else:
+            sys, usr = prompts.scripts_prompt(req.d(), pillar, req.style, req.count,
+                                              req.media_context, req.posts or None,
+                                              arm_stats=stats, memory=req.memory or None,
+                                              mandated_hooks=mandated or None,
+                                              emulation=emulation or None)
+            out = await anthropic_json(sys + brain, usr,
+                                       _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
+                                       OPUS, 3800, array_key="scripts")
         _lap("write")
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(req)}
@@ -2361,8 +2404,17 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
         # Never ship fewer than requested — backfill any drop from the mock templates.
         out = await _ensure_speakable(out, policy="repair_or_drop")
         _lap("judge_repair")
-        if len(out) < req.count:
-            out = out + mock_scripts(req)[len(out):req.count]
+        if req.slots and len(out) == len(req.slots):
+            # Keep the plan's format on each script (a repair pass must not collapse the
+            # page back into one format). Only when nothing was dropped: after a drop the
+            # positions no longer line up with the slots.
+            for s, sl in zip(out, req.slots):
+                if isinstance(s, dict) and sl.get("formatId") in prompts.FORMAT_IDS:
+                    s["formatId"] = sl["formatId"]
+        # NO mock padding when real scripts exist: a dropped script leaves the page one
+        # card shorter instead of adding "Most {niche} advice is backwards" template copy.
+        if not out:
+            return {"mode": "mock", "scripts": mock_scripts(req)}
         for s in out:
             if isinstance(s, dict) and s.get("title"):
                 s["title"] = _clamp_title(str(s["title"]))
@@ -11559,6 +11611,11 @@ def _is_talking_head_reel(reel: dict) -> bool:
     directions. A transcribed reel with almost no spoken words is a montage/skit no
     matter how talking-head its caption reads; sparse speech over a long runtime is a
     music edit with a couple of yelled lines, not a person talking to camera."""
+    # A model verdict on the SPEECH itself (lyrics / skit / other) is the strongest
+    # evidence there is; set by _classify_reel_speech during the refresh.
+    kind = reel.get("speech_kind") or ""
+    if kind and kind != "talking":
+        return False
     t = (reel.get("transcript") or "").strip()
     if reel.get("transcribed") and t:
         toks = t.split()
@@ -11576,10 +11633,105 @@ def _is_talking_head_reel(reel: dict) -> bool:
                                                       "next", "switch", "halfway"))
         if counting / words >= 0.4:
             return False
+        if _speech_red_flag(t):
+            return False
     ef = reel.get("edit_format") or ""
     if not ef:
         ef = _classify_edit_format(reel)[0]
     return ef in _TALKING_HEAD_FORMATS
+
+
+# --- speech checks for the talking-head gate (2026-09-23) -------------------
+# A prod sweep of 140 cached, transcribed reels found 18 of the 105 that passed the
+# gate were not a person talking to camera in English: Portuguese funk and reggaeton
+# lyrics, "um um um" filler, workout countdowns, pop lyrics ("I wanna take a ride on
+# your disco stick"), and non-English talking heads no English script can emulate.
+# These free checks catch those; English lyrics that don't repeat much ("Crimson and
+# clover") need the model label below.
+_EN_FUNCTION_WORDS = frozenset("""the a an and or but to of in on for with is are was were be been
+it it's that this you your you're i i'm my me we our they them their he she his her not no do
+does don't at as by so if just what when how about can will would have has had there here get
+got like one all out up""".split())
+_FILLER_WORDS = frozenset("yeah oh ooh ah la na baby hey uh um mm mhm hmm whoa woo yo ha huh".split())
+_NUMBER_WORDS = frozenset("zero one two three four five six seven eight nine ten eleven twelve".split())
+
+
+def _speech_red_flag(transcript: str) -> str | None:
+    """Why a transcript is NOT emulatable talking-head speech, or None. Pure."""
+    raw = transcript.split()
+    n = len(raw)
+    if n < 10:
+        return None                                  # the caller's <12-word rule owns these
+    toks = [w.strip(".,!?;:\"'()").lower() for w in raw]
+    latin = re.findall(r"[a-z']+|\d+", transcript.lower())
+    grams = [tuple(latin[i:i + 3]) for i in range(len(latin) - 2)]
+    if n >= 20 and grams and len(set(grams)) / len(grams) < 0.70:
+        return "repetitive (chorus, chant or countdown)"
+    if n >= 15 and sum(1 for w in toks if w in _EN_FUNCTION_WORDS) / n < 0.20:
+        return "not English speech"
+    if sum(1 for w in toks if w in _FILLER_WORDS) / n >= 0.25:
+        return "mostly filler or vocal sounds"
+    if sum(1 for w in toks if w.isdigit() or w in _NUMBER_WORDS
+           or w in ("go", "stop", "round", "rest", "next", "switch", "halfway")) / n >= 0.30:
+        return "mostly counting or workout cues"
+    return None
+
+
+_SPEECH_KINDS = ("talking", "lyrics", "skit", "other")
+_SPEECH_CLASSIFY_SYS = (
+    "You label short-form video transcripts by what the SPEECH is.\n"
+    "talking = one person speaking to camera in their own words: advice, an opinion, a story, an "
+    "explanation, narrating a tutorial or a tour, guiding the viewer through an exercise, a rant. A "
+    "professional (therapist, doctor, coach, realtor, founder) explaining something straight to the "
+    "viewer is talking.\n"
+    "lyrics = song lyrics, singing, rap, or a music track that got transcribed.\n"
+    "skit = ACTING: characters in a scene, dialogue between two or more people, a prank, a comedy "
+    "bit, or a POV role-play where the speaker plays someone talking to another character.\n"
+    "other = counting or workout cues, filler, crowd noise, or anything else that is not a person "
+    "talking to camera.\n"
+    "The caption is context only; judge by the transcript. Answer talking only when a person is "
+    "clearly addressing the viewer in their own words. Reply with ONLY valid JSON."
+)
+_SPEECH_CLASSIFY_JSON = {
+    "type": "object", "additionalProperties": False, "required": ["items"],
+    "properties": {"items": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False, "required": ["i", "kind"],
+        "properties": {"i": {"type": "integer"},
+                       "kind": {"type": "string", "enum": list(_SPEECH_KINDS)}}}}},
+}
+
+
+async def _classify_reel_speech(posts: list[dict], batch: int = 15) -> None:
+    """Label each transcribed post's speech (talking / lyrics / skit / other) with one
+    HAIKU call per batch, in place. Posts already labeled (carried forward from an earlier
+    refresh) are skipped, so each reel is classified once. Keyless or failed calls leave
+    posts unlabeled; the deterministic checks in _is_talking_head_reel still apply."""
+    from app.palo_llm import anthropic_cached_json, wcut
+    todo = [p for p in posts if (p.get("transcript") or "").strip() and not p.get("speech_kind")]
+    if not todo or not ANTHROPIC_KEY:
+        return
+    for start in range(0, len(todo), batch):
+        chunk = todo[start:start + batch]
+        user = "\n\n".join(
+            f"[{i}] caption: {wcut(p.get('caption') or '', 200)}\n"
+            f"transcript: {wcut(p.get('transcript') or '', 700)}"
+            for i, p in enumerate(chunk))
+        try:
+            # temperature 0: a label must not flip between refreshes (at the default
+            # temperature ~3% of borderline reels changed label run to run).
+            out = await asyncio.wait_for(
+                anthropic_cached_json(_SPEECH_CLASSIFY_SYS, user, _SPEECH_CLASSIFY_JSON, HAIKU, 600,
+                                      temperature=0),
+                timeout=float(os.environ.get("REEL_SPEECH_TIMEOUT_S", "25")))
+        except asyncio.TimeoutError:
+            logging.info("[reels] speech classify skipped: timeout")
+            continue
+        items = out.get("items") if isinstance(out, dict) else None
+        for item in items if isinstance(items, list) else []:
+            i, kind = item.get("i"), item.get("kind")
+            if isinstance(i, int) and 0 <= i < len(chunk) and kind in _SPEECH_KINDS:
+                chunk[i]["speech_kind"] = kind
+
 
 
 def _talking_head_first(posts: list[dict]) -> None:
@@ -11725,6 +11877,7 @@ def _reel_from_post(post: dict, handle: str, platform: str, idx: int, watched: b
         # by _merge_prev_reel_work) win over the tier-1 heuristic.
         "edit_format": post.get("edit_format") or _classify_edit_format(post)[0],
         "fmt_source": post.get("fmt_source") or "heuristic",
+        "speech_kind": post.get("speech_kind") or "",
         "why_match": post.get("why_match")
                      or _WHY_MATCH.get(post.get("edit_format") or _classify_edit_format(post)[0], ""),
         # Creator-helpful stats + linkout (parsed by _normalize_apify_post but previously
@@ -11757,6 +11910,7 @@ async def _refresh_watched_creator(platform: str, handle: str) -> None:
         _merge_prev_reel_work(posts, (prev or {}).get("reels") or [], handle=handle)
         _talking_head_first(posts)          # emulatable reels get the enrichment budget
         posts = await _transcribe_top_posts(posts, top_n=2)
+        await _classify_reel_speech(posts[:6])
         await _dossier_classify_reels(posts[:6])      # UX-A1 tier 2 (fail-soft)
         reels = [_reel_from_post(p, handle, platform, i, True) for i, p in enumerate(posts[:6])]
         entry = {"reels": reels, "ts": time.time()}
@@ -11824,7 +11978,11 @@ async def _rehost_media(url: str, key: str, content_type: str, max_bytes: int,
                     return None
                 tf.seek(0)
 
-                def _chunks(fh=tf, size=1 << 16):
+                # MUST be an ASYNC generator: httpx.AsyncClient rejects a sync iterable
+                # body with "Attempted to send an sync request with an AsyncClient
+                # instance" — and the except below swallowed it, so EVERY rehost failed
+                # silently from 2026-08-22 until 2026-09-23 (reels served video_url='').
+                async def _chunks(fh=tf, size=1 << 16):
                     while True:
                         b = fh.read(size)
                         if not b:
@@ -11877,6 +12035,10 @@ def _merge_prev_reel_work(posts: list[dict], prev_reels: list[dict], handle: str
             p["edit_format"] = old.get("edit_format")
             p["fmt_source"] = "dossier"
             p["why_match"] = old.get("why_match")
+        # The speech label is also paid-for model work; it describes the transcript that
+        # was just carried, so it travels with it.
+        if old.get("speech_kind") and p.get("transcript") and not p.get("speech_kind"):
+            p["speech_kind"] = old["speech_kind"]
 
 
 async def _prev_reels_entry(cache: dict, key: str) -> dict | None:
@@ -11995,6 +12157,9 @@ async def _refresh_niche_reels(niche: str) -> None:
             _rehost_reel_media(posts[:_REEL_TRANSCRIBE_FIRST_WAVE]),
         )
         if any(p.get("transcript") for p in wave1):
+            # Label the speech before these become servable, so lyrics and skits are
+            # never served even for the wave-2 window.
+            await _classify_reel_speech(wave1)
             # Written AFTER rehost so the first servable entries already carry durable
             # URLs (the old order served CDN links for the whole wave-2 window).
             await _write_niche_reels(key, posts, partial=True)
@@ -12004,7 +12169,7 @@ async def _refresh_niche_reels(niche: str) -> None:
 
         # WAVE 2 — the full transcription budget, then durable media for everything.
         posts = await _transcribe_top_posts(posts, top_n=_REEL_TRANSCRIBE_TOP_N)
-        await _rehost_reel_media(posts)
+        await asyncio.gather(_rehost_reel_media(posts), _classify_reel_speech(posts))
         # UX-A1 tier 2: classify the top-K by WATCHING (dossier adapter, fail-soft).
         # After transcription so the transcript-length signal is real; before the final
         # write so the classification persists via the reels cache.
@@ -12722,37 +12887,200 @@ async def _ensure_speakable(scripts: list[dict], *, policy: str = "repair_or_dro
     return out
 
 
-async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
-    """First-paint script generation: ONE lean HAIKU call, no best-of-N hooks and no
-    judge/repair pass. The blank-home audit measured the old SONNET + full-schema call
-    at ~23-30s — past ANY budget, so the first paint was ALWAYS mock and every cold
-    request held a worker slot for the full 22s (which is what starved the health
-    checks). HAIKU + FAST_SCRIPT_JSON_ELEMENT lands in ~2-4s; the extras the lean
-    schema drops are synthesized below so the wire shape is unchanged, and the
-    background OPUS pass still upgrades to full quality."""
+# --- Planned pages (script-realism eval, 2026-09-23) ---------------------------
+# Baseline eval of the feed's draft path: 5/8 new accounts timed out (10s) into the
+# canned mock ("Most Fashion advice is backwards..."), median 63 words, judge
+# substance 3.4/10, and 1.1 distinct formats per page. Fix: plan the page first
+# (distinct topic + format per slot), then write each slot in PARALLEL (one script
+# per call, full length) — variety by construction and a per-call latency that fits.
+
+_PAGE_FORMAT_ORDER = {
+    "talking_head": ["myth-buster", "pov-story", "listicle", "green-screen"],
+}
+
+
+def _page_formats(style: str, cursor: int, n: int) -> list[str]:
+    """n formats for this page, as distinct as the style allows, rotated by cursor so
+    consecutive pages lead with different formats."""
+    fmts = _PAGE_FORMAT_ORDER.get(style) or list(
+        (prompts.STYLES.get(style) or prompts.STYLES["talking_head"])["formats"])
+    k = len(fmts)
+    return [fmts[(cursor + i) % k] for i in range(max(1, n))]
+
+
+_ctx_cache: dict[str, tuple[float, str]] = {}
+
+
+async def _account_context(creator_id: str) -> str:
+    """The creator's per-account context doc (Palo channel identity) as a prompt block,
+    for the paths that don't run the full brain (planner + first paint). '' when the
+    flag is off, the creator isn't real, or no doc exists yet. Cached 10 min."""
+    if not (palo_flags.enabled(palo_flags.CHANNEL_IDENTITY) and palo_flags.real_creator(creator_id)):
+        return ""
+    hit = _ctx_cache.get(creator_id)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    try:
+        from app import channel_identity
+        block = channel_identity.identity_block(
+            await channel_identity.load_identity(_palo_store, creator_id)) or ""
+    except Exception as e:
+        logging.warning("[context] identity load failed: %s", e)
+        block = ""
+    _ctx_cache[creator_id] = (time.time(), block)
+    _cap_evict(_ctx_cache, 2000)
+    return block
+
+
+_identity_attempts: dict[str, str] = {}
+
+
+async def _ensure_account_context(creator_id: str, brand: dict) -> None:
+    """Background: build (or rebuild on a brand change) the creator's identity doc, so
+    EXISTING accounts get one too (it used to be built only at onboarding completion).
+    One attempt per (creator, brand) per process; never raises."""
+    if not (palo_flags.enabled(palo_flags.CHANNEL_IDENTITY) and palo_flags.real_creator(creator_id)):
+        return
+    try:
+        from app import channel_identity
+        h = channel_identity.brand_hash(brand)
+        if _identity_attempts.get(creator_id) == h:
+            return
+        _identity_attempts[creator_id] = h
+        _cap_evict(_identity_attempts, 5000)
+        posts = await _creator_posts(creator_id)
+        await channel_identity.ensure_identity(_palo_store, creator_id, brand, posts=posts)
+        _ctx_cache.pop(creator_id, None)
+    except Exception as e:
+        logging.warning("[context] ensure identity failed: %s", e)
+
+
+def _fallback_slots(sreq: "ScriptRequest", formats: list[str]) -> list[dict]:
+    return [{"formatId": f, "topic": sreq.pillar or sreq.niche or "your next post",
+             "angle": sreq.pillar_angle or ""} for f in formats]
+
+
+async def _plan_slots(sreq: "ScriptRequest", cursor: int = 0, context: str = "",
+                      avoid: list[str] | None = None) -> list[dict]:
+    """One fast HAIKU call that picks a DISTINCT, specific topic for each slot. Formats
+    are assigned here in code (the model can't collapse the page back to one format).
+    Falls back to pillar-topic slots (still format-varied) on any failure."""
+    n = max(1, min(5, sreq.count))
+    formats = _page_formats(sreq.style, cursor, n)
     if not ANTHROPIC_KEY:
-        return {"mode": "mock", "scripts": mock_scripts(sreq)}
+        return _fallback_slots(sreq, formats)
+    pillar = {"name": sreq.pillar, "summary": sreq.pillar_summary, "angle": sreq.pillar_angle}
+    try:
+        sys, usr = prompts.slot_plan_prompt(sreq.d(), pillar, formats, context=context,
+                                            memory=sreq.memory or None, avoid=avoid)
+        out = await asyncio.wait_for(
+            anthropic_json(sys, usr, prompts.SLOT_PLAN_JSON, HAIKU, 700),
+            timeout=float(os.environ.get("FEED_PLAN_TIMEOUT_S", "6")))
+        planned = (out or {}).get("slots") if isinstance(out, dict) else None
+        slots: list[dict] = []
+        for i, f in enumerate(formats):
+            got = planned[i] if isinstance(planned, list) and i < len(planned) else {}
+            topic = str((got or {}).get("topic") or "").strip()
+            if not topic:
+                return _fallback_slots(sreq, formats)
+            slots.append({"formatId": f, "topic": topic,
+                          "subarea": str((got or {}).get("subarea") or "").strip(),
+                          "angle": str((got or {}).get("angle") or "").strip()})
+        return slots
+    except (HTTPException, asyncio.TimeoutError) as e:
+        logging.info("[plan] fell back to pillar slots: %s", type(e).__name__)
+        return _fallback_slots(sreq, formats)
+
+
+# A retry needs at least this much of the slot's deadline left to be worth starting (a
+# HAIKU script call is ~4-7s); with no deadline (the background OPUS path) only a
+# failure within the first N seconds is retried, so a slow failure never doubles.
+_SLOT_RETRY_MIN_S = 4.0
+_SLOT_RETRY_FAST_FAIL_S = 15.0
+
+
+async def _write_slot(sreq: "ScriptRequest", slot: dict, *, model: str, schema: dict,
+                      max_tokens: int, sys_suffix: str, stats, context: str = "",
+                      hook: dict | None = None, emulation: list[dict] | None = None,
+                      timeout: float | None = None, tag: str = "slot") -> dict | None:
+    """Write ONE planned slot. Used by BOTH paths (first paint = HAIKU + lean schema;
+    full pipeline = OPUS + full schema): one call per slot guarantees every planned
+    topic is attempted — a single N-script call was measured returning 1 of 3.
+    The static system prompt is identical across slots/creators on a style, so it is
+    sent as a cached prefix (palo_llm CACHE_BREAKPOINT); the per-creator suffix
+    (strategy / brain / first-paint note) rides uncached after it. Never raises."""
+    from app.palo_llm import CACHE_BREAKPOINT, anthropic_cached_json
     pillar = {"name": sreq.pillar, "summary": sreq.pillar_summary,
               "angle": sreq.pillar_angle, "exampleTopics": sreq.example_topics}
+    sys, usr = prompts.scripts_prompt(sreq.d(), pillar, sreq.style, 1, sreq.media_context,
+                                      sreq.posts or None, arm_stats=stats,
+                                      memory=sreq.memory or None, slots=[slot], context=context,
+                                      mandated_hooks=[hook] if hook else None,
+                                      emulation=emulation or None)
+    system = f"{sys}\n{CACHE_BREAKPOINT}\n{sys_suffix}" if sys_suffix.strip() else sys
+    t0 = time.monotonic()
+    deadline = t0 + timeout if timeout else None
+    topic = str(slot.get("topic", ""))[:60]
+    # One retry for a FAST failure (content-filter 400, exhausted 5xx retries, empty or
+    # malformed output). It runs inside the SAME deadline, so the page's worst-case
+    # latency is unchanged; a slow timeout is never retried. The eval burst saw a Haiku
+    # "Output blocked by content filtering policy" 400 drop a good slot outright.
+    for attempt in (1, 2):
+        remaining = deadline - time.monotonic() if deadline else None
+        if attempt == 2:
+            if (remaining is not None and remaining < _SLOT_RETRY_MIN_S) or \
+                    (remaining is None and time.monotonic() - t0 > _SLOT_RETRY_FAST_FAIL_S):
+                break
+            logging.info("[%s] retrying slot after fast failure (%.1fs): %s", tag,
+                         time.monotonic() - t0, topic)
+        try:
+            coro = anthropic_cached_json(system, usr, _array_schema("scripts", schema), model, max_tokens)
+            out = await (asyncio.wait_for(coro, timeout=remaining) if remaining is not None else coro)
+        except asyncio.TimeoutError:
+            logging.info("[%s] dropped (timeout after %.1fs): %s", tag, time.monotonic() - t0, topic)
+            return None
+        arr = out.get("scripts") if isinstance(out, dict) else None
+        if arr and isinstance(arr[0], dict) and (arr[0].get("body") or "").strip():
+            s = arr[0]
+            if slot.get("formatId") in prompts.FORMAT_IDS:
+                s["formatId"] = slot["formatId"]          # the plan owns the page's variety
+            return s
+    logging.info("[%s] dropped (no usable output after %.1fs): %s", tag, time.monotonic() - t0, topic)
+    return None
+
+
+async def _fast_feed_scripts(sreq: "ScriptRequest", cursor: int = 0) -> dict:
+    """First-paint script generation, PLANNED + PARALLEL: a fast HAIKU planner picks a
+    distinct topic per slot (formats assigned in code), then one lean HAIKU writer per
+    slot runs concurrently, each at the style's full spoken length. No best-of-N hooks
+    and no judge (the background OPUS upgrade adds those, on the SAME slots).
+    History: one 3-script HAIKU call capped at 80 words (blank-home audit) — which the
+    realism eval measured timing out into the mock template for 5/8 new accounts."""
+    if not ANTHROPIC_KEY:
+        return {"mode": "mock", "scripts": mock_scripts(sreq)}
     try:
-        stats = await _arms_for_prompt(sreq.creator_id)   # data-rich creators get real learning,
-        sys, usr = prompts.scripts_prompt(sreq.d(), pillar, sreq.style, sreq.count,
-                                          sreq.media_context, sreq.posts or None,
-                                          arm_stats=stats, memory=sreq.memory or None)
-        # Palo brain on the cold paint too: a single compiled-strategy read (cheap) so the
-        # first-ever picks reflect the creator's strategy — the full brain rides the
-        # background OPUS upgrade. Best-effort; never blocks the paint.
-        sys = await _inject_strategy(sys, sreq.creator_id)
-        # Output tokens are the latency long pole (HAIKU ~130 tok/s: three full bodies
-        # ≈ 1000+ tokens ≈ 8-10s — measured live blowing the budget). Tight first-paint
-        # bodies keep generation ~4-6s; the background OPUS pass restores full depth.
-        sys += ("\n\nFIRST-PAINT BUDGET: keep each script body under 80 words — a tight, "
-                "specific, filmable draft. A fuller quality pass follows separately.")
-        out = await asyncio.wait_for(
-            anthropic_json(sys, usr, _array_schema("scripts", prompts.FAST_SCRIPT_JSON_ELEMENT),
-                           HAIKU, 900, array_key="scripts"),
-            timeout=float(os.environ.get("FEED_FAST_TIMEOUT_S", "10")),
-        )
+        context = await _account_context(sreq.creator_id)          # cached after first read
+        # Plan concurrently with the other context reads (arms + compiled strategy) instead
+        # of after them: the planner is the long pole of the first paint.
+        plan_coro = (_plan_slots(sreq, cursor, context) if not sreq.slots
+                     else asyncio.sleep(0, result=sreq.slots))
+        stats, strategy, sreq.slots = await asyncio.gather(
+            _arms_for_prompt(sreq.creator_id), _inject_strategy("", sreq.creator_id), plan_coro)
+        # Palo brain on the cold paint too: the compiled strategy (one cheap read) so the
+        # first-ever picks reflect it; the full brain rides the background OPUS upgrade.
+        # The explicit range matters: told only "full length", HAIKU drafts ran to ~200 words
+        # (realism eval v5, median 163) while the OPUS pass held the 90-140 budget.
+        suffix = strategy + (
+            "\n\nFIRST PAINT: write this script at the style's full spoken length, 90 to 140 words "
+            "across hook, body and CTA, not shorter and not longer. Speak it "
+            "the way the creator would say it to a friend: contractions, varied sentence length, no "
+            "chains of clipped fragments.")
+        results = await asyncio.gather(*(
+            _write_slot(sreq, slot, model=HAIKU, schema=prompts.FAST_SCRIPT_JSON_ELEMENT,
+                        max_tokens=1100, sys_suffix=suffix, stats=stats, context=context,
+                        timeout=float(os.environ.get("FEED_FAST_TIMEOUT_S", "11")), tag="fast")
+            for slot in sreq.slots))
+        out = [s for s in results if s]
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(sreq)}
         for s in out:
@@ -12761,24 +13089,20 @@ async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
             # full pipeline means zero decode-path differences between paints.
             s.setdefault("altHooks", [])
             s.setdefault("shotPlan", [])
-            s.setdefault("targetSeconds", 30)
+            s.setdefault("targetSeconds", _est_seconds(s))
             s["predictedScore"] = _draft_score(sreq.creator_id, s)
-        # Pad a short array (HAIKU overshot the word cap → truncation dropped items, or
-        # it just emitted fewer) up to count with mock fills, so the picks row is never
-        # a lonely single card (script-quality audit — the schema has no minItems).
-        if len(out) < sreq.count:
-            out = out + mock_scripts(sreq)[len(out):sreq.count]
+        # NO mock padding: a failed slot is dropped, not replaced with template copy.
+        # Two real scripts beat two real plus one "Most {niche} advice is backwards" card
+        # (the exact card the owner flagged as unrealistic). All-failed → mock above.
         # Speakability guard: the fast paint is unjudged, so a description-style body
-        # (the "some scripts describe what to say" report) would otherwise ship. Repair
-        # any that trip the lint into verbatim spoken copy; anything still dirty is
-        # swapped for the matching mock card (instant, deterministic — no added latency).
-        mocks = mock_scripts(sreq)
-        out = await _ensure_speakable(
-            out, policy="repair_or_fallback",
-            fallback=lambda i: mocks[i % len(mocks)])
-        # "live_fast" (NOT "live"): a real-AI DRAFT (lean HAIKU, ≤80-word bodies, no
-        # judge pass). The client uses this to keep polling for the full Opus upgrade —
-        # marking it plain "live" stranded users on the draft (script-quality audit).
+        # would otherwise ship. Repair any that trip the lint into verbatim spoken copy;
+        # anything still dirty is dropped (policy repair_or_drop), unless that would
+        # empty the page, in which case the mock keeps Home from going blank.
+        out = await _ensure_speakable(out, policy="repair_or_drop")
+        if not out:
+            return {"mode": "mock", "scripts": mock_scripts(sreq)}
+        # "live_fast" (NOT "live"): a real-AI DRAFT (HAIKU, no judge pass). The client uses
+        # this to keep polling for the full Opus upgrade on the same slots.
         return {"mode": "live_fast", "scripts": out}
     except (HTTPException, asyncio.TimeoutError):
         return {"mode": "mock", "scripts": mock_scripts(sreq)}
@@ -12948,7 +13272,7 @@ async def _prefetch_feed_page(key: str, sreq: "ScriptRequest", niche: str, creat
         existing = _feed_cache.get(key)
         if existing and (time.time() - existing["ts"]) < _FEED_CACHE_TTL_S:
             return                            # already warm (a real fetch beat us here)
-        script_result = await _fast_feed_scripts(sreq)
+        script_result = await _fast_feed_scripts(sreq, cursor)
         items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor,
                                                        why_picked=why_picked)
         if key not in _feed_cache:            # don't overwrite a fresher/higher-quality entry
@@ -12997,7 +13321,7 @@ async def _cold_feed_page(key: str, sreq: "ScriptRequest", niche: str, creator_i
     """The shared cold-paint body behind the single-flight latch: generate (lean HAIKU,
     bounded), compose, cache. Every concurrent request for the same key awaits THIS one
     task instead of each burning its own generation budget."""
-    script_result = await _fast_feed_scripts(sreq)
+    script_result = await _fast_feed_scripts(sreq, cursor)
     items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor,
                                                    why_picked=why_picked)
     mode = script_result.get("mode", "mock")
@@ -13017,6 +13341,9 @@ async def _feed_impl(creator_id: str, brand: dict, styles: str, watched: str, cu
     # Persist the brand snapshot fire-and-forget (dedup'd on unchanged hash) so GET /v1/feed,
     # write-turn, and the T3 cron can hydrate it later without a client payload.
     _spawn(_persist_creator_profile(creator_id, brand))
+    # Per-account context: build (or rebuild on a profile change) the creator's identity
+    # doc in the background, so existing accounts get one too. Once per brand version.
+    _spawn(_ensure_account_context(creator_id, brand))
     posts = await _creator_posts(creator_id)
     posts_token = str(len(posts))
     key = _feed_cache_key(creator_id, brand, styles, watched, cursor, memory, posts_token)

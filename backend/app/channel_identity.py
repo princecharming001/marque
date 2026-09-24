@@ -27,6 +27,7 @@ real_creator() gates every read/write so demo/default traffic never lands in the
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 
@@ -301,10 +302,22 @@ Return ONLY the JSON object matching the schema you were given. No prose outside
 
 # --- context builders ----------------------------------------------------------
 
+_HASHED_FIELDS = ("niche", "topics", "what_you_do", "audience", "audiences", "known_for",
+                  "goal", "catchphrases", "non_negotiables", "voice", "primary_platform")
+
+
+def brand_hash(brand: dict) -> str:
+    """Fingerprint of the brand fields an identity doc is built from. Stored on the doc
+    (`_brand_hash`); a mismatch means the creator changed who they are → rebuild."""
+    b = brand if isinstance(brand, dict) else {}
+    sub = {k: b.get(k) for k in _HASHED_FIELDS if b.get(k) not in (None, "", [], {})}
+    return hashlib.sha1(json.dumps(sub, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
 def _creator_signals(brand: dict) -> str:
     b = brand if isinstance(brand, dict) else {}
-    keep = ("niche", "what_you_do", "audience", "known_for", "goal", "catchphrases",
-            "voice", "non_negotiables", "primary_platform", "stage",
+    keep = ("niche", "topics", "what_you_do", "audience", "audiences", "known_for", "goal",
+            "catchphrases", "voice", "non_negotiables", "primary_platform", "stage",
             "posting_frequency", "biggest_blocker", "camera_comfort", "why_now")
     signals = {k: b[k] for k in keep if b.get(k)}
     return json.dumps(signals, indent=2, default=str) if signals else "(none)"
@@ -614,11 +627,13 @@ async def save_identity(store, creator_id: str, identity: dict) -> bool:
             or not isinstance(identity, dict) or not identity:
         return False
     try:
+        # UPSERT (not PATCH): most real accounts have no `creators` row yet, and a PATCH
+        # that matches zero rows returns 204 without saving anything.
         r = await store._request(
-            "PATCH", "/creators",
-            params={"creator_id": f"eq.{creator_id}"},
-            json={"channel_identity": identity},
-            headers={"Prefer": "return=minimal"})
+            "POST", "/creators",
+            params={"on_conflict": "creator_id"},
+            json={"creator_id": creator_id, "channel_identity": identity},
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
         return bool(r and r.status_code < 300)
     except Exception as e:
         logging.warning("[channel_identity] save failed: %s", e)
@@ -631,10 +646,12 @@ async def ensure_identity(store, creator_id: str, brand: dict, **kw) -> dict:
     if not palo_flags.enabled(palo_flags.CHANNEL_IDENTITY):
         return _fallback_identity(brand, kw.get("posts") or [])
     try:
+        h = brand_hash(brand)
         existing = await load_identity(store, creator_id)
-        if existing:
-            return existing
+        if existing and existing.get("_brand_hash") in (None, h):
+            return existing                       # current (or pre-fingerprint legacy doc)
         doc = await build_identity(store, creator_id, brand, **kw)
+        doc["_brand_hash"] = h
         if store is not None and palo_flags.real_creator(creator_id):
             await save_identity(store, creator_id, doc)
         return doc

@@ -36,7 +36,30 @@ GOOD_CASES = [
     ("spoken_ordinal", "One: stop skipping breakfast. It's the difference between a 10am crash and a steady afternoon."),
     ("plain_body", "Everyone says budget first. That's exactly why you're broke. Here's the flip."),
     ("broll_cue_whitelisted", "The market moves in cycles. [broll: cut to a chart] But the fundamentals never change."),
+    # 2026-09-23 realism eval: real generated copy the old "you'?(ll| will)? say/show"
+    # branch dropped. Present tense addressed to the VIEWER is ordinary speech.
+    ("present_tense_show_up", "Here's what I see with desk workers: you show up, you're gassed from the day, "
+                              "so your brain picks the easier lifts first."),
+    ("present_tense_say", "The second you say everyone is your customer, you've described your customer as nobody."),
+    ("future_show_up", "You'll show up tired some days. Train anyway, just lighter."),
+    ("reported_speech_say", "You'll say you don't have time. You do, it's just hiding in your phone."),
+    ("say_no", "When you say no to the 4pm meeting, you get your whole evening back."),
 ]
+
+# Directives to the CREATOR must still be caught after the false-positive narrowing.
+DIRECTIVE_CASES = [
+    "Then you'll say something like: here's the data.",
+    "You want to show the chart here.",
+    "You'll explain why the first rep matters.",
+    "Here you'll want to mention the study.",
+    "You will talk about the three mistakes.",
+]
+
+
+def test_creator_directives_still_flagged():
+    for body in DIRECTIVE_CASES:
+        reason = prompts.flag_stage_direction(body)
+        assert reason and "stage direction" in reason, f"expected stage-direction flag for {body!r}, got {reason!r}"
 
 
 def test_bad_bodies_are_flagged():
