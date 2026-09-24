@@ -1895,15 +1895,37 @@ def mock_derive(b: dict, posts: list[dict]) -> dict:
             "bannedWords": [], "catchphrases": [], "pillars": mock_pillars(b)}
 
 
+def _niche_mid(niche: str) -> str:
+    """The niche as it reads mid-sentence: "Personal finance" -> "personal finance", but
+    acronyms and brand casing ("AI tools", "SaaS") stay as written."""
+    n = (niche or "").strip() or "your niche"
+    return n[0].lower() + n[1:] if n[0].isupper() and n[1:] == n[1:].lower() else n
+
+
 def mock_trends(niche: str) -> list[dict]:
-    n = niche or "your niche"
+    """Evergreen talking-head patterns for when no live trends are cached. Honest by
+    construction: no numbers, no "this week", nothing that needs footage or an invented
+    experiment (the old list pushed faceless explainers and "I did X for 30 days")."""
+    n = _niche_mid(niche)
     return [
-        {"title": f"Myth-busting is spiking in {n}", "why": "Contrarian hooks are over-indexing on shares this week.", "formatId": "myth-buster"},
-        {"title": "“I did X for 30 days” experiments", "why": f"Receipt-driven {n} experiments are pulling huge saves. Proof beats opinion right now.", "formatId": "before-after"},
-        {"title": "“Do this, not that” splits", "why": "Side-by-side comparisons are getting high rewatch.", "formatId": "do-this-not-that"},
-        {"title": "Faceless explainers", "why": "AI-visual voiceovers are cheap to test and trending.", "formatId": "faceless"},
-        {"title": f"Green-screen reacts to bad {n} advice", "why": "Reacting to viral misinformation is an easy authority play with built-in stakes.", "formatId": "green-screen"},
-        {"title": "Rapid-fire listicles under 25s", "why": "Sub-25-second fast-cut lists are looping. Completion rate is the whole game.", "formatId": "listicle"},
+        {"title": f"Myth-busting {n} advice keeps working",
+         "why": "Correcting a belief your audience already holds gives the video a question to answer. Name the belief, then the better move.",
+         "formatId": "myth-buster"},
+        {"title": f"Green-screen reactions to viral {n} claims",
+         "why": "Reacting to a claim people have already seen gives you built-in stakes. Say what it gets wrong, then your take.",
+         "formatId": "green-screen"},
+        {"title": "Do-this-not-that swaps get saved",
+         "why": "One clear swap with the reason behind it is quick to film and easy to send to a friend.",
+         "formatId": "do-this-not-that"},
+        {"title": f"POV stories about everyday {n} struggles",
+         "why": "A relatable moment told as 'you' makes viewers feel seen before the lesson lands.",
+         "formatId": "pov-story"},
+        {"title": "Ranked lists of what actually works",
+         "why": "Three to five concrete items, each with one reason, hold attention to the last one.",
+         "formatId": "listicle"},
+        {"title": f"Hot takes on popular {n} rules",
+         "why": "Disagreeing with a rule everyone repeats, and saying why, gets replies from both sides.",
+         "formatId": "myth-buster"},
     ]
 
 
@@ -7942,8 +7964,11 @@ async def scrape_niche_posts(niche: str, limit: int = 20) -> list[dict]:
         return []
 
     async def _ig() -> list[dict]:
+        # resultsType "reels": the default "posts" mode returned image posts with no video
+        # and no play count, so Instagram contributed ZERO reels to any niche (every cached
+        # niche was TikTok-only). Reels mode returns playable clips with videoPlayCount.
         items = await _run_apify_actor("apify~instagram-hashtag-scraper",
-                                       {"hashtags": tags, "resultsLimit": limit})
+                                       {"hashtags": tags, "resultsType": "reels", "resultsLimit": limit})
         out = [_normalize_apify_post(i, "instagram") for i in items if isinstance(i, dict)]
         for p in out:
             if p:
@@ -12339,11 +12364,24 @@ _niche_trends_cache: dict[str, dict] = {}     # key -> {"trends", "ts"}
 _trends_refreshing: set[str] = set()
 _NICHE_TRENDS_TTL_S = 24 * 3600
 
+# Trend headlines per talking-head format (formats a creator can't film by talking to
+# camera, like faceless or before/after, are left out of trends entirely).
 _TREND_TITLES = {
-    "listicle": "Rapid-fire {n} listicles", "myth-buster": "Myth-busting {n} takes",
-    "do-this-not-that": "“Do this, not that” {n} splits", "before-after": "{n} before/after receipts",
-    "pov-story": "POV {n} stories", "broll-hook": "B-roll hook {n} explainers", "faceless": "Faceless {n} explainers",
+    "listicle": "Ranked {n} lists are pulling views", "myth-buster": "Myth-busting {n} advice is spiking",
+    "do-this-not-that": "Do-this-not-that {n} swaps are spreading",
+    "pov-story": "POV stories about {n} moments are up",
+    "green-screen": "Green-screen reactions to {n} claims are up",
 }
+_TREND_FORMAT_NOUN = {"listicle": "ranked lists", "myth-buster": "myth-busters",
+                      "do-this-not-that": "do-this-not-that swaps", "pov-story": "POV stories",
+                      "green-screen": "green-screen reactions"}
+
+
+def _trend_headline(raw: str) -> str:
+    """A trend reads as a headline, not a lowercase video title: first word capitalized,
+    no trailing period, capped for the ticker."""
+    t = raw.strip().rstrip(".")[:80]
+    return t[:1].upper() + t[1:]
 
 
 def _trend_bucket() -> int:
@@ -12360,12 +12398,14 @@ def _heuristic_niche_trends(niche: str, posts: list[dict]) -> list[dict]:
         agg[fmt]["count"] += 1
         agg[fmt]["views"] += p.get("views", 0) or (p.get("likes", 0) * 10)
     total = max(1, len(posts))
-    ranked = sorted(agg.items(), key=lambda kv: kv[1]["views"], reverse=True)[:6]
+    ranked = sorted(((f, v) for f, v in agg.items() if f in _TREND_TITLES),
+                    key=lambda kv: kv[1]["views"], reverse=True)[:6]
     out = []
+    n = _niche_mid(niche)
     for fmt, s in ranked:
-        title = _TREND_TITLES.get(fmt, f"{fmt.replace('-', ' ').title()} {niche}").format(n=niche)
-        why = (f"{s['count']} of the top {total} {niche} reels right now are {fmt.replace('-', ' ')} — "
-               f"{_compact_count(s['views'])} combined views.")
+        title = _TREND_TITLES[fmt].format(n=n)
+        why = (f"{s['count']} of the top {total} {n} reels right now are "
+               f"{_TREND_FORMAT_NOUN[fmt]}, with {_compact_count(s['views'])} combined views.")
         out.append({"title": title, "why": why, "formatId": fmt})
     return out
 
@@ -12385,9 +12425,9 @@ async def _refresh_niche_trends(niche: str) -> None:
             try:
                 sysp, usr = prompts.niche_trends_prompt(niche, posts[:12])
                 named = extract_json(await anthropic(sysp, usr, HAIKU, 800), array=True) or []
-                clean = [_scrub_voice({"title": str(t.get("title", ""))[:80],
-                                       "why": str(t.get("why", ""))[:160],
-                                       "formatId": t.get("formatId") if t.get("formatId") in FORMAT_IDS else "pov-story"})
+                clean = [_scrub_voice({"title": _trend_headline(str(t.get("title", ""))),
+                                       "why": str(t.get("why", ""))[:200],
+                                       "formatId": t.get("formatId") if t.get("formatId") in prompts.TREND_FORMAT_IDS else "pov-story"})
                          for t in named if isinstance(t, dict) and t.get("title")][:6]
                 if clean:
                     trends = clean
@@ -13637,6 +13677,10 @@ async def get_strategy(creator_id: str = "default"):
         strat["is_template"] = (
             strat.get("strategy_footnotes") == "template"
             or strategy_compiler.is_template_markdown(strat.get("strategy_markdown")))
+        # Read-time normalize: docs compiled before the format fix carry **bold** and
+        # drifted headers that the app (incl. the live 1.0 build) renders as raw asterisks.
+        if strat.get("strategy_markdown"):
+            strat["strategy_markdown"] = strategy_compiler.normalize_markdown(strat["strategy_markdown"])
     return {"mode": "live", "strategy": strat, "updates": updates}
 
 
@@ -13758,16 +13802,38 @@ _MOCK_VIDEO_TRANSCRIPT = (
 )
 
 
+_DIRECT_MEDIA_RE = re.compile(r"\.(?:mp4|mov|m4v|webm)(?:[?#]|$)", re.I)
+
+
+def _is_direct_media_url(url: str) -> bool:
+    """A link that already IS the video (a re-hosted reel in our storage, an uploaded clip,
+    any .mp4/.mov): it needs no scrape. It used to go to Instagram's scraper and fail."""
+    u = (url or "").strip()
+    return bool(_DIRECT_MEDIA_RE.search(u)) or bool(
+        SUPABASE_URL and u.startswith(SUPABASE_URL.rstrip("/") + "/storage/"))
+
+
 async def _resolve_post_media(url: str) -> str | None:
-    """Resolve a pasted IG/TikTok/YT post URL to a downloadable media URL via Apify.
-    Net-new (scrape_posts is handle-based). Returns None keyless / on failure."""
-    if not APIFY_KEY or not url:
+    """Resolve a pasted IG/TikTok post URL (or a direct video link) to a downloadable media
+    URL. Returns None keyless / on failure.
+
+    TikTok items carry the video under videoMeta.downloadAddr or mediaUrls[0]; this only
+    looked at TOP-level keys, so pasted TikTok links never resolved and analyze-video fell
+    back to its canned structure. Items now go through _normalize_apify_post, the same
+    parser the reels pipeline uses for both platforms."""
+    if not url:
+        return None
+    if _is_direct_media_url(url):
+        return url.strip()
+    if not APIFY_KEY:
         return None
     platform = _platform_from_url(url)
     if platform == "tiktok":
         actor, payload = "clockworks~tiktok-scraper", {"postURLs": [url], "shouldDownloadVideos": True}
-    else:
+    elif platform == "instagram":
         actor, payload = "apify~instagram-scraper", {"directUrls": [url], "resultsType": "posts", "resultsLimit": 1}
+    else:
+        return None                               # YouTube and other hosts: no resolver
     try:
         items = await _run_apify_actor(actor, payload)
     except Exception as e:
@@ -13775,8 +13841,9 @@ async def _resolve_post_media(url: str) -> str | None:
         return None
     for it in items or []:
         if isinstance(it, dict):
-            media = (it.get("videoUrl") or it.get("video_url") or it.get("mediaUrl")
-                     or it.get("downloadAddr") or it.get("videoUrlNoWaterMark"))
+            norm = _normalize_apify_post(it, platform) or {}
+            media = (norm.get("video_url") or it.get("videoUrl") or it.get("mediaUrl")
+                     or it.get("videoUrlNoWaterMark"))
             if media:
                 return media
     return None
@@ -13786,7 +13853,7 @@ async def _transcribe_post_url(url: str) -> str | None:
     """Resolve a pasted post URL to its media and transcribe it for real. Returns the
     transcript text, or None if we can't (keyless, unsupported URL, scrape/transcribe
     failure) — the caller then labels the analysis 'live_structure', never 'live'."""
-    if not (APIFY_KEY and ASSEMBLY_KEY):
+    if not ASSEMBLY_KEY or not (APIFY_KEY or _is_direct_media_url(url)):
         return None
     try:
         media = await _resolve_post_media(url)

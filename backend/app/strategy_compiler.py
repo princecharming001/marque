@@ -118,6 +118,37 @@ async def digest(store, creator_id: str, evidence: str, brand: dict | None) -> s
     return f"Catalog digest unavailable; using baseline {(brand or {}).get('niche', 'niche')} craft priors."
 
 
+_CANON_SECTIONS = {"insights": "Insights", "plan": "Plan", "buckets": "Buckets",
+                   "brand bets": "Brand Bets", "not-doing": "Not-Doing", "not doing": "Not-Doing"}
+_HEADER_RE = re.compile(r"^\s*#{1,6}\s*(?:\d+[.)]\s*)?(?P<name>.+?)\s*:?\s*$")
+
+
+def normalize_markdown(md: str | None) -> str:
+    """Bring model drift back to the card contract the app parses (owner 2026-09-23:
+    "asterisks and thick paragraphs"): **bold**/__bold__ wrappers dropped (a bolded
+    "**REGIME:**" stopped matching, so the app showed the whole Plan as one blob), "* " and
+    "• " bullets -> "- ", any "#"-level or numbered header -> "## <Canonical Name>", runs
+    of blank lines collapsed, dashes scrubbed per the voice doctrine. Pure; idempotent."""
+    if not md:
+        return md or ""
+    import prompts as _p                      # lazy: app modules must not import main-level at load
+    text = md.replace("**", "").replace("__", "")
+    out: list[str] = []
+    for line in text.split("\n"):
+        s = line.strip()
+        if s.startswith("#"):
+            m = _HEADER_RE.match(s)
+            name = (m.group("name") if m else s.lstrip("#")).strip()
+            out.append("## " + _CANON_SECTIONS.get(name.lower(), name))
+            continue
+        if s.startswith(("* ", "• ")):
+            line = "- " + s[2:]
+        line = re.sub(r"\*([^*\n]+)\*", r"\1", line)
+        out.append(line)
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    return _p.scrub_em_dashes(text) + "\n"
+
+
 def _strip_reasoning(md: str) -> str:
     """The synthesis prompt does its cognitive pass in a <reasoning> block (Palo parity:
     stage → confound checks → lever). It is scratch work — discard it so it is never
@@ -135,7 +166,7 @@ async def synthesize(store, creator_id: str, digest_text: str, brand: dict | Non
     # template instead of the strategy the Opus call was billed for.
     out = await anthropic_cached(system, user, OPUS, max_tokens=4000)
     if out:
-        out = _strip_reasoning(out)
+        out = normalize_markdown(_strip_reasoning(out))
         # Bill the Opus call whenever it ran — even if the sections fail validation and we
         # fall back to the template. Billing only on the valid path let the priciest model
         # go unmetered on malformed output (the exact thing ai_usage exists to catch).

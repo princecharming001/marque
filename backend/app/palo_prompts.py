@@ -576,6 +576,13 @@ What to stop or avoid — including the correlates you rejected in step 2, state
 
 Ground every claim in the digest; if a signal you need is genuinely absent, say so rather than inventing it. Anti-hardening: "lean into", not "always/never" (Not-Doing is the one hard-exclusion section). Growth is the objective; do not build the plan on distribution tactics (posting times, reply-bait); name the content lever. Collaborative voice.
 
+FORMAT (the app renders this doc as cards, so the shape matters as much as the words):
+- Plain text only: no bold, no italics, no asterisks, no extra headers, no numbering in headers.
+- Every section except Plan is ONLY bullets starting with "- ". No paragraph before or after the bullets, and no closing "bottom line".
+- Each bullet opens with ONE short sentence that makes the point (max 12 words; it becomes the card's headline), then at most two short sentences of evidence.
+- Plan is exactly three lines: "REGIME: <word>. <one-sentence consequence>", "LEVER: <one sentence>", "Priority: <one or two sentences>".
+- Talk to the creator in the second person ("your openers hold attention"). Never talk about yourself or the analysis ("I can't read this", "real talk first"). If the data is thin or broken, say so in ONE insight bullet.
+
 """ + _VOICE_RULES
 
 

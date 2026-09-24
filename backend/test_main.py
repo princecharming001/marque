@@ -7678,10 +7678,34 @@ def test_title_doctrine_rides_every_title_writer():
     assert "8 words max" in t and "Never Title Case" not in t  # phrasing lives in VOICE_DOCTRINE
     for sysp in (prompts.scripts_prompt(brand, pillar, "talking_head", 1)[0],
                  prompts.mimic_prompt(reel, brand)[0],
-                 prompts.next_idea_prompt("fitness", None)[0],
-                 prompts.niche_trends_prompt("fitness", [])[0]):
+                 prompts.next_idea_prompt("fitness", None)[0]):
         assert t in sysp
     assert "plain spoken sentence case" in prompts.SCRIPT_SCHEMA
+
+
+def test_trend_prompt_writes_trends_not_titles():
+    """Owner 2026-09-23: "the trending should be trends, not more titles". The title doctrine
+    made trends read like lowercase video titles; trends are trend-report headlines and
+    must be filmable by a talking head."""
+    sysp = prompts.niche_trends_prompt("fitness", [])[0]
+    assert prompts.TITLE_DOCTRINE not in sysp
+    assert "must NOT" in sysp and "video title" in sysp
+    assert "Talking-head only" in sysp
+    assert set(prompts.TREND_FORMAT_IDS) <= set(prompts.FORMAT_IDS)
+    assert not {"faceless", "broll-hook", "before-after"} & set(prompts.TREND_FORMAT_IDS)
+
+
+def test_mock_and_heuristic_trends_are_talking_head_and_dash_free():
+    for t in main.mock_trends("Personal finance"):
+        assert t["formatId"] in prompts.TREND_FORMAT_IDS
+        assert "—" not in t["title"] + t["why"] and "30 days" not in t["title"]
+        assert t["title"][0].isupper()
+    assert any("personal finance" in t["title"] for t in main.mock_trends("Personal finance"))
+    assert any("AI tools" in t["title"] for t in main.mock_trends("AI tools"))      # casing kept
+    posts = [{"caption": "5 mistakes killing your gains", "views": 90000},
+             {"caption": "the truth about cardio", "views": 10000}]
+    for t in main._heuristic_niche_trends("fitness", posts):
+        assert t["formatId"] in prompts.TREND_FORMAT_IDS and "—" not in t["why"]
 
 
 def test_prompt_exemplars_carry_no_em_dash():

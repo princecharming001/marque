@@ -2881,20 +2881,39 @@ def next_idea_prompt(niche: str, insight: dict | None, pillar: str = "",
     return system, user
 
 
+# Trend formats a talking-head creator can actually film (no faceless/b-roll-hook/before-after).
+TREND_FORMAT_IDS = ["myth-buster", "listicle", "pov-story", "green-screen", "do-this-not-that"]
+
+
 def niche_trends_prompt(niche: str, posts: list[dict]) -> tuple[str, str]:
     """Name 5-6 live trends for a niche from the REAL scraped top posts. Same number
     discipline as the rest of the system: the 'why' may reference what's observed, but
-    must not invent statistics — describe the pattern, not a fabricated metric."""
+    must not invent statistics — describe the pattern, not a fabricated metric.
+
+    2026-09-23 (owner: "the trending should be trends, not more titles"): TITLE_DOCTRINE
+    used to ride along here, so trends came out as lowercase video titles ("gym humor and
+    reality checks"), and nothing kept them filmable ("music layered over workout clips")."""
     system = (
         f"{VOICE_DOCTRINE}\n\n"
-        f"{TITLE_DOCTRINE}\n\n"
-        f"You name the 5-6 short-form content trends spiking in the '{niche}' niche RIGHT NOW, from a "
-        "sample of its current top-performing posts.\n"
+        f"You spot the 5-6 short-form trends a TALKING-HEAD creator in the '{niche}' niche can ride "
+        "RIGHT NOW, from a sample of the niche's current top posts. The creator films only themselves "
+        "talking to camera; an AI editor adds captions and b-roll.\n"
         "HARD RULES:\n"
-        "- Base every trend on patterns actually visible in the posts below (format, hook shape, theme).\n"
-        "- The 'why' describes the observed pattern; do NOT invent view counts or percentages.\n"
-        "- Each formatId must be one of: " + ", ".join(sorted(FORMAT_IDS)) + ".\n"
-        'Return ONLY a JSON array: [{"title": "<max 8 words>", "why": "<one sentence>", "formatId": "<id>"}]'
+        "- A trend is a pattern across several posts: a take people are pushing, a myth being busted, a "
+        "question everyone is answering, a hook shape, a story shape. Base each on patterns visible in "
+        "the posts below.\n"
+        "- Talking-head only. Skip patterns that depend on music, dancing, skits, workout or cooking "
+        "footage, or editing tricks. When the sample's big pattern is visual (e.g. countdown workout "
+        "clips), name the talking-head angle inside it instead (the claim or topic people respond to).\n"
+        "- title: a trend-report headline, MAX 7 WORDS (count them): the pattern plus its momentum. "
+        "e.g. 'Myth-busting six-day splits is spiking', 'Money-mistake confessions are everywhere', "
+        "'Three-option comparisons are pulling saves', 'Green-screen takes on viral protein claims'. "
+        "Capitalize the first word. It must NOT read like a video title: no 'you', no 'I', no "
+        "questions, no clickbait.\n"
+        "- why: ONE sentence, max 25 words: what the top posts are doing, then how this creator can "
+        "ride it on camera. Describe the observed pattern; do NOT invent view counts or percentages.\n"
+        "- formatId: the talking-head format that fits, one of: " + ", ".join(TREND_FORMAT_IDS) + ".\n"
+        'Return ONLY a JSON array: [{"title": "...", "why": "...", "formatId": "..."}]'
     )
     lines = []
     for p in posts[:12]:

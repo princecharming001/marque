@@ -135,6 +135,14 @@ CREATE TABLE IF NOT EXISTS device_tokens (
     UNIQUE (token, environment)
 );
 ALTER TABLE device_tokens ENABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS device_tokens_creator_idx ON device_tokens (creator_id);
+
+-- 2026-09-23 schema-drift fix (applied to prod): post_registry predates the A-12 columns
+-- in its CREATE TABLE above, so an existing table never got them and any registration
+-- writing them 400'd. ALTERs make the migration safe to re-run on an old table.
+ALTER TABLE post_registry ADD COLUMN IF NOT EXISTS clip_id    TEXT;
+ALTER TABLE post_registry ADD COLUMN IF NOT EXISTS permalink  TEXT;
+ALTER TABLE post_registry ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
 
 -- ===========================================================================
 -- PALO PORT (branch: palo-port) — the ported AI brains. All idempotent; RLS on

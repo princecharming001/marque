@@ -132,3 +132,53 @@ def test_niche_refresh_drops_video_less_posts_before_ranking(monkeypatch):
     reels = main._niche_reels_cache[key]["reels"]
     assert len(reels) == 3 and all(r["video_url"] for r in reels)
     main._niche_reels_cache.pop(key, None)
+
+
+def test_instagram_niche_scrape_asks_for_reels(monkeypatch):
+    """The hashtag scraper's default "posts" mode returned image posts with no video and
+    no play count, so Instagram never contributed a single reel."""
+    seen = {}
+
+    async def fake_actor(actor, payload, timeout_s=110):
+        seen[actor] = payload
+        return []
+
+    monkeypatch.setattr(main, "APIFY_KEY", "k")
+    monkeypatch.setattr(main, "_run_apify_actor", fake_actor)
+    asyncio.run(main.scrape_niche_posts("fitness"))
+    assert seen["apify~instagram-hashtag-scraper"]["resultsType"] == "reels"
+
+
+# --- analyze-video link resolution (2026-09-23) --------------------------------------
+
+@pytest.mark.parametrize("url,direct", [
+    ("https://cdn.example.com/clip.mp4", True),
+    ("https://cdn.example.com/clip.MOV?token=1", True),
+    ("https://www.tiktok.com/@a/video/123", False),
+    ("https://www.instagram.com/reel/abc/", False),
+])
+def test_direct_media_links_skip_the_scraper(monkeypatch, url, direct):
+    monkeypatch.setattr(main, "SUPABASE_URL", "https://sb.example.co")
+    assert main._is_direct_media_url(url) is direct
+    assert main._is_direct_media_url("https://sb.example.co/storage/v1/object/public/marque-clips/reels/x") is True
+
+
+def test_tiktok_links_resolve_through_nested_media_fields(monkeypatch):
+    """TikTok items carry the video under videoMeta.downloadAddr / mediaUrls; the old
+    resolver only read top-level keys, so every pasted TikTok link fell back to the
+    canned structure."""
+    async def fake_actor(actor, payload, timeout_s=110):
+        assert actor == "clockworks~tiktok-scraper" and payload["postURLs"]
+        return [{"text": "cap", "videoMeta": {"duration": 30},
+                 "mediaUrls": ["https://api.apify.com/v2/key-value-stores/k/records/v.mp4"]}]
+
+    monkeypatch.setattr(main, "APIFY_KEY", "k")
+    monkeypatch.setattr(main, "_run_apify_actor", fake_actor)
+    got = asyncio.run(main._resolve_post_media("https://www.tiktok.com/@a/video/123"))
+    assert got == "https://api.apify.com/v2/key-value-stores/k/records/v.mp4"
+
+
+def test_direct_link_resolves_without_apify(monkeypatch):
+    monkeypatch.setattr(main, "APIFY_KEY", "")
+    assert asyncio.run(main._resolve_post_media("https://cdn.example.com/c.mp4")) == "https://cdn.example.com/c.mp4"
+    assert asyncio.run(main._resolve_post_media("https://youtube.com/watch?v=1")) is None
