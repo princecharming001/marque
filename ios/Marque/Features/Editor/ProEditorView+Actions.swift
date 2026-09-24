@@ -83,7 +83,7 @@ extension ProEditorView {
             return WordSpan(text: text, startFrame: sf, endFrame: max(sf + 1, msToFrame(em)))
         }.sorted { $0.startFrame < $1.startFrame }
 
-        captionsOn = !sess.draft.captions.isEmpty   // #1: seed enabled-state from what loaded
+        syncDraftDerivedState()   // #1 + ED-7: captions toggle/slider drafts from what loaded
         // A7: the active theme (if EDIT_THEMES produced one) — optional, absent-safe
         // (older jobs / EDIT_THEMES off never carry it).
         activeThemeId = result["theme_id"] as? String ?? ""
@@ -263,7 +263,11 @@ extension ProEditorView {
         guard let seg = session?.draft.segments[safe: segIdx] else { return }
         mutate([.segmentVolume(seg.srcIn, seg.srcOut, v)])
     }
-    func pickMusic(_ track: MusicCatalog.Track) { mutate([.setMusic(url: track.url, volume: 0.15, duck: true)]); showMusicSheet = false }
+    func pickMusic(_ track: MusicCatalog.Track) {
+        mutate([.setMusic(url: track.url, volume: 0.15, duck: true)])
+        syncDraftDerivedState()      // the open Sound panel's slider follows the new track's volume
+        showMusicSheet = false
+    }
     func removeMusic() {
         mutate([.removeMusic()])
         // The strip vanishes with the track — a stale music selection would leave the

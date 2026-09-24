@@ -294,6 +294,16 @@ func runAll() {
                                      to: sDoc)?.overlays.last
     check(added?.color == nil && added?.bg == "none" && added?.font == "inter",
           "add_text_sticker drops invalid look values like the server")
+
+    section("undo/redo swaps captions back (ED-7 derivation input)")
+    let cs = EditorSession(document: EditorDocument(edl: edl))
+    check(!cs.draft.captions.isEmpty, "base has captions")
+    cs.perform([.captionsEnabled(false)])
+    check(cs.draft.captions.isEmpty, "captions off empties the draft")
+    _ = cs.undo()
+    check(!cs.draft.captions.isEmpty, "undo restores them — captionsOn must re-derive to ON")
+    _ = cs.redo()
+    check(cs.draft.captions.isEmpty, "redo empties them — captionsOn must re-derive to OFF")
 }
 
 MainActor.assumeIsolated { runAll() }

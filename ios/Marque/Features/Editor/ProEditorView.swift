@@ -1211,6 +1211,7 @@ struct ProEditorView: View {
         // clear EVERYTHING selection-shaped so the toolbar never shows a dead vocabulary.
         select(nil)
         refreshPlayer()
+        syncDraftDerivedState()
         showToast("Undo: \(opDisplayName(t))")
     }
 
@@ -1218,7 +1219,20 @@ struct ProEditorView: View {
         guard let t = session?.redo() else { return }
         select(nil)
         refreshPlayer()
+        syncDraftDerivedState()
         showToast("Redo: \(opDisplayName(t))")
+    }
+
+    /// ED-7: view state that MIRRORS the draft — the captions toggle and the slider drafts —
+    /// must follow it whenever the draft is swapped wholesale (undo, redo, a restored draft).
+    /// Undoing "Captions off" used to bring the captions back on the canvas while the lane
+    /// and the Captions panel still said off.
+    func syncDraftDerivedState() {
+        guard let d = session?.draft else { return }
+        captionsOn = !d.captions.isEmpty     // the backend's model: captions on ⇔ non-empty
+        filterIntensityDraft = d.look.intensity
+        musicVolDraft = d.music?.volume ?? 0.15
+        capSizeDraft = nil
     }
 
     /// A capsule toast over the canvas (CapCut's "Undo: Split" pattern), auto-dismissed.
@@ -2626,10 +2640,12 @@ private struct AdjustKnob: View {
     let commit: (Double) -> Void
     @State private var value: Double = 0
     @State private var seeded = false
+    @State private var dragging = false
 
     var body: some View {
         VStack(spacing: 2) {
             Slider(value: $value, in: range, onEditingChanged: { editing in
+                dragging = editing
                 if !editing { commit(value) }
             })
             .frame(width: 104).tint(Palette.textPrimary)
@@ -2637,6 +2653,9 @@ private struct AdjustKnob: View {
                 .font(AppFont.micro).foregroundStyle(Palette.textSecondary).lineLimit(1)
         }
         .onAppear { if !seeded { value = initial; seeded = true } }
+        // ED-7: follow the draft when it changes underneath (undo/redo/restore) — never
+        // mid-drag, where the knob owns the value until release.
+        .onChange(of: initial) { _, v in if !dragging { value = v } }
         .accessibilityIdentifier("editorPro.adjust.\(label.lowercased())")
     }
 }
