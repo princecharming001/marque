@@ -685,3 +685,40 @@ def test_self_review_still_runs_for_short_outputs(monkeypatch):
     assert calls == [True, True] and "self_review" not in long_job
     for jid in ("lv24-short", "lv24-uncapped"):
         main._clip_jobs.pop(jid, None)
+
+
+# ---------------------------------------------------------------------------
+# LV-25 — every clip_edit_sessions upsert refreshes updated_at
+# ---------------------------------------------------------------------------
+
+def test_upsert_clip_job_sends_a_fresh_updated_at(monkeypatch):
+    import datetime as _dt
+    import supabase_persistence as sp
+
+    captured: list[dict] = []
+
+    class _Resp:
+        status_code = 201
+        text = ""
+
+    class _Http:
+        async def request(self, method, url, params=None, json=None, headers=None):
+            captured.append({"method": method, "url": url, "params": params,
+                             "json": json, "headers": headers})
+            return _Resp()
+
+    store = sp.SupabaseClient("https://proj.supabase.co", "service-key")
+    monkeypatch.setattr(store, "_pooled", lambda: _Http())
+    before = _dt.datetime.now(_dt.timezone.utc)
+    assert _aio.run(store.upsert_clip_job("job-lv25", {"status": "ready", "clips": []})) is True
+    after = _dt.datetime.now(_dt.timezone.utc)
+
+    req = captured[0]
+    assert req["method"] == "POST" and req["url"].endswith("/rest/v1/clip_edit_sessions")
+    assert req["params"] == {"on_conflict": "job_id"}
+    assert "merge-duplicates" in req["headers"]["Prefer"]
+    row = req["json"]
+    assert row["job_id"] == "job-lv25" and row["state"]["status"] == "ready"
+    stamp = _dt.datetime.fromisoformat(row["updated_at"])
+    assert stamp.tzinfo is not None and stamp.utcoffset() == _dt.timedelta(0)   # UTC
+    assert before <= stamp <= after                      # "now", not the insert time
