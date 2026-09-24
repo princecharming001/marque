@@ -57,11 +57,13 @@ class FakeStore:
 
     def __init__(self, identity_row=None):
         self.requests = []
+        self.headers = []
         self.identity_row = identity_row
         self.usage = []
 
     async def _request(self, method, path, *, params=None, json=None, headers=None):
         self.requests.append((method, path, params, json))
+        self.headers.append(headers)
         if method == "GET" and path == "/creators":
             return _Resp(200, [{"channel_identity": self.identity_row}])
         return _Resp(204, [])
@@ -232,11 +234,52 @@ def test_ensure_builds_and_saves_when_flagged(monkeypatch):
 
     store = FakeStore()
     doc = _run(ci.ensure_identity(store, "c1", BRAND, posts=POSTS))
-    patches = [r for r in store.requests if r[0] == "PATCH" and r[1] == "/creators"]
-    assert len(patches) == 1
-    assert patches[0][2] == {"creator_id": "eq.c1"}
-    assert patches[0][3] == {"channel_identity": doc}         # exact column write
+    # UPSERT, not PATCH: most real accounts have no `creators` row, and a PATCH that
+    # matches zero rows returns 204 while saving nothing (every doc was being lost).
+    writes = [(i, r) for i, r in enumerate(store.requests) if r[0] == "POST" and r[1] == "/creators"]
+    assert len(writes) == 1
+    i, w = writes[0]
+    assert w[2] == {"on_conflict": "creator_id"}
+    assert w[3] == {"creator_id": "c1", "channel_identity": doc}   # exact column write
+    assert "resolution=merge-duplicates" in store.headers[i]["Prefer"]
+    assert doc["_brand_hash"] == ci.brand_hash(BRAND)               # fingerprinted
+    assert not [r for r in store.requests if r[0] == "PATCH"]
     assert store.requests[0][0] == "GET"                      # load-first
+
+
+def test_ensure_rebuilds_when_the_brand_changed(monkeypatch):
+    _flags_on(monkeypatch)
+    built = []
+
+    async def fake_json(system, user, schema, model, max_tokens=0, temperature=None):
+        built.append(1)
+        return dict(_LLM_DOC)
+    monkeypatch.setattr(ci, "anthropic_cached_json", fake_json)
+
+    stale = {**_LLM_DOC, "_brand_hash": "not-this-brand"}
+    store = FakeStore(identity_row=stale)
+    doc = _run(ci.ensure_identity(store, "c1", BRAND, posts=POSTS))
+    assert built and doc["_brand_hash"] == ci.brand_hash(BRAND)
+    assert [r for r in store.requests if r[0] == "POST"]
+
+
+def test_ensure_keeps_a_current_or_legacy_doc(monkeypatch):
+    _flags_on(monkeypatch)
+
+    async def boom(*a, **k):
+        raise AssertionError("must not rebuild")
+    monkeypatch.setattr(ci, "anthropic_cached_json", boom)
+    for row in ({**_LLM_DOC, "_brand_hash": ci.brand_hash(BRAND)}, dict(_LLM_DOC)):
+        store = FakeStore(identity_row=row)
+        assert _run(ci.ensure_identity(store, "c1", BRAND)) == row
+        assert [r[0] for r in store.requests] == ["GET"]
+
+
+def test_brand_hash_tracks_identity_fields_only():
+    h = ci.brand_hash(BRAND)
+    assert ci.brand_hash({**BRAND, "niche": "something else"}) != h
+    assert ci.brand_hash({**BRAND, "unrelated_ui_flag": True}) == h
+    assert ci.brand_hash({**BRAND, "topics": ["a", "b"]}) != h
 
 
 def test_ensure_returns_existing_without_rebuild(monkeypatch):

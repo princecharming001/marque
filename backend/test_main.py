@@ -282,6 +282,7 @@ def test_feed_feedback_like_updates_arms_without_polluting_honest_stats():
     cid = "c_fb_like"
     main._arm_stats.pop(cid, None)
     r = client.post("/v1/feed/feedback", json={
+        "pillars": ["Teach"],
         "creator_id": cid, "verdict": "like", "niche": "fitness",
         "script": {"title": "t1", "hook": "h1", "pillar": "Teach", "style": "talking_head",
                    "formatId": "myth-buster", "hookSignal": "contrarian"}})
@@ -482,11 +483,12 @@ def test_tiktok_scrapes_request_video_downloads(monkeypatch):
 
 
 def test_clamp_title_word_boundary():
-    """Pick-card titles must be short enough to render un-truncated: ≤42 chars,
+    """Pick-card titles must be short enough to render un-truncated: ≤50 chars (the card
+    allows three lines; 42 cut real titles mid-phrase),
     cut at a word boundary, no trailing punctuation fragments."""
     long = "upper body home workout featuring push ups (12 reps), pike push ups (8 reps)"
     out = main._clamp_title(long)
-    assert len(out) <= 42
+    assert len(out) <= 50
     assert not out.endswith((" ", ",", "(", "-"))
     assert out == "upper body home workout featuring push ups"
     assert main._clamp_title("Short title") == "Short title"
@@ -503,7 +505,7 @@ def test_feed_scripts_titles_clamped(monkeypatch):
     result = {"mode": "live", "scripts": [{"title": long_title, "hook": {"text": "h"}}]}
     items, _ = asyncio.run(main._compose_feed_items(result, "fitness", "c1", "", 0))
     script_items = [i for i in items if i["type"] == "script"]
-    assert script_items and all(len(i["script"]["title"]) <= 42 for i in script_items)
+    assert script_items and all(len(i["script"]["title"]) <= 50 for i in script_items)
 
 
 class _FakeReelsPersistence:
@@ -2332,6 +2334,7 @@ def test_feedback_batches_arm_writes(monkeypatch):
     main._arms_loaded.add(cid)
     r = client.post("/v1/feed/feedback", json={
         "creator_id": cid, "verdict": "like",
+        "pillars": ["Training"],
         "script": {"pillar": "Training", "style": "talking_head",
                    "format_id": "listicle", "hook_signal": "specificity"}})
     assert r.json()["arms_updated"] == 4
@@ -3118,24 +3121,47 @@ def test_spawn_retains_then_discards_task():
 # mock inside a proxy timeout instead of hanging for minutes.
 # ---------------------------------------------------------------------------
 
-def test_emulate_scrape_bounded_degrades_to_mock(monkeypatch):
+def test_emulate_scrape_past_budget_finishes_in_background(monkeypatch):
+    # 2026-09-23: a real scrape + transcription runs 30-60s, so cancelling at the 25s
+    # budget meant the direct call never produced a profile. Now it answers "queued"
+    # inside the budget and the SAME scrape finishes and caches in the background.
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
     monkeypatch.setattr(main, "_supabase_client", None)
+    scrapes = []
 
     async def slow_scrape(handle, platform):
-        await asyncio.sleep(5)                    # longer than our tiny test budget
-        return [{"caption": "late"}]
+        scrapes.append(handle)
+        await asyncio.sleep(1.2)                  # past the 1s floor on the budget
+        return [{"caption": "late but real"}]
+
+    async def passthrough(posts):
+        return posts
+
+    async def profile(*a, **k):
+        return '{"voice": "dry, fast", "hooks": ["cold open"]}'
     monkeypatch.setattr(main, "scrape_posts", slow_scrape)
+    monkeypatch.setattr(main, "_transcribe_top_posts", passthrough)
+    monkeypatch.setattr(main, "anthropic", profile)
     main._emulation_cache.pop("slowcreator", None)
     req = main.EmulateAnalyzeRequest(handle="slowcreator", platform="instagram")
-    r = asyncio.run(main.emulate_analyze(req, _budget_s=0.05))
-    assert r["mode"] == "mock"                    # timed out → mock
-    assert "slowcreator" not in main._emulation_cache   # not cached → retryable
+
+    async def run():
+        first = await main.emulate_analyze(req, _budget_s=0.05)
+        again = await main.emulate_analyze(req, _budget_s=0.05)    # in flight: no 2nd scrape
+        await main._emulation_inflight["slowcreator"]
+        return first, again
+    first, again = asyncio.run(run())
+    assert first["mode"] == "queued" and again["mode"] == "queued"
+    assert scrapes == ["slowcreator"]
+    assert main._emulation_cache["slowcreator"]["voice"] == "dry, fast"   # landed + cached
+    assert "slowcreator" not in main._emulation_inflight
+    main._emulation_cache.pop("slowcreator", None)
 
 
 def test_brand_scan_scrape_bounded(monkeypatch):
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
-    monkeypatch.setattr(main, "_SCRAPE_BUDGET_S", 0.05)
+    monkeypatch.setattr(main, "APIFY_KEY", "apify-key")
+    monkeypatch.setattr(main, "_BRAND_SCAN_BUDGET_S", 0.05)
 
     async def slow_scrape(handle, platform):
         await asyncio.sleep(5)
@@ -3143,6 +3169,12 @@ def test_brand_scan_scrape_bounded(monkeypatch):
     monkeypatch.setattr(main, "scrape_posts", slow_scrape)
     r = client.post("/v1/brand-scan/handle", json={"handle": "slowbrand", "platform": "instagram"}).json()
     assert r["mode"] == "mock" and r["scanned_posts"] == 0   # degraded, didn't hang
+    # ...and without real posts there are NO pillars (owner rule: never template pillars)
+    assert r["scan"]["pillars"] == []
+
+
+def test_brand_scan_budget_covers_a_real_scrape():
+    assert main._BRAND_SCAN_BUDGET_S >= 45       # Apify p90 is ~40s; the app waits 90s
 
 
 # ---------------------------------------------------------------------------
@@ -3409,10 +3441,12 @@ def test_analyze_video_no_apify_is_live_structure(monkeypatch):
     monkeypatch.setattr(main, "APIFY_KEY", "")           # can't fetch the real video
 
     async def fake(*a, **k):
-        return _YOUR_VERSION_JSON
+        raise AssertionError("must not analyze a canned transcript as if it were the video")
     monkeypatch.setattr(main, "anthropic", fake)
     r = client.post("/v1/analyze-video", json={"url": "https://tiktok.com/@x/video/1"}).json()
-    assert r["mode"] == "live_structure"                 # honest: not this exact video
+    # 2026-09-23: honest "couldn't open it", no OPUS over a canned transcript, no script
+    assert r["mode"] == "unavailable" and r["your_version"] is None
+    assert "couldn't open" in r["hook_analysis"] and r["structure_beats"] == []
 
 
 def test_analyze_video_real_transcript_is_live(monkeypatch):
@@ -3456,7 +3490,7 @@ def test_analyze_video_fetch_failure_falls_back_to_structure(monkeypatch):
         return _YOUR_VERSION_JSON
     monkeypatch.setattr(main, "anthropic", fake)
     r = client.post("/v1/analyze-video", json={"url": "https://instagram.com/reel/abc"}).json()
-    assert r["mode"] == "live_structure"                 # fetch failed → NOT fake 'live'
+    assert r["mode"] == "unavailable" and r["your_version"] is None   # fetch failed: say so
 
 
 # ---------------------------------------------------------------------------
@@ -6152,15 +6186,23 @@ def test_fast_feed_scripts_uses_haiku_lean_schema_and_synthesizes_extras(monkeyp
     # The 12-field SONNET call measured ~23-30s in prod (always past the budget -> mock
     # forever). First paint must be HAIKU + the lean schema, with the dropped extras
     # synthesized so the wire shape is unchanged.
+    # 2026-09-23: the draft is now PLANNED + one call per slot through palo_llm's cached
+    # writer (the realism eval measured the single 3-script call timing out to the mock).
+    from app import palo_llm
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "x")
     cap = {}
 
-    async def fake_json(sys, usr, schema, model, max_tokens, array_key=None):
+    async def fake_cached(system, user, schema, model, max_tokens=4000, temperature=None):
         cap["model"] = model
         cap["schema"] = schema
-        return [{"title": "T", "summary": "S", "hook": "H", "hookSignal": "curiosity",
-                 "formatId": "pov-story", "body": "B", "cta": "C", "style": "talking_head"}]
-    monkeypatch.setattr(main, "anthropic_json", fake_json)
+        return {"scripts": [{"title": "T", "summary": "S", "hook": "H", "hookSignal": "curiosity",
+                             "formatId": "pov-story", "body": "B", "cta": "C",
+                             "style": "talking_head"}]}
+    monkeypatch.setattr(palo_llm, "anthropic_cached_json", fake_cached)
+
+    async def no_plan(*a, **k):
+        raise main.HTTPException(502, "planner down")  # pillar-slot fallback
+    monkeypatch.setattr(main, "anthropic_json", no_plan)
     sreq = main.ScriptRequest(creator_id="c_lean", pillar="Hot takes",
                               style="talking_head", count=1)
     out = asyncio.run(main._fast_feed_scripts(sreq))
@@ -6180,7 +6222,7 @@ def test_feed_cold_paint_is_single_flight(monkeypatch):
     main._feed_cache.clear(); main._feed_refreshing.clear(); main._feed_inflight.clear()
     calls = {"n": 0}
 
-    async def slow_fast(sreq):
+    async def slow_fast(sreq, cursor=0):
         calls["n"] += 1
         await asyncio.sleep(0.05)
         return {"mode": "mock", "scripts": main.mock_scripts(sreq)}
@@ -6505,29 +6547,50 @@ def test_restore_reattaches_in_flight_render(monkeypatch):
     main._clip_jobs.pop("jr", None)
 
 
+def _fake_slot_writer(monkeypatch, fail_on=None):
+    from app import palo_llm
+    n = {"i": 0}
+
+    async def fake_cached(system, user, schema, model, max_tokens=4000, temperature=None):
+        n["i"] += 1
+        if fail_on and fail_on in user:
+            return None
+        return {"scripts": [{"title": f"T{n['i']}", "summary": "S", "hook": "H",
+                             "hookSignal": "curiosity", "formatId": "pov-story", "body": "B",
+                             "cta": "C", "style": "talking_head"}]}
+    monkeypatch.setattr(palo_llm, "anthropic_cached_json", fake_cached)
+
+    async def no_plan(*a, **k):
+        # The planner must never reach the network in a unit test: a real call with the
+        # fake key leaves a pooled connection on a closed loop (later lifespan exits fail).
+        raise main.HTTPException(502, "planner stubbed")
+    monkeypatch.setattr(main, "anthropic_json", no_plan)
+
+
 def test_fast_paint_mode_is_live_fast(monkeypatch):
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "x")
-
-    async def fake_json(sys, usr, schema, model, max_tokens, array_key=None):
-        return [{"title": "T", "summary": "S", "hook": "H", "hookSignal": "curiosity",
-                 "formatId": "pov-story", "body": "B", "cta": "C", "style": "talking_head"}
-                for _ in range(3)]
-    monkeypatch.setattr(main, "anthropic_json", fake_json)
+    _fake_slot_writer(monkeypatch)
     sreq = main.ScriptRequest(creator_id="c_lf", pillar="Hot takes", style="talking_head", count=3)
     out = asyncio.run(main._fast_feed_scripts(sreq))
     assert out["mode"] == "live_fast"              # draft marker, NOT plain "live"
+    assert len(out["scripts"]) == 3
 
 
-def test_fast_paint_pads_short_array_to_count(monkeypatch):
+def test_fast_paint_never_pads_with_mock_copy(monkeypatch):
+    # Reversed 2026-09-23: padding a short page with "Most {niche} advice is backwards"
+    # template cards is exactly what the owner flagged as unrealistic. A failed slot is
+    # dropped; only an ALL-failed page falls back to the mock.
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "x")
 
-    async def one_script(sys, usr, schema, model, max_tokens, array_key=None):
-        return [{"title": "T", "summary": "S", "hook": "H", "hookSignal": "curiosity",
-                 "formatId": "pov-story", "body": "B", "cta": "C", "style": "talking_head"}]
-    monkeypatch.setattr(main, "anthropic_json", one_script)
+    async def plan(sreq, cursor=0, context="", avoid=None):
+        return [{"formatId": f, "topic": t, "subarea": "", "angle": ""}
+                for f, t in (("myth-buster", "alpha"), ("pov-story", "bravo"), ("listicle", "charlie"))]
+    monkeypatch.setattr(main, "_plan_slots", plan)
+    _fake_slot_writer(monkeypatch, fail_on="bravo")
     sreq = main.ScriptRequest(creator_id="c_pad", pillar="Hot takes", style="talking_head", count=3)
     out = asyncio.run(main._fast_feed_scripts(sreq))
-    assert len(out["scripts"]) == 3                # padded, never a lonely single card
+    assert out["mode"] == "live_fast" and len(out["scripts"]) == 2
+    assert [s["formatId"] for s in out["scripts"]] == ["myth-buster", "listicle"]
 
 
 def test_refresh_feed_page_never_downgrades_to_mock(monkeypatch):
@@ -7105,8 +7168,11 @@ def test_default_bucket_is_skipped_by_every_fleet_cron(monkeypatch):
             self.touched: list[str] = []
 
         async def load_all_creators(self):
+            # "identity-only": the row the channel-identity upsert creates (no niche); the
+            # spend crons must skip it rather than ideate/compile with niche=None.
             return [{"creator_id": "default"}, {"creator_id": "demo-abc"},
-                    {"creator_id": "real-cron-1"}]
+                    {"creator_id": "real-cron-1", "niche": "fitness"},
+                    {"creator_id": "identity-only"}]
 
         async def load_creator_tier(self, creator_id):
             self.touched.append(creator_id)
@@ -7138,6 +7204,8 @@ def test_default_bucket_is_skipped_by_every_fleet_cron(monkeypatch):
             pass                       # the sweep may bail later; we only assert the skip
         assert "default" not in spy.touched, f"{fn} swept the shared pre-auth bucket"
         assert "demo-abc" not in spy.touched, f"{fn} swept a demo bucket"
+        if fn != "run_insights_cron":          # the metrics poller is keyed on handles, not niche
+            assert "identity-only" not in spy.touched, f"{fn} swept an identity-only row"
         assert "real-cron-1" in spy.touched, \
             f"{fn} never reached a real creator — the assertions above would be vacuous"
 
@@ -7367,6 +7435,16 @@ def test_reels_health_requires_the_cron_token(monkeypatch):
     assert client.post("/internal/reels/health", json={}).status_code == 403
 
 
+_REAL_TH_TRANSCRIPT = (
+    "If you sit at a desk all day, your hips get tight and your back starts to round, and "
+    "that's why your squat feels awful the first time you try it. Here's what I'd do instead. "
+    "Before you load anything heavy, spend five minutes opening your hips up with a couple of "
+    "slow lunges and a deep squat hold. It sounds boring, and it is, but the difference in how "
+    "the first working set feels is huge. Try it for two weeks and tell me if your knees still "
+    "complain when you get to the bottom of the rep."
+)
+
+
 def test_reels_health_reports_the_serve_gate(monkeypatch):
     monkeypatch.setattr(main, "INTERNAL_CRON_TOKEN", "secret")
     monkeypatch.setattr(main, "_supabase_client", None)
@@ -7376,11 +7454,11 @@ def test_reels_health_reports_the_serve_gate(monkeypatch):
         # servable: playable + transcribed + reads as a talking head
         {"id": "r1", "video_url": "https://cdn/a.mp4", "transcribed": True,
          "edit_format": "talking_head", "duration_s": 30,
-         "transcript": " ".join(["word"] * 90)},
+         "transcript": _REAL_TH_TRANSCRIPT},
         # transcribed but no video -> not servable
         {"id": "r2", "video_url": "", "transcribed": True,
          "edit_format": "talking_head", "duration_s": 30,
-         "transcript": " ".join(["word"] * 90)},
+         "transcript": _REAL_TH_TRANSCRIPT},
         # never transcribed -> not servable
         {"id": "r3", "video_url": "https://cdn/c.mp4", "transcribed": False},
     ]}
@@ -7610,10 +7688,34 @@ def test_title_doctrine_rides_every_title_writer():
     assert "8 words max" in t and "Never Title Case" not in t  # phrasing lives in VOICE_DOCTRINE
     for sysp in (prompts.scripts_prompt(brand, pillar, "talking_head", 1)[0],
                  prompts.mimic_prompt(reel, brand)[0],
-                 prompts.next_idea_prompt("fitness", None)[0],
-                 prompts.niche_trends_prompt("fitness", [])[0]):
+                 prompts.next_idea_prompt("fitness", None)[0]):
         assert t in sysp
     assert "plain spoken sentence case" in prompts.SCRIPT_SCHEMA
+
+
+def test_trend_prompt_writes_trends_not_titles():
+    """Owner 2026-09-23: "the trending should be trends, not more titles". The title doctrine
+    made trends read like lowercase video titles; trends are trend-report headlines and
+    must be filmable by a talking head."""
+    sysp = prompts.niche_trends_prompt("fitness", [])[0]
+    assert prompts.TITLE_DOCTRINE not in sysp
+    assert "must NOT" in sysp and "video title" in sysp
+    assert "Talking-head only" in sysp
+    assert set(prompts.TREND_FORMAT_IDS) <= set(prompts.FORMAT_IDS)
+    assert not {"faceless", "broll-hook", "before-after"} & set(prompts.TREND_FORMAT_IDS)
+
+
+def test_mock_and_heuristic_trends_are_talking_head_and_dash_free():
+    for t in main.mock_trends("Personal finance"):
+        assert t["formatId"] in prompts.TREND_FORMAT_IDS
+        assert "—" not in t["title"] + t["why"] and "30 days" not in t["title"]
+        assert t["title"][0].isupper()
+    assert any("personal finance" in t["title"] for t in main.mock_trends("Personal finance"))
+    assert any("AI tools" in t["title"] for t in main.mock_trends("AI tools"))      # casing kept
+    posts = [{"caption": "5 mistakes killing your gains", "views": 90000},
+             {"caption": "the truth about cardio", "views": 10000}]
+    for t in main._heuristic_niche_trends("fitness", posts):
+        assert t["formatId"] in prompts.TREND_FORMAT_IDS and "—" not in t["why"]
 
 
 def test_prompt_exemplars_carry_no_em_dash():
@@ -7661,7 +7763,9 @@ def test_palo_title_exemplars_are_spoken_register():
     assert not _has_dash(sysp.split("<idea_quality>")[1].split("</idea_quality>")[0])
     # the old Title Case exemplars are gone, named explicitly as anti-examples instead
     assert "My Neighbor Pressure Washed My Driveway Without Asking — Here's What I Did" not in sysp
-    assert "the client who fired me on a Tuesday" in sysp
+    # 2026-09-23: the spoken-register exemplar no longer models an invented first-person event
+    assert "the client who fired me on a Tuesday" not in sysp
+    assert "what to say when they ask your rate" in sysp
     assert "no Title Case" in sysp
 
 
@@ -7748,4 +7852,35 @@ def test_clamp_title_scrubs_dashes():
     assert not _has_dash(main._clamp_title("protein timing — the real rule"))
     # still clamps length at a word boundary
     long = main._clamp_title("a" + " word" * 30)
-    assert len(long) <= 42 and not long.endswith(" ")
+    assert len(long) <= 50 and not long.endswith(" ")
+
+
+
+def test_feedback_never_turns_a_card_title_into_a_pillar(monkeypatch):
+    """iOS sends the pick card's title as its pillar. One tap used to create an arm named
+    after the title, and _top_arms then used it as the next page's theme, even after a
+    DISLIKE. Unknown pillars (and title == pillar) are ignored; the other dims still learn."""
+    cid = "c_title_pillar"
+    main._arm_stats.pop(cid, None)
+    main._arms_loaded.add(cid)
+    monkeypatch.setattr(main, "_supabase_client", None)
+    title = "why your protein shakes are useless"
+    r = client.post("/v1/feed/feedback", json={
+        "creator_id": cid, "verdict": "dislike", "niche": "fitness",
+        "script": {"title": title, "hook": "h", "pillar": title, "style": "talking_head",
+                   "formatId": "myth-buster", "hookSignal": "contrarian"}}).json()
+    assert r["arms_updated"] == 3
+    assert not [k for k in main._arm_stats.get(cid, {}) if k.startswith("pillar:")]
+    arms = asyncio.run(main._top_arms(cid, "fitness"))
+    assert all(main._is_known_pillar(a["pillar"]) for a in arms)
+    assert all("—" not in a["reason"] for a in arms)
+    main._arm_stats.pop(cid, None)
+
+
+def test_feed_uses_the_creators_own_pillars_when_sent():
+    brand = {"niche": "Fitness", "pillars": ["Desk-worker strength", "Eating for energy"]}
+    s0, why0 = main._feed_sreq(brand, "", 0, "c_own", None)
+    s1, _ = main._feed_sreq(brand, "", 1, "c_own", None)
+    assert (s0.pillar, s1.pillar) == ("Desk-worker strength", "Eating for energy")
+    assert "Desk-worker strength" in why0
+    assert main.Brand(**brand).topics == [] and main.Brand(topics=["a", "b"]).topics == ["a", "b"]

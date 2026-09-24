@@ -69,6 +69,9 @@ def is_compile_due(tier: str, last_updated_iso: str | None, now_epoch: float) ->
     return (now_epoch - last) >= interval * 86400
 
 
+_MIN_EVIDENCE_VIDEOS = 3
+
+
 def split_sections(md: str) -> dict[str, str]:
     """`## Name` blocks -> {name: body}. The compiler's structural contract."""
     out: dict[str, str] = {}
@@ -118,6 +121,37 @@ async def digest(store, creator_id: str, evidence: str, brand: dict | None) -> s
     return f"Catalog digest unavailable; using baseline {(brand or {}).get('niche', 'niche')} craft priors."
 
 
+_CANON_SECTIONS = {"insights": "Insights", "plan": "Plan", "buckets": "Buckets",
+                   "brand bets": "Brand Bets", "not-doing": "Not-Doing", "not doing": "Not-Doing"}
+_HEADER_RE = re.compile(r"^\s*#{1,6}\s*(?:\d+[.)]\s*)?(?P<name>.+?)\s*:?\s*$")
+
+
+def normalize_markdown(md: str | None) -> str:
+    """Bring model drift back to the card contract the app parses (owner 2026-09-23:
+    "asterisks and thick paragraphs"): **bold**/__bold__ wrappers dropped (a bolded
+    "**REGIME:**" stopped matching, so the app showed the whole Plan as one blob), "* " and
+    "• " bullets -> "- ", any "#"-level or numbered header -> "## <Canonical Name>", runs
+    of blank lines collapsed, dashes scrubbed per the voice doctrine. Pure; idempotent."""
+    if not md:
+        return md or ""
+    import prompts as _p                      # lazy: app modules must not import main-level at load
+    text = md.replace("**", "").replace("__", "")
+    out: list[str] = []
+    for line in text.split("\n"):
+        s = line.strip()
+        if s.startswith("#"):
+            m = _HEADER_RE.match(s)
+            name = (m.group("name") if m else s.lstrip("#")).strip()
+            out.append("## " + _CANON_SECTIONS.get(name.lower(), name))
+            continue
+        if s.startswith(("* ", "• ")):
+            line = "- " + s[2:]
+        line = re.sub(r"\*([^*\n]+)\*", r"\1", line)
+        out.append(line)
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    return _p.scrub_em_dashes(text) + "\n"
+
+
 def _strip_reasoning(md: str) -> str:
     """The synthesis prompt does its cognitive pass in a <reasoning> block (Palo parity:
     stage → confound checks → lever). It is scratch work — discard it so it is never
@@ -135,7 +169,7 @@ async def synthesize(store, creator_id: str, digest_text: str, brand: dict | Non
     # template instead of the strategy the Opus call was billed for.
     out = await anthropic_cached(system, user, OPUS, max_tokens=4000)
     if out:
-        out = _strip_reasoning(out)
+        out = normalize_markdown(_strip_reasoning(out))
         # Bill the Opus call whenever it ran — even if the sections fail validation and we
         # fall back to the template. Billing only on the valid path let the priciest model
         # go unmetered on malformed output (the exact thing ai_usage exists to catch).
@@ -173,7 +207,11 @@ async def compile_strategy(store, creator_id: str, videos: list[dict],
             # instead of rendering the generic placeholder as a real strategy. The API
             # also content-detects the template (is_template_markdown) as a fallback for
             # rows written before this flag existed.
-            "strategy_footnotes": "template" if is_template_markdown(md) else "",
+            # "thin": compiled from fewer than 3 videos. Shown in the app, but not injected
+            # into writers as if proven (one cooking clip told a fitness creator how to run
+            # their channel).
+            "strategy_footnotes": ("template" if is_template_markdown(md)
+                                   else "thin" if len(videos or []) < _MIN_EVIDENCE_VIDEOS else ""),
             "strategy_updated_at": _now_iso(), "brand_hash": _brand_hash(brand or {})})
         return md
     except Exception as e:
@@ -234,6 +272,10 @@ async def strategy_block(store, creator_id: str, brand_hash: str | None = None) 
     md = (strat or {}).get("strategy_markdown", "") if strat else ""
     if not md.strip():
         return ""
+    # Only real evidence shapes the writers: the placeholder template (its "day-in-the-life"
+    # bucket was injected as if compiled) and thin compiles stay out of prompts.
+    if (strat or {}).get("strategy_footnotes") in ("template", "thin") or is_template_markdown(md):
+        return ""
     stale_note = ""
     if brand_hash and strat and strat.get("brand_hash") and strat["brand_hash"] != brand_hash:
         stale_note = ("\n\nNOTE: the creator's brand changed after this strategy was "
@@ -255,6 +297,8 @@ async def run_compile_cron(store, now_epoch: float) -> int:
         # that row, so compiling it only burns Opus to build the pooled doc that leaked in
         # the first place (the live /v1/strategy?creator_id=default Beauty probe).
         if not cid or not palo_flags.real_creator(cid):
+            continue
+        if not (c.get("niche") or "").strip():       # identity-only row (see ideas cron)
             continue
         if not ai_usage.compile_allowed(cid, True):            # allowlist gate (cheap, first)
             continue

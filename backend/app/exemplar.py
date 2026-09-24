@@ -46,7 +46,19 @@ async def _bank(store, creator_id: str) -> dict:
         strat = await store.load_strategy(creator_id)
     except Exception:
         return {}
-    return (strat or {}).get("exemplar_bank") or {}
+    bank = (strat or {}).get("exemplar_bank") or {}
+    # A placeholder bank carries made-up lifts (1.3-1.6x) that writers would quote as
+    # measured; banks persisted before this fix are treated as absent.
+    return {} if is_template_bank(bank) else bank
+
+
+_TEMPLATE_IDS = {"h_question", "b_escalate", "r_tight", "p_decisive"}
+
+
+def is_template_bank(bank) -> bool:
+    ids = {p.get("id") for c in _CATEGORIES for p in ((bank or {}).get(c) or [])
+           if isinstance(p, dict)}
+    return bool(ids) and ids <= _TEMPLATE_IDS
 
 
 def _flatten(bank: dict) -> list[dict]:
@@ -153,6 +165,8 @@ async def build_bank(store, creator_id: str, videos: list[dict],
                 bank = {c: data.get(c, []) for c in _CATEGORIES}
             else:
                 bank = _template_bank(brand)
+        if is_template_bank(bank):
+            return bank                                 # nothing real to persist (see _bank)
         prev = await store.load_strategy(creator_id) or {}
         rev = int(prev.get("exemplar_bank_revision", 0) or 0) + 1
         await store.upsert_strategy(creator_id, {
@@ -188,6 +202,8 @@ async def run_exemplar_cron(store, now_epoch: float) -> int:
         # Shared pre-auth bucket: build_bank refuses it anyway, skip before should_rebuild
         # so the sweep doesn't spend a strategy read per cron on a row it can never build.
         if not cid or not palo_flags.real_creator(cid) or not ai_usage.compile_allowed(cid, True):
+            continue
+        if not (c.get("niche") or "").strip():       # identity-only row (see ideas cron)
             continue
         if not await should_rebuild(store, cid, now_epoch):
             continue

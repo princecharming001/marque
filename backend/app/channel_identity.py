@@ -27,6 +27,7 @@ real_creator() gates every read/write so demo/default traffic never lands in the
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 
@@ -301,10 +302,22 @@ Return ONLY the JSON object matching the schema you were given. No prose outside
 
 # --- context builders ----------------------------------------------------------
 
+_HASHED_FIELDS = ("niche", "topics", "what_you_do", "audience", "audiences", "known_for",
+                  "goal", "catchphrases", "non_negotiables", "voice", "primary_platform")
+
+
+def brand_hash(brand: dict) -> str:
+    """Fingerprint of the brand fields an identity doc is built from. Stored on the doc
+    (`_brand_hash`); a mismatch means the creator changed who they are → rebuild."""
+    b = brand if isinstance(brand, dict) else {}
+    sub = {k: b.get(k) for k in _HASHED_FIELDS if b.get(k) not in (None, "", [], {})}
+    return hashlib.sha1(json.dumps(sub, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
 def _creator_signals(brand: dict) -> str:
     b = brand if isinstance(brand, dict) else {}
-    keep = ("niche", "what_you_do", "audience", "known_for", "goal", "catchphrases",
-            "voice", "non_negotiables", "primary_platform", "stage",
+    keep = ("niche", "topics", "what_you_do", "audience", "audiences", "known_for", "goal",
+            "catchphrases", "voice", "non_negotiables", "primary_platform", "stage",
             "posting_frequency", "biggest_blocker", "camera_comfort", "why_now")
     signals = {k: b[k] for k in keep if b.get(k)}
     return json.dumps(signals, indent=2, default=str) if signals else "(none)"
@@ -399,7 +412,7 @@ def _fallback_identity(brand: dict, posts: list | None = None) -> dict:
     raw = _slider(sliders, "polishedToRaw")
     teach = _slider(sliders, "teacherToPeer")
     humor = ("jokes first, the lesson sneaks in" if funny <= 0.35 else
-             "serious and direct — the point is the point" if funny >= 0.65 else
+             "serious and direct, the point is the point" if funny >= 0.65 else
              "straight talk with room for a joke")
     finish = ("raw single-take energy, phone in hand" if raw >= 0.65 else
               "clean, deliberate delivery" if raw <= 0.35 else
@@ -417,11 +430,18 @@ def _fallback_identity(brand: dict, posts: list | None = None) -> dict:
     voice += " Inferred from the creator's own onboarding words, not analyzed footage."
 
     # Established fallback: the creator's REAL titles are the honest voice anchors.
+    # Cold (no titles, no catchphrases): register-only anchors that claim nothing about
+    # the creator. The old "I do X every day" invented a habit (and carried an em dash),
+    # and the writers are told to match these anchors' register.
     titles = [str(p.get("title") or p.get("caption") or "").strip() for p in posts]
     titles = [t for t in titles if t][:3]
+
+    def _mid(text: str) -> str:              # "Fitness" reads "fitness" mid-sentence
+        return (text[0].lower() + text[1:]
+                if text and text[0].isupper() and text[1:] == text[1:].lower() else text)
     anchors = titles or phrases[:3] or [
-        f"I do {what or topic} every day — here's the part nobody shows you.",
-        f"{(known or topic)}: 30 seconds, no fluff.",
+        f"Here's the {_mid(topic)} advice I'd actually give a friend.",
+        f"Most people get {_mid(known or topic)} wrong. Here's the fix in thirty seconds.",
     ]
 
     if what and audience:
@@ -450,8 +470,8 @@ def _fallback_identity(brand: dict, posts: list | None = None) -> dict:
     if posts:
         ctx.append(f"{len(posts)} published posts on record")
     creator_context = "; ".join(ctx) or (
-        f"A {topic} creator at the start of the journey — "
-        "details pending their first real posts.")
+        f"A {topic} creator with no posts or personal details on record yet, "
+        "so there is nothing personal to cite.")
 
     return {
         "niche_role": (f"The {topic} voice known for {known}" if known
@@ -582,7 +602,7 @@ def identity_block(identity: dict | None) -> str:
     if len(lines) == 1:
         return ""                                   # nothing substantive to inject
     if conf != "high":
-        lines.append("Treat this as the creator's self-description, sharpened — "
+        lines.append("Treat this as the creator's self-description, sharpened; "
                      "never cite it as observed performance.")
     return "\n".join(lines)
 
@@ -614,11 +634,13 @@ async def save_identity(store, creator_id: str, identity: dict) -> bool:
             or not isinstance(identity, dict) or not identity:
         return False
     try:
+        # UPSERT (not PATCH): most real accounts have no `creators` row yet, and a PATCH
+        # that matches zero rows returns 204 without saving anything.
         r = await store._request(
-            "PATCH", "/creators",
-            params={"creator_id": f"eq.{creator_id}"},
-            json={"channel_identity": identity},
-            headers={"Prefer": "return=minimal"})
+            "POST", "/creators",
+            params={"on_conflict": "creator_id"},
+            json={"creator_id": creator_id, "channel_identity": identity},
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
         return bool(r and r.status_code < 300)
     except Exception as e:
         logging.warning("[channel_identity] save failed: %s", e)
@@ -631,10 +653,12 @@ async def ensure_identity(store, creator_id: str, brand: dict, **kw) -> dict:
     if not palo_flags.enabled(palo_flags.CHANNEL_IDENTITY):
         return _fallback_identity(brand, kw.get("posts") or [])
     try:
+        h = brand_hash(brand)
         existing = await load_identity(store, creator_id)
-        if existing:
-            return existing
+        if existing and existing.get("_brand_hash") in (None, h):
+            return existing                       # current (or pre-fingerprint legacy doc)
         doc = await build_identity(store, creator_id, brand, **kw)
+        doc["_brand_hash"] = h
         if store is not None and palo_flags.real_creator(creator_id):
             await save_identity(store, creator_id, doc)
         return doc
