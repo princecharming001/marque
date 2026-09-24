@@ -140,7 +140,31 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 # can't compress under the cap, so ">1min takes" simply died client-side). 150MB keeps
 # ~100MB of headroom under the bucket limit and lets a typical 60-90s 1080p capture
 # upload with NO on-device transcode at all (faster submit, no quality loss).
+# MAX_UPLOAD_BYTES is now the PRODUCT ceiling only — what mint advertises is
+# _advertised_upload_cap_bytes() below (LV-1).
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "150000000"))
+# LV-1 (editor audit 2026-09-24): the binding limit is NOT the bucket's 256MB — it is the
+# Supabase PROJECT-wide upload limit, measured live at exactly 50 MiB (52,428,800 bytes
+# stores; 52,428,801 → HTTP 400 {"statusCode":"413","code":"EntityTooLarge"}). Mint used
+# to advertise the 150MB product ceiling, so the app skipped compression for anything
+# under 150MB and PUT 50-150MB takes raw — every one of them died on that 413 (the
+# in-app camera records ~90MB/min, so every take over ~35s). The advertised cap is now
+# min(product ceiling, storage limit − 2 MiB headroom for encoder bitrate overshoot).
+# To allow bigger uploads: raise the global file size limit in the Supabase dashboard
+# (Storage → Settings; Pro plan) FIRST, then set STORAGE_OBJECT_LIMIT_BYTES to match —
+# never the other way round, or the app is told to PUT objects storage rejects.
+STORAGE_OBJECT_LIMIT_BYTES = int(os.environ.get("STORAGE_OBJECT_LIMIT_BYTES", "52428800"))
+_UPLOAD_CAP_HEADROOM_BYTES = 2 * 1024 * 1024
+
+
+def _advertised_upload_cap_bytes() -> int:
+    """The `max_upload_bytes` every mint response carries (live and mock): the product
+    ceiling, clamped under what storage will actually accept. The only source of that
+    number — the iOS upload ladder compresses to fit whatever this returns."""
+    cap = min(MAX_UPLOAD_BYTES, STORAGE_OBJECT_LIMIT_BYTES - _UPLOAD_CAP_HEADROOM_BYTES)
+    # A storage limit smaller than the headroom itself (misconfiguration) degrades to the
+    # raw limit rather than advertising zero/negative bytes.
+    return cap if cap > 0 else min(MAX_UPLOAD_BYTES, STORAGE_OBJECT_LIMIT_BYTES)
 # Inference-time quality gate (generate -> judge -> targeted self-repair). On by
 # default; set AI_QUALITY=0 to fall back to raw single-shot generation.
 AI_QUALITY = os.environ.get("AI_QUALITY", "1") != "0"
@@ -3433,7 +3457,7 @@ async def _mint_supabase_upload(filename: str) -> dict | None:
         "upload_url": f"{base}/storage/v1{signed_path}",
         "key": key,
         "public_url": f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}",
-        "max_upload_bytes": MAX_UPLOAD_BYTES,
+        "max_upload_bytes": _advertised_upload_cap_bytes(),
         # Build 49: the client tracks signed-URL expiry with SERVER-relative time (never the
         # device clock) so it re-mints proactively. Supabase upload tokens default to ~2h.
         "expires_in": SUPABASE_UPLOAD_TTL,
@@ -3488,7 +3512,7 @@ async def mint_upload_url(req: UploadMintRequest):
     # source can never be fetched.
     key = f"mock/{uuid.uuid4()}/{req.filename}"
     return {"mode": "mock", "upload_url": "", "key": key, "public_url": "",
-            "max_upload_bytes": MAX_UPLOAD_BYTES,
+            "max_upload_bytes": _advertised_upload_cap_bytes(),
             "expires_in": SUPABASE_UPLOAD_TTL, "server_time": time.time()}
 
 

@@ -58,3 +58,64 @@ def test_dev_media_route_never_serves_when_keyed(tmp_path, monkeypatch):
     assert client.get("/v1/dev/media/..%2Fetc").status_code == 404
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk-live")
     assert client.get("/v1/dev/media/60.mov").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# LV-1 — mint advertises what storage will actually accept (50 MiB project limit)
+# ---------------------------------------------------------------------------
+
+_MINT_BODY = {"filename": "take.mov", "content_type": "video/quicktime"}
+
+
+def test_mint_mock_branch_advertises_storage_clamped_cap(monkeypatch):
+    monkeypatch.setattr(main, "SUPABASE_URL", "")
+    monkeypatch.setattr(main, "SUPABASE_KEY", "")
+    b = client.post("/v1/uploads/mint", json=_MINT_BODY).json()
+    assert b["mode"] == "mock"
+    # Defaults: 150MB product ceiling vs 50 MiB storage limit → 48 MiB advertised.
+    assert main.MAX_UPLOAD_BYTES == 150_000_000
+    assert main.STORAGE_OBJECT_LIMIT_BYTES == 52_428_800
+    assert b["max_upload_bytes"] == 52_428_800 - 2 * 1024 * 1024 == 50_331_648
+    assert b["max_upload_bytes"] < 52_428_801            # the size proven to 413 live
+
+
+def test_mint_live_branch_advertises_storage_clamped_cap(monkeypatch):
+    import asyncio
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"url": "/object/upload/sign/marque-clips/uploads/x/take.mov?token=t"}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(main, "SUPABASE_URL", "https://proj.supabase.co")
+    monkeypatch.setattr(main, "SUPABASE_KEY", "service-key")
+    monkeypatch.setattr(main.httpx, "AsyncClient", _Client)
+    out = asyncio.run(main._mint_supabase_upload("take.mov"))
+    assert out["mode"] == "live"
+    assert out["max_upload_bytes"] == 50_331_648          # never the 150MB product ceiling
+
+
+def test_upload_cap_follows_both_knobs(monkeypatch):
+    # Raising the dashboard limit + STORAGE_OBJECT_LIMIT_BYTES lifts the cap up to the
+    # product ceiling; a product ceiling below the storage limit still binds.
+    monkeypatch.setattr(main, "STORAGE_OBJECT_LIMIT_BYTES", 256 * 1024 * 1024)
+    assert main._advertised_upload_cap_bytes() == main.MAX_UPLOAD_BYTES
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 30_000_000)
+    assert main._advertised_upload_cap_bytes() == 30_000_000
+    # Misconfigured storage limit smaller than the headroom: raw limit, never <= 0.
+    monkeypatch.setattr(main, "STORAGE_OBJECT_LIMIT_BYTES", 1_000_000)
+    assert main._advertised_upload_cap_bytes() == 1_000_000
