@@ -1443,7 +1443,10 @@ struct ProEditorView: View {
                         CGRect(x: $0.minX * geo.size.width, y: $0.minY * geo.size.height,
                                width: $0.width * geo.size.width, height: $0.height * geo.size.height)
                     } ?? baseRect
-                    let selected = selectedRoll == idx
+                    // FT-3: one selection system — a roll picked on the timeline is live on the
+                    // canvas too, and a canvas tap goes through select() so the toolbar swaps
+                    // to the roll's verbs (Replace/Delete were unreachable from the canvas).
+                    let selected = selectedRoll == idx || selectedBroll == idx
                     let framed = roll.mode != "full" || rollLiveRect != nil
                     let radius = framed ? 20 * geo.size.width / 1080 : 0
                     let interactive = rollFill(roll)
@@ -1458,7 +1461,9 @@ struct ProEditorView: View {
                                 radius: framed ? 12 : 0, y: framed ? 6 : 0)
                         .position(x: rect.midX, y: rect.midY)
                         .contentShape(Rectangle().path(in: rect))
-                        .onTapGesture { selectedRoll = selected ? nil : idx }
+                        .onTapGesture {
+                            if selected { select(nil) } else { select(.broll(idx)); selectedRoll = idx }
+                        }
                         .accessibilityIdentifier("editorPro.rollSim")
                     if selected {
                         interactive
@@ -2078,6 +2083,7 @@ struct ProEditorView: View {
         withAnimation(.easeOut(duration: 0.15)) {
             selectedSeg = nil; selectedOverlay = nil; selectedBroll = nil; selectedBoundary = nil
             selectedMusic = false; selectedPhraseID = nil
+            selectedRoll = nil                     // FT-3: the canvas roll follows selection
             expansion = nil
             rootPanel = nil
             switch target {
@@ -2099,6 +2105,7 @@ struct ProEditorView: View {
         withAnimation(.easeOut(duration: 0.15)) {
             selectedSeg = nil; selectedOverlay = nil; selectedBroll = nil; selectedBoundary = nil
             selectedMusic = false; selectedPhraseID = nil
+            selectedRoll = nil
             expansion = nil
             rootPanel = (rootPanel == p) ? nil : p
         }
