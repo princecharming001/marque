@@ -12,6 +12,7 @@ returned but not persisted. Flag IDEA_BANK gates the on-demand entry point.
 from __future__ import annotations
 
 import logging
+import math
 import re
 
 from app import ai_usage, palo_flags, palo_prompts
@@ -51,6 +52,31 @@ _JUDGE_SCHEMA = {
 # (proactive surfacing); everything else stays passive in-app discovery.
 PROMOTE_THRESHOLD = 8.0
 
+# The judge's four axes and their maxima (palo_prompts.IDEA_JUDGE_SYSTEM). The brief's
+# score is COMPUTED from these (clamped) rather than read from the model's own `score`
+# field, which it can mis-add or inflate; and an idea is promoted (surfaced proactively,
+# i.e. pushed at the creator unasked) only when evidence_grounded is at its max. A 9/10
+# idea that leans on a personal result the creator never gave us is exactly the one we
+# must not interrupt them with (2026-09-23 honesty pass).
+_JUDGE_AXES = {"specificity": 3, "non_obvious": 3, "evidence_grounded": 2, "actionable": 2}
+
+
+def _judge_verdict(data) -> dict | None:
+    """Pure: the judge's raw JSON -> {"score": 0-10 float, "grounded": bool, "axes": {...}},
+    or None when the output is unusable (not a dict, or any axis missing / non-numeric).
+    None keeps the caller's positional score and never promotes."""
+    if not isinstance(data, dict):
+        return None
+    axes: dict[str, int] = {}
+    for key, hi in _JUDGE_AXES.items():
+        v = data.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            return None
+        axes[key] = max(0, min(hi, int(v)))
+    return {"score": float(sum(axes.values())),
+            "grounded": axes["evidence_grounded"] == _JUDGE_AXES["evidence_grounded"],
+            "axes": axes}
+
 
 def _context_from_brand(brand: dict) -> tuple[str, str, str, str]:
     """(creator_signals, channel_identity, topic, format) from Marque's Brand dict."""
@@ -72,18 +98,30 @@ def _context_from_brand(brand: dict) -> tuple[str, str, str, str]:
 def mock_ideas(brand: dict) -> list[dict]:
     """Deterministic fallback ideas. OWNER MANDATE: every idea is TOLD to camera — one
     take, the creator talking; the AI editor adds all other visuals. No idea may require
-    filming demos, montages, or extra footage."""
-    niche = (brand.get("niche") or "your niche").strip()
+    filming demos, montages, or extra footage.
+
+    These are persisted as REAL briefs (and script_from_brief writes from them), so they
+    must be honest for any creator: no experiment they never ran ("i tried X for a
+    week"), no tenure they never claimed ("what 100 hours taught me"), no test results.
+    Takes, mistakes and mechanisms any credible creator in the niche can speak to."""
+    niche = (brand.get("niche") or "").strip() or "your niche"
+    # Mid-sentence casing (mirrors main._niche_mid): "Fitness" -> "fitness" in a
+    # sentence-case title, while "AI tools" / "New York real estate" keep theirs.
+    if niche[0].isupper() and niche[1:] == niche[1:].lower():
+        niche = niche[0].lower() + niche[1:]
     return [
-        {"title": f"i tried the most-watched {niche} format for a week",
-         "content": "Open mid-story on day 7's result, then tell the week: what you copied, "
-                    "what flopped, the one day it flipped. One take, talking to camera."},
-        {"title": f"the {niche} mistake everyone makes",
-         "content": "Hook with the common belief. Tell what you tested and what actually "
-                    "happened, numbers last. One take, talking to camera."},
-        {"title": f"what 100 hours of {niche} taught me",
-         "content": f"Land three counterintuitive lessons as spoken beats, saving the one that "
-                    f"breaks out of {niche} for last. One take, talking to camera."},
+        {"title": f"the {niche} advice most people get backwards",
+         "content": "Open on the belief most people hold, say plainly why it's wrong, then give "
+                    "the better move with one everyday example the viewer will recognize. One "
+                    "take, talking to camera."},
+        {"title": f"the {niche} mistake hiding in plain sight",
+         "content": "Hook on the moment the viewer is living ('you do this, and then that "
+                    "happens'), explain why it happens, and land the one fix last. One take, "
+                    "talking to camera."},
+        {"title": f"three {niche} rules nobody explains",
+         "content": f"Three counterintuitive rules as spoken beats, each with the reason it "
+                    f"works, saving the one that reaches beyond {niche} for last. One take, "
+                    f"talking to camera."},
     ]
 
 
@@ -161,14 +199,14 @@ async def eval_ideas(store, ideas: list[dict], topic: str, fmt: str,
     return [verdict.get(i + 1, verdict.get(i, True)) for i in range(len(ideas))]
 
 
-async def judge_ideas(store, ideas: list[dict], brand: dict,
-                      recent_titles: list[str] | None = None,
-                      creator_id: str = "") -> list[float]:
-    """Score each idea 0-10 with the ported pulse judge (specificity / non_obvious /
-    evidence_grounded / actionable, axis-cap rejection rules). Keyless / failure ⇒ -1.0
-    sentinel per idea (callers keep their positional score — never fabricate a judged
-    score we didn't compute). Runs AFTER the binary eval gate: eval kills off-niche,
-    this ranks what survived."""
+async def judge_idea_verdicts(store, ideas: list[dict], brand: dict,
+                              recent_titles: list[str] | None = None,
+                              creator_id: str = "") -> list[dict | None]:
+    """Judge each idea with the ported pulse judge (specificity / non_obvious /
+    evidence_grounded / actionable, axis-cap rejection rules) and return one
+    `_judge_verdict` per idea: {"score" (axis sum, 0-10), "grounded", "axes"}, or None
+    when keyless / the call failed / the output lacked an axis. Runs AFTER the binary
+    eval gate: eval kills off-niche, this ranks what survived."""
     if not ideas:
         return []
     signals, identity, _t, _f = _context_from_brand(brand)
@@ -181,21 +219,31 @@ async def judge_ideas(store, ideas: list[dict], brand: dict,
                         "ignoring earns fewer, better ones (judge accordingly).")
     except Exception:
         pass
-    scores: list[float] = []
-    judged_any = False
+    verdicts: list[dict | None] = []
     for idea in ideas:
         base_sys, user = palo_prompts.idea_judge_prompt(idea, context, recent_titles)
         system = await get_prompt("palo.idea.judge", base_sys, store=store)
         data = await anthropic_cached_json(system, user, _JUDGE_SCHEMA, HAIKU, max_tokens=300)
-        if isinstance(data, dict) and isinstance(data.get("score"), int):
-            scores.append(float(max(0, min(10, data["score"]))))
-            judged_any = True
-        else:
-            scores.append(-1.0)
-    if judged_any:
+        verdict = _judge_verdict(data)
+        claimed = data.get("score") if verdict is not None else None
+        if claimed is not None and claimed != verdict["score"]:
+            logging.info("[ideas] judge self-score %r != axis sum %s; using the axis sum",
+                         claimed, verdict["score"])
+        verdicts.append(verdict)
+    if any(v is not None for v in verdicts):
         await ai_usage.record(store, creator_id, "idea.judge", HAIKU,
                               900 * len(ideas), 120 * len(ideas))
-    return scores
+    return verdicts
+
+
+async def judge_ideas(store, ideas: list[dict], brand: dict,
+                      recent_titles: list[str] | None = None,
+                      creator_id: str = "") -> list[float]:
+    """Score each idea 0-10 (the sum of the judge's clamped axes, never its self-reported
+    `score`). Keyless / failure ⇒ -1.0 sentinel per idea (callers keep their positional
+    score, never fabricate a judged score we didn't compute)."""
+    verdicts = await judge_idea_verdicts(store, ideas, brand, recent_titles, creator_id)
+    return [v["score"] if v is not None else -1.0 for v in verdicts]
 
 
 def to_briefs(creator_id: str, ideas: list[dict], source: str = "onboarding") -> list[dict]:
@@ -479,14 +527,16 @@ async def suggest_ideas(store, creator_id: str, brand: dict, source: str = "onbo
         ideas = unhedged or ideas[:1]
         passes = await eval_ideas(store, ideas, topic, fmt, creator_id=creator_id)
         kept = [idea for idea, ok in zip(ideas, passes) if ok] or ideas[:1]
-        # Quality scoring (pulse judge port): a real 0-10 ranks the survivors; -1.0
-        # sentinel (keyless / vendor error) keeps the positional score below.
-        judge_scores = await judge_ideas(store, kept, brand, creator_id=creator_id)
+        # Quality scoring (pulse judge port): the axis sum (0-10) ranks the survivors; an
+        # unjudged idea (keyless / vendor error / missing axis) keeps its positional score
+        # and is never promoted.
+        verdicts = await judge_idea_verdicts(store, kept, brand, creator_id=creator_id)
         briefs = to_briefs(creator_id, kept, source)
-        for b, js in zip(briefs, judge_scores):
-            if js >= 0:
-                b["score"] = round(js / 10.0, 3)          # same 0..1 scale as positional
-                b["promoted"] = js >= PROMOTE_THRESHOLD   # banger: worth proactive surfacing
+        for b, v in zip(briefs, verdicts):
+            if v is not None:
+                b["score"] = round(v["score"] / 10.0, 3)  # same 0..1 scale as positional
+                # banger worth proactive surfacing: high score AND fully grounded
+                b["promoted"] = v["grounded"] and v["score"] >= PROMOTE_THRESHOLD
         briefs.sort(key=lambda b: float(b.get("score", 0) or 0), reverse=True)
         if store is not None:
             try:

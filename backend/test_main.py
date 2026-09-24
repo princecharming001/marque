@@ -7763,7 +7763,9 @@ def test_palo_title_exemplars_are_spoken_register():
     assert not _has_dash(sysp.split("<idea_quality>")[1].split("</idea_quality>")[0])
     # the old Title Case exemplars are gone, named explicitly as anti-examples instead
     assert "My Neighbor Pressure Washed My Driveway Without Asking — Here's What I Did" not in sysp
-    assert "the client who fired me on a Tuesday" in sysp
+    # 2026-09-23: the spoken-register exemplar no longer models an invented first-person event
+    assert "the client who fired me on a Tuesday" not in sysp
+    assert "what to say when they ask your rate" in sysp
     assert "no Title Case" in sysp
 
 

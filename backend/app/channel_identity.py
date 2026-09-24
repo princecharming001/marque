@@ -412,7 +412,7 @@ def _fallback_identity(brand: dict, posts: list | None = None) -> dict:
     raw = _slider(sliders, "polishedToRaw")
     teach = _slider(sliders, "teacherToPeer")
     humor = ("jokes first, the lesson sneaks in" if funny <= 0.35 else
-             "serious and direct — the point is the point" if funny >= 0.65 else
+             "serious and direct, the point is the point" if funny >= 0.65 else
              "straight talk with room for a joke")
     finish = ("raw single-take energy, phone in hand" if raw >= 0.65 else
               "clean, deliberate delivery" if raw <= 0.35 else
@@ -430,11 +430,18 @@ def _fallback_identity(brand: dict, posts: list | None = None) -> dict:
     voice += " Inferred from the creator's own onboarding words, not analyzed footage."
 
     # Established fallback: the creator's REAL titles are the honest voice anchors.
+    # Cold (no titles, no catchphrases): register-only anchors that claim nothing about
+    # the creator. The old "I do X every day" invented a habit (and carried an em dash),
+    # and the writers are told to match these anchors' register.
     titles = [str(p.get("title") or p.get("caption") or "").strip() for p in posts]
     titles = [t for t in titles if t][:3]
+
+    def _mid(text: str) -> str:              # "Fitness" reads "fitness" mid-sentence
+        return (text[0].lower() + text[1:]
+                if text and text[0].isupper() and text[1:] == text[1:].lower() else text)
     anchors = titles or phrases[:3] or [
-        f"I do {what or topic} every day — here's the part nobody shows you.",
-        f"{(known or topic)}: 30 seconds, no fluff.",
+        f"Here's the {_mid(topic)} advice I'd actually give a friend.",
+        f"Most people get {_mid(known or topic)} wrong. Here's the fix in thirty seconds.",
     ]
 
     if what and audience:
@@ -463,8 +470,8 @@ def _fallback_identity(brand: dict, posts: list | None = None) -> dict:
     if posts:
         ctx.append(f"{len(posts)} published posts on record")
     creator_context = "; ".join(ctx) or (
-        f"A {topic} creator at the start of the journey — "
-        "details pending their first real posts.")
+        f"A {topic} creator with no posts or personal details on record yet, "
+        "so there is nothing personal to cite.")
 
     return {
         "niche_role": (f"The {topic} voice known for {known}" if known

@@ -89,7 +89,7 @@ TITLE_DOCTRINE = (
     "were texting a friend what it's about. Sentence case or lowercase. 8 words max. No Title "
     "Case, no colon constructions, no dashes of any kind, no emoji, no clickbait framing.\n"
     "Good: 'the history of Mongolia' / 'how big was Rome actually' / 'why your bread is dense' / "
-    "'the client who fired me on a Tuesday' / 'you're eating protein wrong'.\n"
+    "'the client who's quietly keeping you broke' / 'you're eating protein wrong'.\n"
     "Bad: 'I Tried the Viral 100 Rep Challenge and Here's What Happened' / 'The One Mistake "
     "Everyone Makes (I Tested It)' / 'Mongolia: A History'."
 )
@@ -104,6 +104,16 @@ SHOTPLAN_RULE = (
     "the hook/CTA must stay on the face. NEVER an entry the creator would have to film: no "
     "locations, no props, no demos, no second angles, no screen recordings. The creator never "
     "sees the shotPlan."
+)
+
+# LENGTH_BUDGET: the talking-head length contract (owner mandate, 2026-09). Every writer
+# that produces or rewrites a full script carries it, so the feed, steer, revise and
+# mimic paths land at the same 35-55s instead of whatever the source material implied
+# (mimic produced 188 words in prod when told to "match the original's length").
+LENGTH_BUDGET = (
+    "LENGTH BUDGET (hard): hook + body + CTA together are 90 to 140 words, about 35 to 55 seconds "
+    "spoken. Count before you answer. Over 150 words is too long for this format; trim the weakest "
+    "beat, never the example."
 )
 
 # --- deterministic backstop for the dash ban -------------------------------
@@ -378,11 +388,11 @@ STYLES = {
             "screen-record anything. `shotPlan` is a note to the editor: which screenshot to key and when, "
             "which phrase to zoom the keyed asset on, and where to stay on the face. "
             "e.g. ['key the referenced post behind them from the hook', 'zoom the keyed asset on the quoted "
-            "line', 'drop the key and hold on face for the verdict']. 30 to 45 seconds."
+            "line', 'drop the key and hold on face for the verdict']. 35 to 55 seconds, about 90 to 140 words."
         ),
         "exemplar": (
             '{"title":"reacting to bad advice","summary":"A green-screen react to a viral fitness claim.",'
-            '"hook":"This post has two million likes and it\'s completely wrong.","hookSignal":"contrarian",'
+            '"hook":"You\'ve probably seen this post. It\'s completely wrong.","hookSignal":"contrarian",'
             '"formatId":"green-screen","body":"So this post behind me says you have to train a muscle six times a '
             'week to grow. Look at this line, \'more frequency always wins.\' No. Past a point you\'re just piling '
             'up fatigue you can\'t recover from. Twice a week, hard, beats six times half-baked.",'
@@ -405,7 +415,7 @@ STYLES = {
             "cues in a 30s script (one roughly every 4 to 6s). The HOOK line and the CTA line carry NO bracket "
             "cues, those beats stay on the face. Never write abstract lines with nothing to show. `shotPlan` is "
             "the editor's cue list in order, each entry naming the b-roll to source and the line it lands on. "
-            "30 to 50 seconds."
+            "35 to 55 seconds, about 90 to 140 words."
         ),
         "exemplar": (
             '{"title":"why your deadlift stalls","summary":"A talking-head with b-roll cutaways on 3 deadlift '
@@ -436,7 +446,7 @@ STYLES = {
             "the source clip in the top panel. `shotPlan` is a note to the editor about that play/freeze rhythm: "
             "e.g. ['let the source clip play 2s on its own audio', 'freeze the top panel on the stance line', "
             "'release the source clip under the rebuttal', 'punch in on the payoff line', 'full frame on face for "
-            "the CTA']. 30 to 50 seconds."
+            "the CTA']. 35 to 55 seconds, about 90 to 140 words."
         ),
         "exemplar": (
             '{"title":"reacting to failure advice","summary":"A duet react to a viral train-to-failure claim.",'
@@ -1749,7 +1759,7 @@ def _voice_exemplars(posts: list[dict] | None, k: int = 4) -> str:
         if rest:
             # A compact cadence sample (the next ~100 chars) — sentence length and
             # rhythm carry more voice than any adjective could.
-            line += f' — cadence: "{rest[:100].strip()}…"'
+            line += f'; cadence: "{rest[:100].strip()}…"'
         notes.append(line)
     if not notes:
         return ""
@@ -1832,7 +1842,11 @@ def pillars_prompt(brand: dict, posts: list[dict] | None = None, avoid: list[str
         "creator. A pillar must be specific enough that the creator reads it and thinks 'that's exactly me', "
         "NEVER a generic bucket (like 'Behind the scenes', 'Tips & tricks', 'Myth-busting') that would fit any "
         "creator in the niche. When real posts are provided, ground every pillar in the evidence, their actual "
-        "topics, their phrasing, the formats their audience already rewards. Reply with ONLY a JSON array."
+        "topics, their phrasing, the formats their audience already rewards. HONESTY: the creator films every "
+        "topic themselves, so never build a pillar on a personal result, client story, credential, or "
+        "experiment the brand block and posts don't give you. With a thin profile, make a pillar specific "
+        "through the audience's real situations and the mechanics of the niche, not through an invented "
+        "track record. Reply with ONLY a JSON array."
     )
     avoid_line = ""
     if avoid:
@@ -1851,20 +1865,40 @@ def pillars_prompt(brand: dict, posts: list[dict] | None = None, avoid: list[str
     return system, user
 
 
-def pillar_judge_prompt(niche: str, pillars: list[dict]) -> tuple[str, str]:
+def pillar_judge_prompt(niche: str, pillars: list[dict], *, brand: dict | None = None,
+                        posts: list[dict] | None = None,
+                        memory: dict | None = None) -> tuple[str, str]:
+    """Specificity + honesty gate for generated pillars. `brand`/`posts`/`memory` are
+    optional: with them the judge can tell a pillar grounded in the creator's real
+    material from one built on an invented track record; without them it only has the
+    niche, so ANY pillar that needs a personal result or client story fails."""
     system = (
-        "You are a strict content editor checking pillars for SPECIFICITY. A pillar FAILS if it would apply to "
-        "basically any creator in the same niche, or if its angle is vague. It PASSES only if the angle names "
-        "something concrete and ownable to this specific creator. Be harsh, generic pillars are the #1 quality "
-        "failure. THE TEST (apply to every pillar): read it and ask, could this describe a different creator in "
-        "the same niche? If yes, it fails. 'Authentic, relatable content' is a horoscope, not a pillar. "
-        "Reply with ONLY a JSON array of {\"index\": int, \"pass\": bool, \"reason\": str}."
+        "You are a strict content editor checking pillars on TWO axes. A pillar must pass both.\n"
+        "1. SPECIFICITY. A pillar FAILS if it would apply to basically any creator in the same niche, or if "
+        "its angle is vague. It PASSES only if the angle names something concrete and ownable to this "
+        "creator. Be harsh, generic pillars are the #1 quality failure. THE TEST: read it and ask, could this "
+        "describe a different creator in the same niche? If yes, it fails. 'Authentic, relatable content' is "
+        "a horoscope, not a pillar. Concrete can come from the audience's real situations, a named method, "
+        "or the mechanics of the niche; it does not require personal experience.\n"
+        "2. HONESTY. The creator films every topic in a pillar themselves. A pillar FAILS if it is built on "
+        "an invented client story, personal result, transformation, experiment, credential, or track record "
+        "that the CREATOR CONTEXT below does not support (for example a pillar about the results they got "
+        "for clients when no client work is given). When there is no creator context beyond the niche, any "
+        "pillar that only works with personal proof fails.\n"
+        "Reply with ONLY a JSON array of {\"index\": int, \"pass\": bool, \"reason\": str}; the reason names "
+        "the axis that failed."
     )
     items = "\n".join(
-        f'{i}. {p.get("name","")} — angle: {p.get("angle","") or p.get("summary","")}'
+        f'{i}. {p.get("name","")}, angle: {p.get("angle","") or p.get("summary","")}'
         for i, p in enumerate(pillars)
     )
-    user = f"Niche: {niche}\nPillars:\n{items}\n\nJudge each."
+    if brand:
+        mem = memory_block(memory) if memory else ""
+        context = ("CREATOR CONTEXT (the ONLY things true about this creator):\n"
+                   + brand_block(brand, posts) + (f"\n{mem}" if mem else ""))
+    else:
+        context = "CREATOR CONTEXT: none beyond the niche."
+    user = f"Niche: {niche}\n{context}\n\nPillars:\n{items}\n\nJudge each."
     return system, user
 
 
@@ -2019,15 +2053,14 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
             "Use the assigned formatId and stay on the assigned topic; the page theme above is background only.\n"
             f"{plan}\n"
             f"FORMAT SHAPES (write each script in the shape of its assigned format): {TH_FORMAT_SHAPES}\n"
-            "LENGTH BUDGET (hard): hook + body + CTA together are 90 to 140 words, about 35 to 55 seconds "
-            "spoken. Count before you answer. Over 150 words is too long for this format; trim the weakest "
-            "beat, never the example.\n"
+            f"{LENGTH_BUDGET}\n"
             f"Set \"style\":\"{style}\" on each. Return ONLY a JSON array. {SCRIPT_SCHEMA}"
         )
     else:
         task = (
-            f"Write {count} {s['label']} scripts on this pillar, each a distinct angle. Set \"style\":\"{style}\" on "
-            f"each. Return ONLY a JSON array. {SCRIPT_SCHEMA}"
+            f"Write {count} {s['label']} scripts on this pillar, each a distinct angle.\n"
+            f"{LENGTH_BUDGET}\n"
+            f"Set \"style\":\"{style}\" on each. Return ONLY a JSON array. {SCRIPT_SCHEMA}"
         )
     user = (
         f"{learn_section}"
@@ -2074,19 +2107,27 @@ def script_judge_prompt(scripts: list[dict], style: str, brand: dict | None = No
         "You did not write these, be adversarial, not generous. Score each on four axes 0-100:\n"
         "- hook_strength: does the first line stop the scroll in 1.5s? A concrete claim/number mid-thought "
         "scores high; a greeting, a set-up, a question-opener, or a vague promise scores low.\n"
-        "- specificity: is there at least ONE ownable, concrete detail (a number, a name, a mechanism, a "
-        "timeframe) that is GROUNDED: supported by the CREATOR CONTEXT below, a general verifiable niche "
-        "fact, or an explicit bracketed fill-in like '[your result]'? Generic advice that fits any creator "
-        "scores low; an INVENTED personal receipt scores LOWER than vagueness.\n"
+        "- specificity: is there at least ONE concrete detail that is GROUNDED: a mechanism (why it works), a "
+        "worked example, a named everyday situation the viewer recognizes, a general verifiable niche fact, "
+        "something the CREATOR CONTEXT below supports, or ONE bracketed fill-in like '[your result]'? Vague "
+        "advice with none of these scores low. An INVENTED personal detail (an event, result, number, "
+        "timeframe, or client the context doesn't give) scores <=20, LOWER than vagueness, and sets "
+        "fabricated=true.\n"
         "- format_fit: does it obey this style's structure? "
         f"STYLE = {s['label']}: {s['rubric']}\n"
         "- voice_match: does it sound like THIS creator (their sliders, phrasing, no banned words) and not like "
         "generic AI copy?\n"
-        "- relevance_to_creator: would THIS creator plausibly post this, given their niche, what they do, what "
-        "they want to be known for, and the pillar below? A script that reads as generic advice any creator in "
-        "the niche could post scores <=50; a script that's actually off-niche (wrong field, wrong audience, "
-        "wrong expertise) scores <=30. A script that only a creator with THIS specific niche/what-they-do/"
-        "known-for combination would credibly say scores high.\n"
+        "- relevance_to_creator: would THIS creator plausibly post this, given their niche, audience, goal, "
+        "what they do, what they want to be known for, and the pillar below? Off-niche (wrong field, wrong "
+        "audience, wrong expertise) scores <=30. Advice that ignores their audience or goal, or would fit any "
+        "niche, scores <=50. A script that only a creator with THIS niche/what-they-do/known-for combination "
+        "would credibly say scores high.\n"
+        "THIN PROFILE CALIBRATION: when the CREATOR CONTEXT is thin (a niche, an audience, a goal, and little "
+        "else: no posts, no memory, no what-they-do or known-for detail), judge relevance against exactly those "
+        "fields. A script squarely on the niche, pitched at that audience, and serving that goal scores 70+ on "
+        "relevance, and one with a clear mechanism, worked example, or everyday situation scores 70+ on "
+        "specificity. Never mark a thin-profile script down for lacking personal experience the profile never "
+        "gave; that demand is what makes writers invent.\n"
         "Set slop=true if the hook uses an AI-tell opener ('In today's video', 'Let me tell you', 'Here's the "
         "thing', 'Ever wondered', 'Picture this', 'Buckle up') or reads like filler, OR if the BODY is a "
         "DESCRIPTION of what to talk about rather than the verbatim words the creator says out loud "
@@ -2094,11 +2135,18 @@ def script_judge_prompt(scripts: list[dict], style: str, brand: dict | None = No
         "body must be a speakable script, not stage directions. "
         "Set fabricated=true if any hook/body/cta asserts a first-person personal fact, credential, client "
         "story, testimonial, or specific personal number that is NOT supported by the CREATOR CONTEXT below "
-        "and is not a bracketed fill-in, the creator would have to say a lie on camera. "
+        "and is not a bracketed fill-in, the creator would have to say a lie on camera. That includes a "
+        "personal EVENT ('last week I...', 'I tried this for 30 days'), a personal RESULT ('my revenue "
+        "doubled', 'I went from X to Y'), and an implied track record ('the mistake I see in every client', "
+        "'after coaching hundreds of people'). First-person opinions, habits and methods ('what I'd do', 'I "
+        "always tell people', 'here's my rule') are NOT fabricated, and neither are 'you' stories. "
         "Then compare the main hook against the altHooks and set best_hook to the index of the strongest "
         "(0 = main hook is already best; otherwise the 1-based position in altHooks). "
         "verdict='revise' if hook_strength<70 OR specificity<65 OR format_fit<65 OR relevance_to_creator<60 "
-        "OR slop is true OR fabricated is true; else 'keep'. Be decisive and consistent.\n\n"
+        "OR slop is true OR fabricated is true; else 'keep'. Be decisive and consistent. "
+        "The note is the fix for the weakest axis, and it must never ask for personal experience, a personal "
+        "result, a client story, or a credential the CREATOR CONTEXT doesn't give; point to a mechanism, a "
+        "worked example, or an everyday situation instead.\n\n"
         "AXIS CAPS (apply BEFORE scoring, a script that trips one is capped no matter how good the "
         "rest looks): a greeting, set-up line, or question-opener hook → cap hook_strength at 40. "
         "Hedging language in the body ('you might want to', 'consider', 'have you thought') → cap "
@@ -2106,9 +2154,13 @@ def script_judge_prompt(scripts: list[dict], style: str, brand: dict | None = No
         "hook_strength at 45 (nothing left to watch for). A recap/summary after the payoff, or a "
         "stacked second CTA → cap format_fit at 55.\n\n"
         "ANCHORED EXAMPLES (calibrate your scoring to these):\n"
-        '- hook "I fired my biggest client on a Tuesday. By Friday I understood why I should\'ve '
-        'done it a year ago." with a body that escalates and lands the reason last → hook_strength '
-        "~88, verdict keep (mid-action open, concrete stake, loop closed at the end).\n"
+        '- hook "Your best-paying client might be the one keeping you broke." with a body that walks the '
+        "viewer through their own calendar, does the hourly math, and lands the reason last → "
+        "hook_strength ~86, specificity ~80, verdict keep (concrete stake aimed at the viewer, a mechanism "
+        "they can check, loop closed at the end, no personal claim needed).\n"
+        '- hook "I fired my biggest client on a Tuesday. By Friday I was thanking him." when CREATOR '
+        "CONTEXT has no client work → fabricated=true, specificity <=20, verdict revise, even though the "
+        "hook is strong (an invented personal event, the creator would have to say a lie on camera).\n"
         '- hook "Let\'s talk about morning routines and why they matter." → hook_strength ~25, '
         "slop=true, verdict revise (set-up register, no stake, nothing to wait for).\n"
         '- body asserting "my client went from 2k to 90k followers in 6 weeks" when no client work '
@@ -2140,22 +2192,44 @@ def script_judge_prompt(scripts: list[dict], style: str, brand: dict | None = No
 
 
 def script_revise_prompt(brand: dict, style: str, flagged: list[dict],
-                         posts: list[dict] | None = None) -> tuple[str, str]:
+                         posts: list[dict] | None = None, *,
+                         memory: dict | None = None,
+                         slots: list[dict] | None = None) -> tuple[str, str]:
     """Rewrite ONLY the scripts the judge flagged, guided by its critique.
-    Keeps everything that already works; fixes the named weak axis."""
+    Keeps everything that already works; fixes the named weak axis.
+
+    2026-09-23: carries the feed writer's full contract (voice, titles, talking-head,
+    shotPlan, length) so a revise can't undo what the writer got right, and "sharper and
+    more specific" no longer means "invent a receipt" on a thin profile. Optional:
+    `memory` (so memory-backed facts survive the rewrite) and the page's planned slot per
+    draft, either as `flagged[i]["slot"]` or as `slots` indexed by `flagged[i]["pos"]`,
+    so a revise stays on its assigned topic."""
+    style = style if style in ACTIVE_STYLES else "talking_head"
     s = STYLES.get(style, STYLES["talking_head"])
     system = (
         f"You are Marque's senior script editor rewriting weak {s['label']} drafts. A strict critic flagged "
         "each script below with its weakest axis and a fix. Rewrite each to fix EXACTLY that problem while "
-        "preserving the creator's voice, the pillar, and anything already strong. Do not blandify, make it "
-        "sharper and more specific, not safer. The hook must land in the first 1.5 seconds with a concrete "
-        "claim; never open with a greeting, set-up, question, or AI-tell phrase.\n\n"
+        "preserving the creator's voice, the topic, the formatId, and anything already strong. Keep each "
+        "draft on its topic: when an assigned topic is given, the rewrite stays on it; fix the weak axis "
+        "inside that topic, never by switching to a different one. Do not blandify: make it sharper and more "
+        "concrete, never by inventing. Concrete means a mechanism (why it works), a worked example, a named "
+        "everyday situation the viewer recognizes, or a verifiable fact about the niche. It never means a "
+        "personal event, result, number, client story, or credential the creator context doesn't give you. "
+        "The hook must land in the first 1.5 seconds with a concrete claim; never open with a greeting, "
+        "set-up, question, or AI-tell phrase.\n\n"
+        f"{VOICE_DOCTRINE}\n\n"
+        f"{TITLE_DOCTRINE}\n\n"
+        f"{TALKING_HEAD_MANDATE}\n\n"
+        f"{SHOTPLAN_RULE}\n\n"
         f"{VIRALITY_BLOCK}\n\n"
         f"{GROUNDING_BLOCK}\n\n"
-        "If the critic flagged a FABRICATED receipt, replace it with the creator's real material, a bracketed "
-        "fill-in ('[your result]'), or audience-facing framing, never a different invented specific.\n\n"
+        "If the critic flagged the draft as FABRICATED, rewrite the invented claim as the viewer's "
+        "experience ('you'), as what most people do, or as the mechanism behind it. Use the creator's real "
+        "material when the context gives it, or at most ONE bracketed fill-in ('[your result]'). Never "
+        "swap in a different invented specific.\n\n"
         f"STYLE RULES ({s['label']}): {s['rubric']}\n\n"
         f"{BODY_FORMAT_RULE}\n\n"
+        f"{LENGTH_BUDGET}\n\n"
         f"Keep \"style\":\"{style}\" and a valid formatId on each. "
         "Return ONLY a JSON array, same length and order as the input. " + SCRIPT_SCHEMA
     )
@@ -2163,13 +2237,24 @@ def script_revise_prompt(brand: dict, style: str, flagged: list[dict],
     for f in flagged:
         sc = f["script"]
         v = f["verdict"]
+        slot = f.get("slot")
+        pos = f.get("pos")
+        if not slot and slots and isinstance(pos, int) and 0 <= pos < len(slots):
+            slot = slots[pos]
+        assigned = ""
+        if isinstance(slot, dict) and slot.get("topic"):
+            assigned = (f"Assigned topic (keep it): {slot.get('topic', '')}"
+                        + (f". Format: {slot['formatId']}" if slot.get("formatId") else "")
+                        + (f". Angle: {slot['angle']}" if slot.get("angle") else "") + "\n")
         blocks.append(
-            f"— Fix this (weakest: {v.get('weakest','hook')}; critic note: {v.get('note','')}):\n"
-            f"{json.dumps(sc, ensure_ascii=False)}"
+            f"Fix this (weakest: {v.get('weakest','hook')}; critic note: {v.get('note','')}):\n"
+            f"{assigned}{json.dumps(sc, ensure_ascii=False)}"
         )
+    mem = memory_block(memory) if memory else ""
     user = (
-        f"{brand_block(brand, posts)}\n\n"
-        "Rewrite each of these drafts:\n\n" + "\n\n".join(blocks)
+        f"{brand_block(brand, posts)}\n"
+        + (f"\n{mem}\n" if mem else "")
+        + "\nRewrite each of these drafts:\n\n" + "\n\n".join(blocks)
     )
     return system, user
 
@@ -2192,7 +2277,7 @@ def hooks_prompt(brand: dict, topic: str, style: str = "talking_head",
         "Example output for a fitness creator on 'protein intake':\n"
         '[\n'
         '  {"text": "You\'re eating enough protein. You\'re just eating it wrong.", "signal": "contrarian", "strength": 91},\n'
-        '  {"text": "The protein mistake I see most isn\'t the amount. It\'s the timing.", "signal": "authority", "strength": 88},\n'
+        '  {"text": "Most people save their protein for dinner. That\'s the mistake.", "signal": "authority", "strength": 88},\n'
         '  {"text": "The protein timing window is a myth. Here\'s what isn\'t.", "signal": "curiosity", "strength": 85}\n'
         "]\n\nReply with ONLY a JSON array, no prose."
     )
@@ -2255,12 +2340,16 @@ STEER_OPS: dict[str, str] = {
 
 
 def steer_prompt(brand: dict, script: dict, instruction: str,
-                 arm_stats: list[dict] | None = None) -> tuple[str, str]:
+                 arm_stats: list[dict] | None = None, *,
+                 memory: dict | None = None) -> tuple[str, str]:
     # Steering is the highest-frequency post-generation path and was the least protected
     # prompt in the codebase. Rules 0-4 are Palo's shared section-edit frame (LD
-    # build-tensions / rephrase / shorten — battle-tested on live edits), which exists to
+    # build-tensions / rephrase / shorten, battle-tested on live edits), which exists to
     # stop the two classic revision failures: drifting from what the writer meant, and
-    # "improving" natural speech into cringe.
+    # "improving" natural speech into cringe. Rules 5-7 (2026-09-23) give it the feed
+    # writer's contract: talking-head only, shotPlan is an editor note, 90-140 words, and
+    # the title/shotPlan pass through untouched unless the creator asked. `memory`
+    # (optional) keeps memory-backed facts legal under GROUNDING.
     system = (
         "You revise a short-form script per the creator's instruction. You are an expert short-form "
         "script consultant; the content is a script we want to go viral. Rules:\n"
@@ -2276,8 +2365,23 @@ def steer_prompt(brand: dict, script: dict, instruction: str,
         "the current language is better than changing to a less natural or cringe phrasing. Avoid "
         "corny phrases like 'the full picture' or 'dig deeper'.\n"
         "4. Flow: the revision must read as a seamless continuation of what surrounds it, same "
-        "tone, meaning, and rhythm. Read it back; if it doesn't flow, fix it.\n\n"
+        "tone, meaning, and rhythm. Read it back; if it doesn't flow, fix it.\n"
+        "5. Pass-through fields: copy the current title, summary, formatId and shotPlan through "
+        "UNCHANGED unless the instruction asks to change them. The one exception: if you rewrote a line "
+        "that a shotPlan entry quotes, update just that entry to quote the new line.\n"
+        "6. LENGTH: the finished script (hook + body + CTA) stays at about 90 to 140 words, 35 to 55 "
+        "seconds spoken. 'Shorter' or 'longer' moves within that range; go outside it only when the "
+        "creator names a length. A hook-only or line-level edit leaves the rest alone.\n"
+        "7. The current script is the creator's own draft: keep what it already says about them. Never "
+        "ADD a new personal event, result, number, client story, or credential (see GROUNDING). When the "
+        "creator asks for it to feel more personal, make it personal through their voice, opinions and "
+        "direct address ('this one drives me nuts', 'here's what I'd do'), or with ONE bracketed fill-in "
+        "for their own story ('[the moment this happened to you]'). Never invent a memory ('I used to do "
+        "this too', 'when I moved out').\n\n"
         f"{VOICE_DOCTRINE}\n\n"
+        f"{TITLE_DOCTRINE}\n\n"
+        f"{TALKING_HEAD_MANDATE}\n\n"
+        f"{SHOTPLAN_RULE}\n\n"
         f"{GROUNDING_BLOCK}\n\n"
         f"{BODY_FORMAT_RULE}\n\n"
         "Reply with ONLY a JSON object."
@@ -2286,9 +2390,21 @@ def steer_prompt(brand: dict, script: dict, instruction: str,
     if not learn:                                    # cold start → niche baseline
         learn = niche_prior_block(brand.get("niche", ""))
     learn_section = f"\n{learn}\n" if learn else ""
+    mem = memory_block(memory) if memory else ""
+    mem_section = f"\n{mem}\n" if mem else ""
+    current = ["Current script:"]
+    for key in ("title", "summary", "formatId"):
+        if script.get(key):
+            current.append(f"- {key}: {script.get(key)}")
+    current += [f"- hook: {script.get('hook','')}",
+                f"- body: {script.get('body','')}",
+                f"- cta: {script.get('cta','')}"]
+    shot_plan = script.get("shotPlan")
+    if isinstance(shot_plan, list) and shot_plan:
+        current.append(f"- shotPlan: {json.dumps(shot_plan, ensure_ascii=False)}")
     user = (
-        f"{brand_block(brand)}\nStyle: {script.get('style','talking_head')}\n{learn_section}"
-        f"Current script:\n- hook: {script.get('hook','')}\n- body: {script.get('body','')}\n- cta: {script.get('cta','')}\n"
+        f"{brand_block(brand)}\n{mem_section}Style: {script.get('style','talking_head')}\n{learn_section}"
+        + "\n".join(current) + "\n"
         f"Instruction: {instruction}\nReturn ONLY one JSON object. {SCRIPT_SCHEMA}"
     )
     return system, user
@@ -2307,11 +2423,15 @@ SOCIAL_CAPTION_SYSTEM = (
     "You write the POST CAPTION for a short-form talking-head video (the text published with it, "
     "not on-screen subtitles). The goal is reach: captions are indexed as search text on both "
     "platforms, and the ranking signals that matter are watch time, DM shares, saves and comments.\n\n"
+    "HONESTY (hard rule): this caption is published under the creator's name on their real post. "
+    "Say only what the video itself says. Never claim a result, a number, a client, a credential, or "
+    "an experience the script doesn't state, and never promise anything the creator would have to "
+    "deliver (no 'I'll send you', no free guide, no DM offer, no giveaway).\n\n"
     "STRUCTURE (hard rules):\n"
     "- Line 1 is a HOOK that works standalone in the first ~100 characters (that's all most "
-    "viewers see before '...more'). It must ADD to the video, a bold claim, specific number, or "
-    "curiosity gap, never restate the spoken hook word-for-word, and never open with a date, "
-    "an @mention, a hashtag, or 'New video!'.\n"
+    "viewers see before '...more'). It must ADD to the video, a bold claim or a curiosity gap "
+    "drawn from what the script says, never restate the spoken hook word-for-word, and never open "
+    "with a date, an @mention, a hashtag, or 'New video!'.\n"
     "- Work the niche's natural search phrase (what a person would type into search) into the "
     "first line in plain sentence form. Keywords in the caption text outrank hashtags for "
     "discovery now.\n"
@@ -2319,11 +2439,11 @@ SOCIAL_CAPTION_SYSTEM = (
     "outperform long ones on Reels/TikTok). Go longer ONLY when the script opens a loop the "
     "caption should pay off, then use one thought per line, blank lines between thoughts, and "
     "a numbered list for steps.\n"
-    "- EXACTLY ONE call-to-action, framed as an exchange, chosen to fit the content: "
-    "a keyword-comment trade ('Comment WORD and I'll send you X'), a save tied to a concrete "
-    "future moment ('Save this for your next …'), or a share aimed at a specific person "
-    "('Send this to the friend who …'). Blend the script's CTA idea into this shape rather "
-    "than copying it.\n"
+    "- EXACTLY ONE call-to-action, chosen to fit the content: a save tied to a concrete future "
+    "moment ('Save this for your next …'), a share aimed at a specific person ('Send this to the "
+    "friend who …'), or a genuine question the viewer can answer in the comments ('Which one do "
+    "you do?'). Blend the script's CTA idea into this shape rather than copying it, and drop any "
+    "part of it that promises something.\n"
     "- End with hashtags on their own line: exactly 3-5, all literally describing the video, "
     "mixing niche-specific and mid-size topical tags. lowercase, no spaces.\n"
     "- Every hashtag must be REAL, CORRECTLY-SPELLED words a person actually searches. A "
@@ -2337,15 +2457,15 @@ SOCIAL_CAPTION_SYSTEM = (
     "- AI-genericisms: 'unlock', 'level up', 'game changer', 'in today's fast-paced world', "
     "sparkle emoji, an emoji after every sentence (0-3 emoji total, functional only).\n"
     "- A wall of text, or a caption that merely transcribes the video.\n\n"
-    "Voice: first person, specific numbers and named outcomes, the way this creator actually "
-    "talks. Reply with ONLY the caption text, no quotes, no preamble, no labels."
+    "Voice: plain and direct, the way this creator actually talks to camera, concrete details "
+    "taken from the script. Reply with ONLY the caption text, no quotes, no preamble, no labels."
 )
 
 
 def social_caption_prompt(hook: str, body: str, cta: str, niche: str,
                           audience: str, platform: str = "instagram") -> tuple[str, str]:
     plat = ("TikTok: compress toward one conversational line or a tight short block, "
-            "hook under ~100 chars; comment-trade CTAs perform best here."
+            "hook under ~100 chars; a comment question the viewer can answer performs best here."
             if platform == "tiktok" else
             "Instagram Reels: hook under ~125 chars before the fold; line breaks and "
             "whitespace encouraged; save/send CTAs perform best here.")
@@ -2689,7 +2809,7 @@ def learning_block(arm_stats: list[dict]) -> str:
         if conf == "confirmed":
             any_confirmed = True
         tag = f" [{band}]" if band != "noise" else ""
-        lines.append(f"- {label} — n={n} settled, {conf}{tag}")
+        lines.append(f"- {label}, n={n} settled, {conf}{tag}")
     if len(lines) == 1:
         return ""
     if any_confirmed:
@@ -2723,10 +2843,10 @@ def mix_block(lanes: list[dict], queued_titles: list[str] | None = None) -> str:
         q = f", {l['queued']} queued unbuilt" if int(l.get("queued", 0)) else ""
         lines.append(f"- {l['name']}: {int(l.get('recent', 0))} recent{q}")
     if under:
-        lines.append(f"Under-served right now: {', '.join(under)} — the next idea leans there "
+        lines.append(f"Under-served right now: {', '.join(under)}. The next idea leans there "
                      "unless the data says otherwise.")
     if over:
-        lines.append(f"Over-served: {over} — if the last few were this type, vary.")
+        lines.append(f"Over-served: {over}. If the last few were this type, vary.")
     lines.append("A lane whose queued idea sits unbuilt is SERVED: do not commission a second "
                  "entrant into it until the first ships or dies.")
     if queued_titles:
@@ -2795,14 +2915,16 @@ def attribution_prompt(settled_post: dict, arms: list[dict]) -> tuple[str, str]:
 
 # Deterministic hook openers by hook_signal — the keyless next-idea mock leans on the
 # same signal vocabulary the bandit tracks, so mock and live speak the same language.
+# Honest by construction (2026-09-23): no tenure ("I've done this long enough"), no
+# numbers the creator must have, no invented first-person moment. Opinions and "you".
 _SIGNAL_HOOK_TEMPLATES = {
     "contrarian": "Most advice about this is backwards. Here's what actually works.",
-    "authority": "I've done this long enough to tell you the part everyone skips.",
-    "specificity": "The exact numbers behind this, in thirty seconds.",
+    "authority": "Everyone skips this part, and it's the part that matters most.",
+    "specificity": "One small change, and exactly why it works, in thirty seconds.",
     "stakes": "Ignoring this is quietly costing you every week.",
     "curiosity": "Nobody explains why this works, so I will.",
     "patternInterrupt": "Stop scrolling. This changes how you do it.",
-    "narrative": "The moment I realized I'd been doing this wrong.",
+    "narrative": "You've been doing this the way everyone does. Here's where it breaks.",
 }
 
 
@@ -2822,7 +2944,8 @@ def mock_next_idea(niche: str, insight: dict | None,
             "hook": hook,
             "beats": [
                 f"Open on the {val} angle inside the first two seconds. It's your strongest signal.",
-                "Make ONE specific, provable claim in the middle (a number, a receipt, a demo).",
+                "Make ONE specific claim in the middle and back it with the reason it works or an "
+                "everyday moment the viewer knows.",
                 "Land a direct CTA: tell the viewer the exact next step in one sentence.",
             ],
             "grounding": f"Built on your own data: {insight['label']} "
@@ -2836,13 +2959,16 @@ def mock_next_idea(niche: str, insight: dict | None,
     title = (f"one filmable angle on {pillar}" if pillar
              else f"a {fmt.replace('-', ' ')} to open your data loop")
     grounding = arm_reason or (f"Niche baseline ({where}), no settled performance data yet. "
-                               "your own results take over as soon as they land.")
+                               "Your own results take over as soon as they land.")
+    # The note's first clause is written to stand alone as a structure beat (see
+    # NICHE_PRIORS); strip its own period so the beat never ends in "..".
+    lead = p["note"].split(";")[0].strip().rstrip(".")
     return {
         "title": title,
         "hook": _SIGNAL_HOOK_TEMPLATES.get(signal, _SIGNAL_HOOK_TEMPLATES["curiosity"]),
         "beats": [
             f"Open with a {signal} hook, it tends to over-index in {where}.",
-            f"Structure it as a {fmt.replace('-', ' ')}: {p['note'].split(';')[0]}.",
+            f"Structure it as a {fmt.replace('-', ' ')}: {lead}.",
             "Close with a direct CTA so the post settles with a clean signal.",
         ],
         "grounding": grounding,
@@ -2867,6 +2993,8 @@ def next_idea_prompt(niche: str, insight: dict | None, pillar: str = "",
         "- The hook must stop the scroll in the first 3 seconds.\n"
         "- If a performance strength is provided, build the idea AROUND it, citing it "
         "qualitatively only. Do NOT invent, estimate, or repeat any number.\n"
+        "- Honest: never build the idea on a personal result, experiment, client story, or credential "
+        "the creator hasn't given you. Frame it as the viewer's situation, a take, or how something works.\n"
         "- 3-5 beats, each one actionable sentence.\n"
         'Return JSON only: {"title": str, "hook": str, "beats": [str, ...]}'
     )
@@ -2955,113 +3083,124 @@ def coach_card_prompt(insight: dict) -> tuple[str, str]:
 # learning_block() is empty (no arm has an early read yet); the creator's own data
 # always wins the moment it exists. Keyless-safe: pure hand-authored constants, no
 # model call. `signals` are hook_signal values (see SIGNALS); `formats` are
-# FORMAT_IDS; `styles` are ACTIVE_STYLES. Ported framing from Palo's cold-start
-# discipline (mobile-onboarding-interaction-bouncer: "niche knowledge, not their
-# catalog"; onboarding-prompt-direction-options MODE-2 generic format lanes).
+# TREND_FORMAT_IDS (the talking-head-filmable subset of FORMAT_IDS); `styles` are
+# ACTIVE_STYLES. Ported framing from Palo's cold-start discipline
+# (mobile-onboarding-interaction-bouncer: "niche knowledge, not their catalog";
+# onboarding-prompt-direction-options MODE-2 generic format lanes).
+#
+# HONESTY (2026-09-23): this block reaches ~9 writers on EVERY cold-start creator, so a
+# note is effectively a few-shot instruction. The old notes asked for "receipts (a
+# 90-day log, an exact number)", demos, "point the camera at the part", faceless
+# voiceover and before/after footage: things a talking-head creator with a thin profile
+# can only satisfy by lying on camera or filming something else. Every note now keeps
+# the niche's real craft insight (what hooks and structures travel) and expresses proof
+# as a mechanism, a common mistake, a named everyday situation, or a worked example.
+# The FIRST clause (before ";") must stand alone: mock_next_idea renders it as a
+# structure beat.
 # ---------------------------------------------------------------------------
 
 NICHE_PRIORS: dict[str, dict] = {
     "fitness": {
         "signals": ["contrarian", "authority", "specificity"],
-        "formats": ["myth-buster", "do-this-not-that", "before-after"],
+        "formats": ["myth-buster", "do-this-not-that", "listicle"],
         "styles": ["talking_head", "broll_cutaway"],
-        "note": "Form-check myth-busting and before/after transformations over-index; back every claim with receipts (a 90-day log, an exact number).",
+        "note": "Myth-busting the gym advice everyone repeats over-indexes; prove it with the mechanism (why the rep range, the rest time, or the protein timing actually matters) and a moment the viewer knows, like the set they quit two reps early, never a personal lift or body change the creator hasn't shared.",
     },
     "finance": {
         "signals": ["specificity", "stakes", "contrarian"],
         "formats": ["listicle", "do-this-not-that", "myth-buster"],
-        "styles": ["talking_head", "green_screen", "faceless"],
-        "note": "Exact dollar figures and 'this is costing you money' stakes convert; myth-bust the money advice everyone repeats.",
+        "styles": ["talking_head", "green_screen"],
+        "note": "'This is quietly costing you money' stakes convert, and so does myth-busting the money advice everyone repeats; make it concrete with a worked example in round numbers the viewer can check ($5 a day is about $1,800 a year), never a personal balance, salary, or return the creator hasn't shared.",
     },
     "business": {
         "signals": ["contrarian", "stakes", "authority"],
         "formats": ["myth-buster", "pov-story", "listicle"],
         "styles": ["talking_head", "green_screen"],
-        "note": "Contrarian takes on conventional advice plus a specific revenue/mistake number travel; a first-person POV story builds trust fast.",
+        "note": "Contrarian takes on conventional business advice travel; name the specific mistake and what it costs in plain terms (hours lost, deals lost, a price set too low), and tell stories as the viewer's own ('you quote the job, they say yes too fast'), which builds trust without an invented history.",
     },
     "marketing": {
         "signals": ["authority", "specificity", "contrarian"],
         "formats": ["listicle", "do-this-not-that", "myth-buster"],
         "styles": ["green_screen", "talking_head"],
-        "note": "Teardown listicles and receipts (real numbers, real examples) earn authority; green-screen over an example beats abstract advice.",
+        "note": "Teardown listicles earn authority when every point names a recognizable example (a type of ad, a hook, a landing page everyone has seen) and why it works or fails; a green-screen react to a common example, keyed in by the editor, beats abstract advice.",
     },
     "food": {
         "signals": ["curiosity", "specificity", "patternInterrupt"],
-        "formats": ["broll-hook", "do-this-not-that", "before-after"],
-        "styles": ["faceless", "broll_cutaway"],
-        "note": "Process b-roll plus one surprising technique or number dominates; faceless voiceover over cooking visuals is the default that works.",
+        "formats": ["do-this-not-that", "myth-buster", "listicle"],
+        "styles": ["broll_cutaway", "talking_head"],
+        "note": "One surprising technique, told to camera as what goes wrong (dense bread, soggy crust, bland sauce), why, and the fix, dominates; the science behind it (heat, salt, timing) is the proof, and the editor's food b-roll carries the visuals.",
     },
     "beauty": {
         "signals": ["contrarian", "curiosity", "authority"],
-        "formats": ["myth-buster", "do-this-not-that", "before-after"],
+        "formats": ["myth-buster", "do-this-not-that", "listicle"],
         "styles": ["talking_head", "broll_cutaway"],
-        "note": "Ingredient myth-busting and before/after reveals travel; derm/pro-authority receipts beat vibes.",
+        "note": "Ingredient myth-busting travels, what the ingredient actually does and who it's wrong for; credibility comes from the mechanism and the common mistake (layering actives, skipping reapplication), never from a claimed credential or a skin result the creator hasn't shared.",
     },
     "fashion": {
         "signals": ["curiosity", "specificity", "patternInterrupt"],
-        "formats": ["before-after", "listicle", "do-this-not-that"],
-        "styles": ["talking_head", "split_three", "broll_cutaway"],
-        "note": "Styling reveals and transformations plus 'X ways to wear it' listicles carry; a strong visual first frame is non-negotiable.",
+        "formats": ["listicle", "do-this-not-that", "myth-buster"],
+        "styles": ["talking_head", "broll_cutaway"],
+        "note": "'X ways to wear it' listicles and styling rules with the reason behind them carry (proportion, fit, color); the first line names the specific piece or problem the viewer owns, and the editor adds the outfit visuals.",
     },
     "tech": {
         "signals": ["curiosity", "stakes", "specificity"],
-        "formats": ["listicle", "do-this-not-that", "broll-hook"],
-        "styles": ["green_screen", "talking_head", "faceless"],
-        "note": "'This tool does X in Y seconds' curiosity plus green-screen demos win; stakes on being left behind add urgency.",
+        "formats": ["listicle", "do-this-not-that", "green-screen"],
+        "styles": ["green_screen", "talking_head"],
+        "note": "'This tool does X' curiosity wins when the use case is concrete (the task, who it's for, what it replaces); a green-screen react to the tool's page or a viral claim about it, keyed in by the editor, beats a feature list, and stakes on being left behind add urgency.",
     },
     "education": {
         "signals": ["specificity", "contrarian", "authority"],
         "formats": ["do-this-not-that", "listicle", "myth-buster"],
         "styles": ["talking_head", "green_screen"],
-        "note": "Study-method myth-busting and named specific techniques over-index; authority comes from receipts, not credentials.",
+        "note": "Study-method myth-busting and named, specific techniques (spaced repetition, active recall, the Feynman method) over-index; authority comes from explaining why the method works, not from credentials or grades.",
     },
     "mindset": {
         "signals": ["contrarian", "narrative", "stakes"],
         "formats": ["pov-story", "myth-buster", "listicle"],
         "styles": ["talking_head"],
-        "note": "Contrarian reframes and a sincere personal narrative land; talking-head to camera carries the sincerity.",
+        "note": "Contrarian reframes land when they're tied to a moment the viewer knows (the alarm going off, the plan made at midnight); tell it as 'you' or as what most people do, sincere and straight to camera, not as an invented personal breakthrough.",
     },
     "real_estate": {
         "signals": ["specificity", "stakes", "authority"],
-        "formats": ["listicle", "do-this-not-that", "before-after"],
+        "formats": ["listicle", "do-this-not-that", "myth-buster"],
         "styles": ["talking_head", "broll_cutaway"],
-        "note": "Exact numbers (price, ROI, rates) plus 'the mistake buyers make' stakes convert; walkthrough b-roll adds proof.",
+        "note": "'The mistake buyers make' stakes convert; make it concrete with the mechanism (how rates, points, or closing costs actually work) and a worked example in round numbers, let the editor add the house b-roll, and never cite a deal or commission the creator hasn't shared.",
     },
     "health": {
         "signals": ["contrarian", "authority", "specificity"],
         "formats": ["myth-buster", "do-this-not-that", "listicle"],
-        "styles": ["talking_head", "faceless"],
-        "note": "Nutrition/wellness myth-busting with study-backed authority over-indexes; one specific protocol beats generic advice.",
+        "styles": ["talking_head", "broll_cutaway"],
+        "note": "Nutrition and wellness myth-busting over-indexes when it explains what the body actually does, in plain words; one specific, doable habit beats generic advice, and research is referenced in general terms, never an invented study or statistic.",
     },
     "parenting": {
         "signals": ["narrative", "contrarian", "curiosity"],
         "formats": ["pov-story", "do-this-not-that", "listicle"],
         "styles": ["talking_head"],
-        "note": "Relatable POV moments and gentle contrarian takes on common parenting advice resonate; sincerity over polish.",
+        "note": "Relatable POV moments ('you're negotiating with a toddler over the blue cup') and gentle contrarian takes on common parenting advice resonate; sincerity over polish, and the moment is the viewer's unless the creator has shared their own.",
     },
     "travel": {
         "signals": ["curiosity", "specificity", "patternInterrupt"],
-        "formats": ["listicle", "broll-hook", "before-after"],
-        "styles": ["broll_cutaway", "faceless"],
-        "note": "Destination b-roll hooks plus '$X for Y days' specificity carry; open on the most striking visual, not a greeting.",
+        "formats": ["listicle", "do-this-not-that", "myth-buster"],
+        "styles": ["broll_cutaway", "talking_head"],
+        "note": "Specific, useful travel advice carries (the booking mistake, the neighborhood to stay in instead, what things really cost as general ranges); open on the most surprising claim, not a greeting, let the editor add the destination b-roll, and never describe a trip the creator hasn't taken.",
     },
     "comedy": {
         "signals": ["patternInterrupt", "narrative", "curiosity"],
-        "formats": ["pov-story", "broll-hook"],
-        "styles": ["talking_head", "split_three", "duet_split"],
-        "note": "Pattern-interrupt cold opens and relatable POV skits travel; the first frame has to break the scroll's expectation.",
+        "formats": ["pov-story", "listicle"],
+        "styles": ["talking_head", "duet_split"],
+        "note": "Pattern-interrupt cold opens and relatable POV bits told straight to camera travel ('POV: you said you'd leave at eight'); the first line has to break the scroll's expectation.",
     },
     "career": {
         "signals": ["contrarian", "stakes", "specificity"],
         "formats": ["do-this-not-that", "listicle", "myth-buster"],
         "styles": ["talking_head", "green_screen"],
-        "note": "Contrarian career advice plus salary/number specifics and 'this is quietly killing your promotion' stakes convert.",
+        "note": "Contrarian career advice and 'this is quietly killing your promotion' stakes convert; get specific with the words to say in the meeting or the email, and treat salaries as general market ranges, never a personal paycheck the creator hasn't shared.",
     },
     "creator": {
         "signals": ["authority", "specificity", "contrarian"],
         "formats": ["listicle", "do-this-not-that", "myth-buster"],
         "styles": ["talking_head", "green_screen"],
-        "note": "Growth receipts (real view/follower numbers) and algorithm myth-busting over-index; show the data on screen.",
+        "note": "Algorithm myth-busting and hook breakdowns over-index; make them concrete by naming the mechanism (the first two seconds, watch time, saves and shares) and a kind of video everyone has seen, never growth numbers the creator hasn't shared.",
     },
     # --- Visual / craft / lifestyle niches (added 2026-08-18) -----------------
     # A photographer beta tester was fed beauty ideas ("Before-After Makeup
@@ -3073,75 +3212,75 @@ NICHE_PRIORS: dict[str, dict] = {
     # one has to be true of the craft, not generic engagement advice.
     "photography": {
         "signals": ["authority", "specificity", "curiosity"],
-        "formats": ["do-this-not-that", "before-after", "broll-hook"],
+        "formats": ["do-this-not-that", "myth-buster", "listicle"],
         "styles": ["talking_head", "broll_cutaway"],
-        "note": "Show the frame, then the settings that made it, side-by-side edits and one concrete gear/light/composition decision beat abstract 'find your style' advice. The work on screen is the proof.",
+        "note": "One concrete light, lens, or composition decision explained with its reason beats abstract 'find your style' advice; name the common mistake (shooting at noon, centering everything) and the fix, and the editor adds example images.",
     },
     "design": {
         "signals": ["authority", "specificity", "contrarian"],
-        "formats": ["do-this-not-that", "before-after", "listicle"],
+        "formats": ["do-this-not-that", "green-screen", "listicle"],
         "styles": ["talking_head", "green_screen", "broll_cutaway"],
-        "note": "Critique something real on screen and name the specific rule it breaks; before/after redraws travel because the improvement is visible in a second.",
+        "note": "React to a kind of design everyone has seen (a logo, a landing page, a living room layout) and name the specific rule it breaks and the fix; the editor keys the example in behind the creator, so the improvement is explained in words, not filmed.",
     },
     "gaming": {
         "signals": ["curiosity", "stakes", "specificity"],
-        "formats": ["listicle", "broll-hook", "pov-story"],
+        "formats": ["listicle", "pov-story", "do-this-not-that"],
         "styles": ["talking_head", "green_screen"],
-        "note": "Lead with the clip or the mechanic, not the intro; a specific, testable tip ('do this on the third round') outperforms general commentary.",
+        "note": "Lead with the mechanic, not the intro; a specific, testable tip ('do this on the third round') outperforms general commentary, and the editor adds the gameplay b-roll.",
     },
     "music": {
         "signals": ["curiosity", "authority", "specificity"],
-        "formats": ["before-after", "broll-hook", "do-this-not-that"],
+        "formats": ["do-this-not-that", "myth-buster", "listicle"],
         "styles": ["talking_head", "broll_cutaway"],
-        "note": "Play it, then explain it, the sound has to arrive in the first two seconds. Breaking down why a familiar song works travels further than theory in the abstract.",
+        "note": "Breaking down why a familiar song works travels further than theory in the abstract; name the song, the moment, and the trick behind it (the key change, the pause before the drop) in the first line, all told to camera.",
     },
     "sports": {
         "signals": ["contrarian", "authority", "stakes"],
         "formats": ["myth-buster", "do-this-not-that", "pov-story"],
         "styles": ["talking_head", "green_screen"],
-        "note": "A specific, defensible take with the receipt (a stat, a play, a clip) beats vague opinion; technique corrections work when the wrong version is shown first.",
+        "note": "A specific, defensible take beats vague opinion; anchor it in a well-known play, game, or rule the viewer can look up, and for technique corrections name the common wrong version first, then the fix.",
     },
     "pets": {
         "signals": ["curiosity", "authority", "specificity"],
-        "formats": ["do-this-not-that", "myth-buster", "broll-hook"],
+        "formats": ["do-this-not-that", "myth-buster", "pov-story"],
         "styles": ["talking_head", "broll_cutaway"],
-        "note": "The animal is the hook, lead on the behavior, then the fix. Training myths ('they know they did wrong') myth-bust well; keep advice specific to a breed or an age.",
+        "note": "Lead on the behavior the viewer is living with (the dog that pulls, the cat at 4am), then the reason and the fix; training myths ('they know they did wrong') myth-bust well, and advice for a specific breed or age beats general tips.",
     },
     "home": {
         "signals": ["specificity", "authority", "curiosity"],
-        "formats": ["before-after", "do-this-not-that", "listicle"],
+        "formats": ["do-this-not-that", "listicle", "myth-buster"],
         "styles": ["talking_head", "broll_cutaway"],
-        "note": "Before/after with the real cost and the real time is the whole format; name the exact product or measurement rather than 'the right materials'.",
+        "note": "Name the specific mistake and the fix (the wrong paint finish, the shelf that sags) with the reason it happens; a named product type or measurement beats 'the right materials', and the editor adds the room b-roll.",
     },
     "auto": {
         "signals": ["authority", "specificity", "contrarian"],
         "formats": ["myth-buster", "do-this-not-that", "listicle"],
         "styles": ["talking_head", "broll_cutaway"],
-        "note": "Dealership and maintenance myth-busting with an exact dollar figure travels; point the camera at the actual part you're talking about.",
+        "note": "Dealership and maintenance myth-busting travels; explain what the part actually does and what the upsell usually costs in general terms, and the editor adds the part b-roll, so it's all told to camera.",
     },
     "outdoors": {
         "signals": ["stakes", "specificity", "authority"],
         "formats": ["listicle", "do-this-not-that", "pov-story"],
         "styles": ["talking_head", "broll_cutaway"],
-        "note": "Consequence is the hook, the mistake that ends a trip. Name the exact gear, the exact conditions; scenery alone doesn't hold attention past three seconds.",
+        "note": "Consequence is the hook, the mistake that ends a trip; name the specific gear and the conditions where it fails (cotton in the rain, a canister stove in the cold), because scenery alone doesn't hold attention past three seconds.",
     },
     "faith": {
         "signals": ["curiosity", "authority", "stakes"],
         "formats": ["pov-story", "myth-buster", "listicle"],
         "styles": ["talking_head"],
-        "note": "First-person and specific, a question people are actually sitting with, answered plainly. Avoid the register of a sermon; keep it one idea at conversational pace.",
+        "note": "A question people are actually sitting with, answered plainly as the creator's honest view, not an invented testimony; avoid the register of a sermon and keep it one idea at conversational pace.",
     },
     "relationships": {
         "signals": ["curiosity", "stakes", "contrarian"],
         "formats": ["pov-story", "myth-buster", "do-this-not-that"],
         "styles": ["talking_head"],
-        "note": "Name the exact situation in the first line, people self-select on recognizing themselves. Scripts, not sentiments: give the words to say, not the feeling to have.",
+        "note": "Name the specific situation in the first line, people self-select on recognizing themselves; scripts, not sentiments: give the words to say, not the feeling to have.",
     },
     "culture": {
         "signals": ["curiosity", "contrarian", "stakes"],
         "formats": ["pov-story", "listicle", "myth-buster"],
         "styles": ["talking_head", "green_screen"],
-        "note": "Timeliness is the asset, react while it's live, and take an actual position. A recommendation works only when you say precisely who it's not for.",
+        "note": "Timeliness is the asset, react while it's live and take an actual position; a recommendation works only when you say precisely who it's not for.",
     },
     "default": {
         "signals": ["contrarian", "specificity", "curiosity"],
@@ -3259,18 +3398,19 @@ VIRALITY_BLOCK = (
     "an on-screen line that contradicts expectation).\n"
     "- Watch-time is the master metric on both TikTok and Reels. Retention beats likes: a 70% avg-watch clip "
     "out-distributes a 10x-liked clip. Cut anything that doesn't earn its second.\n"
-    "- Retention mechanics: change something visually every 2 to 4 seconds (cut, punch-in, caption card, prop). "
-    "Open a loop in the hook ('the third one changed everything') and close it only at the end. Use pattern "
-    "interrupts at the 30% and 70% marks where drop-off spikes.\n"
-    "- Specificity converts, but ONLY when it's TRUE for this creator. A concrete number or named "
-    "mechanism ('42 days', 'the 6am rule') outperforms vague claims, so pull real specifics from the "
-    "creator's own data, a verifiable fact about the niche, or a bracketed fill-in ('[your result]') they "
-    "complete before filming. An INVENTED specific is worse than a vague line, the creator has to say it "
-    "out loud.\n"
+    "- Retention mechanics: something changes visually every 2 to 4 seconds (a cut, a punch-in, a caption "
+    "card, a b-roll cutaway), all of it added by the AI editor to the creator's single take, so the SCRIPT's "
+    "job is new information every few seconds. Open a loop in the hook ('the third one changed everything') "
+    "and close it only at the end. Use pattern interrupts at the 30% and 70% marks where drop-off spikes.\n"
+    "- Specificity converts, but ONLY when it's TRUE for this creator. A named mechanism, a worked example, "
+    "or an everyday situation the viewer recognizes ('the two-minute rule', 'the set you quit two reps "
+    "early') outperforms vague claims. Pull personal specifics only from the creator's own data or, at most "
+    "once, a bracketed fill-in ('[your result]') they complete before filming. An INVENTED specific is worse "
+    "than a vague line, the creator has to say it out loud.\n"
     "- Hooks that work: contrarian reversal ('everyone says X, it's backwards'), stakes ('this mistake costs "
-    "you followers daily'), authority-with-receipts (using ONLY receipts the creator actually has, or a "
-    "bracketed fill-in), curiosity gap with a payoff you actually deliver. Question-openers underperform "
-    "statements.\n"
+    "you followers daily'), authority (a confident, concrete explanation of how something works; personal "
+    "proof ONLY when the creator's context gives it), curiosity gap with a payoff you actually deliver. "
+    "Question-openers underperform statements.\n"
     "- CTA norms: one CTA max, spoken in the last 2 seconds, matched to the goal (follows: 'follow for the "
     "next one', saves: 'save this for your next X', comments: a one-word prompt). Never stack CTAs.\n"
     "- Platform notes: TikTok rewards raw, native-feeling, trend-aware content with on-screen text from frame "
@@ -3306,7 +3446,7 @@ CRAFT_RULES_BLOCK = (
     "- WRITE WITH THE CREATOR'S MOUTH. Spoken language only: contractions, short breaths, lines "
     "that survive being said fast. Mimic the SHAPE of their real openers and cadence, never lift "
     "the line.\n"
-    "- EXPLAIN THE PROP. Any device, place, or reference the median viewer wouldn't know gets one "
+    "- EXPLAIN THE REFERENCE. Any term, tool, place, or name the median viewer wouldn't know gets one "
     "layman's line in the flow. Familiarity beats name recognition.\n"
     "- DURATION IS A MEASUREMENT, NOT A WISH. \"durationSeconds\" is your honest estimate of the "
     "finished video spoken at this creator's real pace (~165 wpm default), not the target you wish "
@@ -3324,29 +3464,33 @@ CRAFT_RULES_BLOCK = (
 # catch AFTER generation; showing them AT generation is cheaper than repairing.
 CRAFT_EXAMPLES_BLOCK = (
     "A RIGHT script (structure, not content. Note: mid-action open, escalation, payoff held to "
-    "the last line, callback close, every line speakable, all of it TOLD to camera):\n"
-    '  hook: "My biggest client fired me on a Tuesday, and by Friday I was thanking him."\n'
-    '  body: "So Tuesday morning I get the call. Contract\'s done, effective now. That client was '
-    "forty percent of my income, and I did what you'd do. Panicked, opened my laptop, started "
-    "writing the please-take-me-back email.\\n\\nThen I looked at my calendar. Every red block on "
-    "it, for two years, was him. Rush jobs. Sunday calls. The projects I actually wanted to do "
-    "were sitting in a folder called someday.\\n\\nSo instead of sending the email, I sent three "
-    "pitches to the someday folder people. Two answered by Thursday.\\n\\nFriday, the math came "
-    'back: the two of them together paid more than he ever did."\n'
-    '  cta: "Look at your calendar. Whatever your version of that red block is, that\'s the email '
-    'to write today."\n'
+    "the last line, callback close, every line speakable, all of it TOLD to camera, about 130 words, "
+    "and not one personal claim: the story is the VIEWER'S, so the creator never has to say something "
+    "that didn't happen to them):\n"
+    '  hook: "Your best-paying client might be the one keeping you broke."\n'
+    '  body: "Open your calendar and scroll back a month. Every rush job, every Sunday call, every '
+    "quick favor, it's the same name, right?\\n\\nNow find the work you actually want to be known "
+    "for. It's sitting in a folder called someday, because that one client eats the hours you'd need "
+    "to go get it.\\n\\nSo do the math almost nobody does. Take what they pay you in a month and "
+    "divide it by the hours they really take, Sundays and late-night texts included. That's your real "
+    "rate with them, and it's usually way below what's on the invoice.\\n\\nThey're not your "
+    'best-paying client. They\'re just your biggest."\n'
+    '  cta: "Run that number tonight. If it\'s your lowest rate, you know which email to write '
+    'tomorrow."\n'
     "A WRONG script and why it fails:\n"
-    '  hook: "Today I want to talk about the time I got fired by a client, and by the end of this '
-    'video you\'ll see why it was the best thing that ever happened to me."\n'
-    '  body: "Little did I know that this setback would become an opportunity. As I contemplated '
-    'my next move, I reflected on how challenges are really just growth in disguise. Studies show '
-    'that over 73% of freelancers experience this."\n'
-    '  cta: "And that\'s why everything happens for a reason. Like and subscribe for more."\n'
+    '  hook: "Today I want to talk about why your biggest client might not be your best client, and '
+    'by the end of this video you\'ll see why."\n'
+    '  body: "Little did I know, when I started out, that one client could hold my whole business '
+    "back. As I contemplated my next move, I reflected on how growth is really about balance. Studies "
+    "show that over 73% of freelancers overwork for their top client. Last year I fired my biggest "
+    'client and my income doubled in three months."\n'
+    '  cta: "And that\'s why balance is everything. Like and subscribe for more."\n'
     "  FAILURES: the first line reveals the payoff and opens with setup instead of mid-action. "
     "\"Little did I know\" and \"contemplated my next move\" are written language no creator "
-    "speaks. \"Over 73% of freelancers\" is an invented specific, the worst failure. The body "
-    "never tells the actual story (no calendar, no email, no numbers the creator owns), and "
-    "\"like and subscribe\" is a recap-register close."
+    "speaks. \"Over 73% of freelancers\" is an invented statistic, and \"I fired my biggest client "
+    "and my income doubled\" is an invented personal event and result: the worst failures, because "
+    "the creator has to say them on camera. The body never gets concrete (no calendar, no math the "
+    "viewer can do), and \"like and subscribe\" is a recap-register close."
 )
 
 
@@ -3511,18 +3655,22 @@ GROUNDING_BLOCK = (
     "specific numbers / dollar figures / timeframes presented as lived experience.\n"
     "- First person is FINE for opinions, habits and methods ('here's what I do', 'I'd never', 'what "
     "actually works is'). What's banned is first-person EVENTS and RESULTS the sources above don't give "
-    "you: 'last week I...', 'I watched a founder...', 'my client went from X to Y', 'I went from 300 to "
-    "zero'. Stories default to 'you' (POV) or 'most people' framing.\n"
-    "- When a beat needs a receipt you don't have, do ONE of these instead:\n"
+    "you: 'last week I...', 'I used to do this too', 'I watched a founder...', 'my client went from X to "
+    "Y', 'I went from 300 to zero'. Stories default to 'you' (POV) or 'most people' framing.\n"
+    "- When a beat needs proof you don't have, do ONE of these instead:\n"
     "  (a) a bracketed fill-in the creator completes before filming, '[your result]', '[how long it took "
     "you]', '[number of clients]';\n"
-    "  (b) audience-facing framing, 'you're doing X', 'most people get Y wrong', which needs no personal "
-    "receipt;\n"
-    "  (c) a general, verifiable fact about the niche, attributed to the niche, not to the creator.\n"
+    "  (b) audience-facing framing, 'you're doing X', 'most people get Y wrong', or a named everyday "
+    "situation the viewer recognizes, which needs no personal proof;\n"
+    "  (c) the mechanism (why it works), a worked example the viewer can check, or a general, verifiable "
+    "fact about the niche, attributed to the niche, not to the creator.\n"
     "- A bracketed placeholder is a FEATURE, not a failure: one honest '[your number]' beats a fabricated "
     "'$3,180' every time. But prefer (b) or (c), and use AT MOST ONE bracketed fill-in per script: a "
     "script full of blanks reads as a template. Make the STRUCTURE specific; pull real specifics only "
-    "from the sources above."
+    "from the sources above.\n"
+    "- Never promise the viewer something the creator would have to deliver (a guide, a template, a "
+    "DM, a freebie, 'comment X and I'll send it') unless the sources above say they offer it. A CTA asks "
+    "for a save, a follow, a share, or a comment on the topic."
 )
 
 
@@ -3627,10 +3775,10 @@ CONVERSE_ENVELOPE_EXEMPLAR = (
     'Also had an idea about debunking the anabolic window."\n'
     "Correct envelope:\n"
     '{"reply": "Harder stances is exactly where your authority shows. The anabolic-window debunk is a perfect '
-    'first swing. It\'s a myth half your audience still believes, and you can bring receipts.", '
+    'first swing. It\'s a myth half your audience still believes, and the research is on your side.", '
     '"memory_updates": ['
     '{"op": "set", "field": "angle", "value": "Taking harder, evidence-backed stances against training myths"}, '
-    '{"op": "add", "field": "ideas", "value": "Debunk the anabolic window myth (with receipts)"}], '
+    '{"op": "add", "field": "ideas", "value": "Debunk the anabolic window myth (with the research behind it)"}], '
     '"intent": "update_brand_angle", "intent_args_json": "{}", '
     '"chips": ["Write the anabolic window script", "What else should I debunk?", "Build my day"]}\n\n'
     # Second exemplar: the reply ends in a QUESTION, so the chips are ANSWERS to it:
@@ -3765,24 +3913,28 @@ def mimic_prompt(reel: dict, brand: dict, memory: dict | None = None,
         "HARD RULES:\n"
         "- NO plagiarism: never reuse the original's sentences, examples, numbers, or catchphrases. Keep the "
         "skeleton; swap the substance for THIS creator's real material (brand, memory, posts), or, when the "
-        "skeleton demands a personal receipt they don't have, a bracketed fill-in ('[your result]') or an "
-        "audience-facing reframe. Never assign them the original's experiences in disguise: if the original "
+        "skeleton demands personal proof they don't have, an audience-facing reframe or, at most once, a "
+        "bracketed fill-in ('[your result]'). Never assign them the original's experiences in disguise: if the original "
         "said 'I tested 5 diets for 30 days', do NOT write 'I ran 5 cold-outreach scripts for 2 weeks' unless "
         "the creator's memory or posts say they actually did. Reframe it audience-facing instead ('most "
         "people quit their outreach in week one, here's the fix').\n"
         "- The creator's voice sliders, catchphrases, and banned words are law.\n"
-        "- Match the original's energy and length, not its topic.\n"
-        "- Set style/formatId appropriate to how THIS creator films.\n\n"
+        "- Match the original's energy and pacing, not its topic and not its length. "
+        f"{LENGTH_BUDGET}\n"
+        "- formatId is one of: " + ", ".join(TREND_FORMAT_IDS) + ". style is one of: "
+        + ", ".join(ACTIVE_STYLES) + ". Pick the ones that fit the rewritten script.\n\n"
         "Worked example:\n"
         "Original (fitness reel): title 'i ate 200g of protein for 30 days', hook 'I ate 200g of protein every "
         "day for 30 days and my bloodwork shocked my doctor', beats: bold claim -> daily proof -> surprising "
         "result -> one takeaway. shotPlan (editor notes): 'punch in on \"shocked my doctor\"', "
         "'[broll: blood test vial] under the result line', 'hold on face for the takeaway'.\n"
-        "Mimic for a personal-finance creator: title 'i tracked every dollar for 30 days', hook 'I tracked every "
-        "dollar for 30 days and the leak wasn't where I thought', beats: bold claim -> daily tracking -> "
-        "surprising category reveal -> one rule to copy. shotPlan (editor notes): 'hold on face through the "
-        "hook', '[broll: coffee shop receipt] on the category reveal', 'caption emphasis on the dollar figure'. "
-        "Same skeleton, zero shared substance.\n\n"
+        "Mimic for a personal-finance creator with no tracking experiment on record: title 'where your money "
+        "actually leaks', hook 'Track every dollar for a month and the leak won't be where you think.', beats: "
+        "bold claim -> what a month of tracking usually turns up -> the surprising category (small repeat "
+        "charges, not the big bills) -> one rule to copy. shotPlan (editor notes): 'hold on face through the "
+        "hook', '[broll: phone banking app scrolling] on the category reveal', 'caption emphasis on \"small "
+        "repeat charges\"'. Same skeleton, zero shared substance, and the original's personal experiment "
+        "became the viewer's, so the creator never claims a month they didn't live.\n\n"
         "Reply with ONLY one JSON object, no prose."
     )
     mem = memory_block(memory) if memory else ""
@@ -3817,6 +3969,11 @@ def analyze_video_prompt(url: str, transcript: str, brand: dict, memory: dict | 
         "why it works and a version rewritten for a specific creator.\n\n"
         f"{VIRALITY_BLOCK}\n\n"
         f"{GROUNDING_BLOCK}\n\n"
+        f"{TALKING_HEAD_MANDATE}\n\n"
+        f"{SHOTPLAN_RULE}\n\n"
+        f"{LENGTH_BUDGET} (This applies to your_version.)\n"
+        f"your_version formatId is one of: {', '.join(TREND_FORMAT_IDS)}; style is one of: "
+        f"{', '.join(ACTIVE_STYLES)}.\n\n"
         "Reply with ONLY valid JSON matching:\n"
         '{"hook_analysis": str (1-2 sentences on the hook mechanic and why it stops the scroll), '
         '"structure_beats": [str] (3-6 beats naming the structural moves in order), '
@@ -3824,7 +3981,8 @@ def analyze_video_prompt(url: str, transcript: str, brand: dict, memory: dict | 
         '"suggestions": [str] (2-3 concrete ways this creator could use or improve on the pattern), '
         f'"your_version": {SCRIPT_SCHEMA.replace("Each item: ", "")}}}\n'
         "your_version follows the same no-plagiarism rule as a mimic: keep the skeleton, swap ALL substance "
-        "for this creator's niche and voice."
+        "for this creator's niche and voice. When the original leans on a personal experiment or result, "
+        "your_version tells it as the viewer's experience or as the mechanism, never as this creator's."
     )
     mem = memory_block(memory) if memory else ""
     learn = learning_block(arm_stats or [])
@@ -3854,7 +4012,7 @@ def brand_summary_prompt(brand: dict, memory: dict | None = None,
         "Reply with ONLY valid JSON:\n"
         '{"summary": str (one tight paragraph, 3-4 sentences: who they are, who they serve, what makes their '
         "take different, and where their content is headed), "
-        '"traits": [str] (3-5 short chips, ≤4 words each, e.g. "contrarian teacher", "receipts over hype"), '
+        '"traits": [str] (3-5 short chips, ≤4 words each, e.g. "contrarian teacher", "evidence over hype"), '
         '"working_on": str (one sentence on their current angle/direction, from memory if present)}'
     )
     mem = memory_block(memory) if memory else ""
