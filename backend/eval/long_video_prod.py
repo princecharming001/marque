@@ -354,29 +354,27 @@ def _watch_and_collect(rec: dict, job_id: str, t0: float, budget_s: int, keep_re
     rec["render_url"] = url
     rec["clip_statuses"] = [(c.get("status"), c.get("last_error") or c.get("error")) for c in clips]
     if url and url != source_url:
-        with tempfile.TemporaryDirectory() as td:
-            dst = os.path.join(td, "render.mp4")
-            t2 = _now()
-            with httpx.stream("GET", url, timeout=httpx.Timeout(60, read=600), follow_redirects=True) as s:
-                with open(dst, "wb") as fh:
-                    for chunk in s.iter_bytes(1 << 20):
+        # Probe the render straight off its public URL (ffmpeg/ffprobe stream over HTTPS): the
+        # QA Mac's disk is nearly full, and a 10-minute render is ~0.5-0.9GB.
+        pr = ffprobe(url)
+        rec["output_probe"] = pr
+        fmt = pr.get("format", {})
+        dur = float(fmt.get("duration") or 0)
+        rec["output_s"] = round(dur, 2)
+        rec["output_bytes"] = int(fmt.get("size") or 0)
+        exp = rec["edl_checks"].get("expected_s")
+        if exp:
+            rec["duration_delta_s"] = round(dur - exp, 2)
+        rec["output_checks"] = output_checks(url)
+        rec["frames"] = save_frames(url, dur, f"{case}-{job_id[:8]}")
+        if keep_render:
+            keep = os.path.join(OUT, "renders", f"{case}-{job_id[:8]}.mp4")
+            os.makedirs(os.path.dirname(keep), exist_ok=True)
+            with httpx.stream("GET", url, timeout=httpx.Timeout(60, read=600), follow_redirects=True) as st:
+                with open(keep, "wb") as fh:
+                    for chunk in st.iter_bytes(1 << 20):
                         fh.write(chunk)
-            rec["download_s"] = round(_now() - t2, 1)
-            pr = ffprobe(dst)
-            rec["output_probe"] = pr
-            fmt = pr.get("format", {})
-            dur = float(fmt.get("duration") or 0)
-            rec["output_s"] = round(dur, 2)
-            exp = rec["edl_checks"].get("expected_s")
-            if exp:
-                rec["duration_delta_s"] = round(dur - exp, 2)
-            rec["output_checks"] = output_checks(dst)
-            rec["frames"] = save_frames(dst, dur, f"{case}-{job_id[:8]}")
-            if keep_render:
-                keep = os.path.join(OUT, "renders", f"{case}-{job_id[:8]}.mp4")
-                os.makedirs(os.path.dirname(keep), exist_ok=True)
-                os.replace(dst, keep)
-                rec["render_local"] = keep
+            rec["render_local"] = keep
     elif url == source_url:
         rec["render_is_source"] = True       # the pipeline fell back to the raw take
     os.makedirs(os.path.join(OUT, "results"), exist_ok=True)
