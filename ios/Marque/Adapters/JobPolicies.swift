@@ -124,3 +124,19 @@ enum EditRestorePolicy {
         Array(history.dropFirst(min(index + 1, history.count)))
     }
 }
+
+/// ED-19 (2026-09-24) — the local clip state when a RE-render starts (manual editor save, AI
+/// tweak, version restore). setClipRendering only flipped `status`; `pipelineStage` was nil
+/// from the last terminal poll and PipelineProgress maps a nil stage to the UPLOAD phase, so
+/// every edit save told the creator "Uploading your take" while the server re-rendered a
+/// source it already had. The server owns the take here: not uploading, stage "rendering"
+/// until the next poll reports the real one (an AI tweak's "editing" overwrites it).
+enum RerenderStart {
+    static let stage = "rendering"
+
+    static func apply(to clip: inout Clip) {
+        clip.status = .rendering
+        clip.uploading = false
+        clip.pipelineStage = stage
+    }
+}

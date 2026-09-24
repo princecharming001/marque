@@ -2511,7 +2511,7 @@ final class AppStore {
     /// so the Library grid + detail sheet stay honest while the backend re-edits.
     func setClipRendering(_ clipId: UUID) {
         if let idx = clips.firstIndex(where: { $0.id == clipId }) {
-            clips[idx].status = .rendering
+            RerenderStart.apply(to: &clips[idx])   // ED-19: never "Uploading your take" on a re-render
             save()
         }
     }
