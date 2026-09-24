@@ -8444,6 +8444,9 @@ async def _run_digest(job_id: str) -> None:
         job["result"] = {"scan": scan, "scripts": script_out.get("scripts") or [],
                          "pillar": sreq.pillar, "scanned_posts": len(posts),
                          "transcribed": transcribed}
+        # The poll payload's mode was hard-set to "live" even when the scripts fell back to
+        # templates, so the app could swap real starter drafts for template copy.
+        job["mode"] = script_out.get("mode") or "live"
         job["status"] = "ready"
         job["stage"] = "ready"
         _lap("scripts")
