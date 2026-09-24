@@ -211,6 +211,10 @@ def test_steer_keeps_title_and_shotplan_unless_asked():
     sysp, user = prompts.steer_prompt(THIN, SCRIPT, "make it shorter")
     assert "copy the current title, summary, formatId and shotPlan through UNCHANGED" in sysp
     assert "Never ADD a new personal event" in sysp
+    # real-model spot check (2026-09-23): "make it more personal" invented "I used to do this
+    # too" / "when I moved out" until the rule said what personal means
+    assert "asks for it to feel more personal" in sysp and "Never invent a memory" in sysp
+    assert "'I used to do this too'" in prompts.GROUNDING_BLOCK
     # the model can only pass them through if it can see them
     assert "- title: you're eating protein wrong" in user
     assert "- shotPlan: " in user and "punch in on 'spread it across the day'" in user
@@ -239,6 +243,8 @@ def test_mimic_budget_replaces_match_the_originals_length():
     assert "Match the original's energy and length" not in sysp
     assert "not its length" in sysp and prompts.LENGTH_BUDGET in sysp
     assert "tracked every dollar" not in sysp.lower()
+    # it returned formatId "talking-head" when the allowed ids weren't named
+    assert "formatId is one of: " + ", ".join(prompts.TREND_FORMAT_IDS) in sysp
 
 
 def test_brief_is_a_pitch_and_creator_context_is_optional():
