@@ -162,7 +162,9 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     /// Palo port (audit: /v1/write/from-brief had no consumer): the write agent expands a
     /// brief's one-line summary into the FULL filmable script — strategy/memory/exemplar
     /// aware, in the creator's voice. nil on off/keyless/failure → caller keeps the summary.
-    func expandBrief(title: String, summary: String, brand: BrandGraph) async -> (title: String, body: String)? {
+    struct ExpandedBrief { let title: String; let hook: String; let body: String; let cta: String }
+
+    func expandBrief(title: String, summary: String, brand: BrandGraph) async -> ExpandedBrief? {
         // _BriefScriptRequest nests the brand dict (unlike the Brand-inheriting routes).
         let payload: [String: Any] = ["creator_id": creatorId,
                                       "brief": ["title": title, "summary": summary],
@@ -172,7 +174,14 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
               (r["mode"] as? String) == "live",
               let full = r["body"] as? String, !full.isEmpty else { return nil }
         note("live")
-        return ((r["title"] as? String) ?? title, full)
+        // The write agent returns the script as one spoken blob. The app keeps hook / body /
+        // CTA apart (the reader's sections, the prompter's parts), so split it here unless
+        // the server already did (optional fields, absent on today's backend).
+        let split = TeleprompterLayout.splitSpoken(full)
+        let hook = (r["hook"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? split.hook
+        let body = (r["hook"] as? String).flatMap { $0.isEmpty ? nil : $0 } != nil ? full : split.body
+        let cta = (r["cta"] as? String) ?? split.cta
+        return ExpandedBrief(title: (r["title"] as? String) ?? title, hook: hook, body: body, cta: cta)
     }
 
     /// Palo idea-bank brief → a starter Script pick. Title + summary make a fileable card;

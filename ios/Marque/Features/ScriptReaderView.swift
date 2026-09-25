@@ -112,6 +112,14 @@ struct ScriptReaderView: View {
             }
         }
         .onAppear { router.hideTabBar = true }
+        .task(id: live.id) {
+            // An idea brief opened before its script was written (Film queue, deep link):
+            // write it now, so the reader never shows the one-line pitch as the body.
+            if store.isUnexpandedBrief(live), let full = await store.expandedBriefForPeek(live) {
+                store.applyExpandedBrief(full)
+                if store.scripts.contains(where: { $0.id == full.id }) == false { store.scripts.insert(full, at: 0) }
+            }
+        }
         .onDisappear { router.hideTabBar = false }
         .sheet(isPresented: $showHookLab) { HookLabSheet(script: live) }
         .sheet(isPresented: $showVersionHistory) { ScriptVersionHistorySheet(scriptId: live.id) }

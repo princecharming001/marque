@@ -3477,14 +3477,22 @@ final class AppStore {
     /// Background half of the brief→script expansion (see readyScript). Idempotent —
     /// re-readying an already-expanded script no longer matches body == summary.
     private func expandBriefScript(_ script: Script) async {
-        let title = script.title.isEmpty ? script.hook.text : script.title
-        guard let (newTitle, fullBody) = await backend.expandBrief(
-            title: title, summary: script.summary, brand: brand) else { return }
-        guard let i = readiedScripts.firstIndex(where: { $0.script.id == script.id }) else { return }
-        readiedScripts[i].script.body = fullBody
-        if readiedScripts[i].script.title.isEmpty { readiedScripts[i].script.title = newTitle }
-        readiedScripts[i].script.targetSeconds = Self.measuredSeconds(readiedScripts[i].script)
-        save()
+        if let full = await expandedBriefForPeek(script) { applyExpandedBrief(full) }
+    }
+
+    /// The written script replaces the brief EVERYWHERE the app holds a copy (the Film
+    /// queue, the feed's script list, the reader's source), so no surface shows the one-line
+    /// pitch as if it were the script. Idempotent.
+    func applyExpandedBrief(_ full: Script) {
+        var changed = false
+        if let i = readiedScripts.firstIndex(where: { $0.script.id == full.id }),
+           isUnexpandedBrief(readiedScripts[i].script) {
+            readiedScripts[i].script = full; changed = true
+        }
+        if let i = scripts.firstIndex(where: { $0.id == full.id }), isUnexpandedBrief(scripts[i]) {
+            scripts[i] = full; changed = true
+        }
+        if changed { save() }
     }
 
     /// Spoken length at a creator's pace (~165 wpm), the same measure the backend uses.
@@ -3507,11 +3515,15 @@ final class AppStore {
     func expandedBriefForPeek(_ script: Script) async -> Script? {
         guard isUnexpandedBrief(script) else { return nil }
         let title = script.title.isEmpty ? script.hook.text : script.title
-        guard let (newTitle, fullBody) = await backend.expandBrief(
-            title: title, summary: script.summary, brand: brand) else { return nil }
+        guard let w = await backend.expandBrief(title: title, summary: script.summary, brand: brand),
+              !w.body.isEmpty || !w.hook.isEmpty else { return nil }
         var out = script
-        out.body = fullBody
-        if out.title.isEmpty { out.title = newTitle }
+        // A brief's hook was its TITLE (the card heading): the written script's own first
+        // line takes over, so the prompter and the reader never open on the title.
+        out.hook.text = w.hook.isEmpty ? w.body : w.hook
+        out.body = w.body.isEmpty ? w.hook : w.body
+        out.cta = w.cta
+        if out.title.isEmpty { out.title = w.title }
         out.targetSeconds = Self.measuredSeconds(out)
         return out
     }

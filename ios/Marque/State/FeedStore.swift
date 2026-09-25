@@ -149,6 +149,34 @@ final class FeedStore {
         // scripts" report). scheduleAIUpgrade accepts only mode == "live", so it correctly
         // fires exactly once the Opus upgrade lands.
         if page.mode != "live" { scheduleAIUpgrade(store: store) }
+        prefetchBriefs(store: store)
+    }
+
+    // MARK: Idea briefs → written scripts, before anyone taps
+
+    private var briefsInFlight: Set<UUID> = []
+
+    /// Owner (2026-09-25): "the scripts are showing a description of the video instead of
+    /// an actual script". Idea-bank briefs arrive as title + one-line pitch and were only
+    /// written into a script when opened or saved. Write them the moment they land (at most
+    /// three per page) and swap the script into the row in place, so a card that is tapped
+    /// a few seconds later already reads as a script.
+    func prefetchBriefs(store: AppStore) {
+        for s in scriptItems where store.isUnexpandedBrief(s) && !briefsInFlight.contains(s.id) {
+            briefsInFlight.insert(s.id)
+            Task { [weak self] in
+                let full = await store.expandedBriefForPeek(s)
+                guard let self else { return }
+                self.briefsInFlight.remove(s.id)
+                guard let full else { return }
+                store.applyExpandedBrief(full)
+                if let i = self.scriptItems.firstIndex(where: { $0.id == full.id }),
+                   store.isUnexpandedBrief(self.scriptItems[i]) {
+                    self.scriptItems[i] = full
+                    self.scheduleSave()
+                }
+            }
+        }
     }
 
     // MARK: Initial load
@@ -156,6 +184,7 @@ final class FeedStore {
     func loadInitial(store: AppStore) async {
         guard !loadedOnce, !isLoading else { return }
         loadedOnce = true
+        prefetchBriefs(store: store)          // a disk-painted page may still hold briefs
 
         // Cache painted → this is a background REVALIDATE, not a first load: no
         // skeletons, keep showing the snapshot until fresh data actually arrives.
@@ -250,6 +279,7 @@ final class FeedStore {
         ingest(page.entries, includeReels: false, store: store)
         feedCursor = page.nextCursor ?? -1
         scheduleSave()
+        prefetchBriefs(store: store)
     }
 
     // MARK: I-2 — dismiss a pick (✗): remove it, learn from it, top up so the row never empties.
@@ -318,6 +348,7 @@ final class FeedStore {
         guard !fresh.isEmpty else { return }
         scriptItems = fresh
         scheduleSave()
+        prefetchBriefs(store: store)
     }
 
     private func appendScript(_ s: Script, store: AppStore) {
