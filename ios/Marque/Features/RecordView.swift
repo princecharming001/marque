@@ -121,7 +121,7 @@ struct RecordView: View {
             background
             VStack(spacing: Space.lg) {
                 topBar
-                Spacer(minLength: 0)
+                if !showsPrompter || isFreestyle { Spacer(minLength: 0) }
                 // The prompter matters only while filming — after the take it's dead
                 // copy stealing 300pt the format picker/brief need.
                 if showsPrompter {
@@ -141,8 +141,10 @@ struct RecordView: View {
                         }
                         .frame(height: 300)
                     } else {
+                        // Directly under the top bar: the reading line sits just below the
+                        // front camera, so the creator's eyes stay on the lens.
                         Teleprompter(script: $liveScript, running: $promptRunning, speed: $speed, restartToken: $restartToken)
-                            .frame(height: 300)
+                            .frame(maxHeight: 360)
                     }
                     Spacer(minLength: 0)
                 }
@@ -1463,24 +1465,55 @@ struct Teleprompter: View {
         editingField = nil
     }
 
+    /// Owner feedback 2026-09-25 + teleprompter research: the title is never read (it's for
+    /// skimming picks), and dense paragraphs make the eyes travel. The prompter shows short
+    /// lines (a few words each, broken at breaths) in a big face, reads near the top of the
+    /// screen (closest to the front lens, so eye contact holds), lights the line being read,
+    /// and scrolls at a words-per-minute pace (150 wpm × Slow/Normal/Fast).
+    private static let lineFont: CGFloat = 28
+
+    private func layoutLines(width: CGFloat) -> [TeleprompterLayout.Line] {
+        let perChar = Self.lineFont * 0.53
+        let maxChars = max(14, Int(width / perChar))
+        return TeleprompterLayout.lines(hook: script.hook.text, body: script.body, cta: script.cta,
+                                        title: script.title, maxChars: maxChars)
+    }
+
+    private func field(for part: TeleprompterLayout.Part) -> EditField {
+        switch part { case .hook: return .hook; case .body: return .body; case .cta: return .cta }
+    }
+
     var body: some View {
         GeometryReader { geo in
             let viewport = geo.size.height
-            let maxScroll = max(0, contentH - viewport * 0.5)
+            let lines = layoutLines(width: geo.size.width)
+            let rows = max(1, lines.count)
+            let rowH = contentH / CGFloat(rows)
+            // The reading line sits a quarter of the way down: near the lens, with the
+            // previous line still in view above it.
+            let readingY = viewport * 0.25
+            let maxScroll = max(0, contentH - readingY - rowH)
+            let current = min(rows - 1, max(0, Int((offset + rowH * 0.5) / max(rowH, 1))))
             ZStack(alignment: .topLeading) {
-                VStack(alignment: .leading, spacing: Space.lg) {
-                    teleprompterLine(script.hook.text, font: AppFont.title1, field: .hook)
-                    teleprompterLine(script.body, font: AppFont.bodyLarge, field: .body)
-                    teleprompterLine(script.cta, font: AppFont.bodyLarge.weight(.semibold), field: .cta)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
+                        teleprompterLine(line.text, font: .system(size: Self.lineFont,
+                                                                  weight: line.part == .body ? .semibold : .bold),
+                                         field: field(for: line.part),
+                                         color: Palette.onNight.opacity(i == current ? 1 : (i < current ? 0.35 : 0.6)))
+                            .padding(.vertical, 6)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, readingY)
                 .background(GeometryReader { g in
-                    Color.clear.preference(key: TeleHeightKey.self, value: g.size.height)
+                    Color.clear.preference(key: TeleHeightKey.self, value: max(1, g.size.height - readingY))
                 })
                 .offset(y: -offset)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .clipped()
                 .contentShape(Rectangle())
+                .animation(.easeOut(duration: 0.2), value: current)
                 .gesture(
                     // Drag to scrub the script yourself — auto-pace hands off while
                     // you drag and picks back up from where you release. 12pt min so
@@ -1525,11 +1558,14 @@ struct Teleprompter: View {
             .onChange(of: restartToken) { _, _ in offset = 0 }
             .onReceive(ticker) { _ in
                 guard running, !isEditing, dragBase == nil, maxScroll > 0 else { return }
-                let pxPerSec = contentH / CGFloat(max(6, script.targetSeconds)) * CGFloat(speed)
-                offset = min(maxScroll, offset + pxPerSec / 60.0)
+                let rps = TeleprompterLayout.rowsPerSecond(words: TeleprompterLayout.wordCount(lines),
+                                                           rows: rows, speed: speed)
+                offset = min(maxScroll, offset + CGFloat(rps) * rowH / 60.0)
             }
         }
-        .mask(LinearGradient(colors: [.clear, .black, .black, .clear], startPoint: .top, endPoint: .bottom))
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.12),
+                                     .init(color: .black, location: 0.8), .init(color: .clear, location: 1)],
+                             startPoint: .top, endPoint: .bottom))
     }
 
     @ViewBuilder
@@ -1538,15 +1574,9 @@ struct Teleprompter: View {
         Text(text)
             .font(font)
             .foregroundStyle(color)
-            .lineSpacing(field == .body ? 6 : 0)
             .fixedSize(horizontal: false, vertical: true)
+            .contentShape(Rectangle())
             .onTapGesture { startEdit(field) }
-            .overlay(alignment: .topTrailing) {
-                Image(systemName: "pencil")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.onNight.opacity(0.5))
-                    .padding(4)
-            }
     }
 }
 
