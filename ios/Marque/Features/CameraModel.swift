@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import Vision
 import CoreImage
 import MetalKit
 
@@ -55,6 +56,8 @@ final class CameraModel: NSObject, ObservableObject {
         func take() -> CIImage? { lock.lock(); defer { lock.unlock() }; return image }
     }
     let previewTap = PreviewTap()
+    /// Face rectangles for the retouch mask (Vision, ~5 Hz on its own queue).
+    private let faces = FaceTracker()
 
     // Capture-thread state (never touched from main). The published retouch vars are
     // mirrored into these under stateLock.
@@ -117,6 +120,7 @@ final class CameraModel: NSObject, ObservableObject {
         configureVideoConnection()
         session.commitConfiguration()
         session.startRunning()
+        configureVideoConnection()      // a device that ignores it before start honours it now
         setStatus(.ready)
     }
 
@@ -129,6 +133,9 @@ final class CameraModel: NSObject, ObservableObject {
         guard let conn = videoOutput.connection(with: .video) else { return }
         if conn.isVideoRotationAngleSupported(90) { conn.videoRotationAngle = 90 }
         if conn.isVideoMirroringSupported { conn.isVideoMirrored = false }
+        #if DEBUG
+        print("[camera] rotation 90 supported=\(conn.isVideoRotationAngleSupported(90)) angle=\(conn.videoRotationAngle)")
+        #endif
     }
 
     /// Flip front/back between takes (used while paused, never mid-recording — the
@@ -151,6 +158,7 @@ final class CameraModel: NSObject, ObservableObject {
             }
             self.configureVideoConnection()
             self.session.commitConfiguration()
+            self.faces.reset()
             DispatchQueue.main.async { self.position = target }
         }
     }
@@ -255,10 +263,12 @@ final class CameraModel: NSObject, ObservableObject {
         self.adaptor = adaptor
     }
 
-    private func appendVideo(_ pixelBuffer: CVPixelBuffer, filtered: CIImage?, at pts: CMTime) {
+    /// `rendered` is the frame to write when it is not the raw buffer (retouched, or
+    /// rotated to portrait by the sideways fallback); nil appends the buffer as-is.
+    private func appendVideo(_ pixelBuffer: CVPixelBuffer, rendered: CIImage?, at pts: CMTime) {
         if writer == nil {
-            buildWriter(width: CVPixelBufferGetWidth(pixelBuffer),
-                        height: CVPixelBufferGetHeight(pixelBuffer))
+            buildWriter(width: rendered.map { Int($0.extent.width) } ?? CVPixelBufferGetWidth(pixelBuffer),
+                        height: rendered.map { Int($0.extent.height) } ?? CVPixelBufferGetHeight(pixelBuffer))
         }
         guard let writer, let video = writerVideo, let adaptor else { return }
         if !sessionStarted {
@@ -266,14 +276,14 @@ final class CameraModel: NSObject, ObservableObject {
             sessionStarted = true
         }
         guard video.isReadyForMoreMediaData else { return }   // drop, never block capture
-        if let filtered {
-            // Render the retouched frame into a writer-pool buffer. The pool is the
-            // adaptor's own (right format, recycled) — zero allocations at steady state.
+        if let rendered {
+            // Render the frame into a writer-pool buffer. The pool is the adaptor's own
+            // (right format, recycled) — zero allocations at steady state.
             guard let pool = adaptor.pixelBufferPool else { return }
             var out: CVPixelBuffer?
             CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out)
             guard let out else { return }
-            FaceRetouch.context.render(filtered, to: out)
+            FaceRetouch.context.render(rendered, to: out)
             adaptor.append(out, withPresentationTime: pts)
         } else {
             adaptor.append(pixelBuffer, withPresentationTime: pts)
@@ -300,16 +310,66 @@ extension CameraModel: AVCaptureVideoDataOutputSampleBufferDelegate,
         let strength = _strength
         stateLock.unlock()
 
-        let base = CIImage(cvPixelBuffer: pixelBuffer)
-        let filtered = retouch ? FaceRetouch.apply(to: base, strength: strength) : nil
+        var base = CIImage(cvPixelBuffer: pixelBuffer)
+        // Sideways fallback (owner, 2026-09-25: "when I record the display is sideways").
+        // The connection is asked for portrait buffers above; when a device delivers them
+        // landscape anyway (the rotation request not honoured), rotate here so the preview
+        // AND the recorded file are portrait regardless. Portrait buffers pass through.
+        let sideways = CVPixelBufferGetWidth(pixelBuffer) > CVPixelBufferGetHeight(pixelBuffer)
+        if sideways {
+            base = base.oriented(.right)
+            base = base.transformed(by: CGAffineTransform(translationX: -base.extent.minX,
+                                                          y: -base.extent.minY))
+        }
+        if retouch { faces.submit(base) }
+        let filtered = retouch ? FaceRetouch.apply(to: base, strength: strength, faces: faces.rects) : nil
 
         // Preview always gets the current look — the toggle is visible instantly,
         // recording or not.
         previewTap.set(filtered ?? base)
 
         if isCapturingTake {
-            appendVideo(pixelBuffer, filtered: filtered,
+            appendVideo(pixelBuffer, rendered: filtered ?? (sideways ? base : nil),
                         at: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+        }
+    }
+}
+
+// MARK: - Face tracking for the retouch mask
+
+/// Vision face rectangles at ~5 Hz on a private queue, never blocking capture: a frame is
+/// analysed only when no analysis is in flight, at quarter resolution, and the latest
+/// result is read lock-free-ish by the capture thread. Rects are normalized (0…1,
+/// origin bottom-left) in the frame's own coordinate space, which is what FaceRetouch
+/// expects. Faces move slowly against 30 fps and the mask is feathered wide, so a
+/// result up to ~200 ms old is invisible.
+final class FaceTracker {
+    private let queue = DispatchQueue(label: "marque.camera.faces", qos: .userInitiated)
+    private let lock = NSLock()
+    private var _rects: [CGRect] = []
+    private var busy = false
+    private var counter = 0
+    private let request = VNDetectFaceRectanglesRequest()
+
+    var rects: [CGRect] { lock.lock(); defer { lock.unlock() }; return _rects }
+
+    func reset() { lock.lock(); _rects = []; lock.unlock() }
+
+    /// Call once per captured frame with the (portrait, unmirrored) frame image.
+    func submit(_ image: CIImage) {
+        counter &+= 1
+        guard counter % 6 == 0 else { return }
+        lock.lock()
+        let wasBusy = busy
+        if !wasBusy { busy = true }
+        lock.unlock()
+        guard !wasBusy else { return }
+        let small = image.transformed(by: CGAffineTransform(scaleX: 0.25, y: 0.25))
+        queue.async { [self] in
+            let handler = VNImageRequestHandler(ciImage: small, orientation: .up, options: [:])
+            try? handler.perform([request])
+            let found = (request.results ?? []).map { $0.boundingBox }
+            lock.lock(); _rects = found; busy = false; lock.unlock()
         }
     }
 }
