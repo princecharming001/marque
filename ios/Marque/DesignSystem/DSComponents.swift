@@ -602,13 +602,35 @@ struct DSWeekDay: Identifiable, Hashable {
     var done: Bool = false
     var isToday: Bool = false
     var isFuture: Bool = false
+    var date: Date? = nil
+    /// Something was filmed, posted or scheduled that day (a dot under the number).
+    var active: Bool = false
 }
 
 struct DSWeekStrip: View {
     let days: [DSWeekDay]
+    /// Tapping a past day (or today) opens that day's summary. nil = display only.
+    var onSelect: ((DSWeekDay) -> Void)? = nil
     var body: some View {
         HStack(spacing: 0) {
             ForEach(days) { d in
+                dayCell(d)
+            }
+        }
+    }
+
+    @ViewBuilder private func dayCell(_ d: DSWeekDay) -> some View {
+        if let onSelect, !d.isFuture {
+            Button { onSelect(d) } label: { cell(d) }
+                .buttonStyle(PressableStyle(dim: 0.7))
+                .accessibilityHint("Shows what you filmed and posted that day")
+                .accessibilityIdentifier("home.day.\(d.weekday.lowercased())")
+        } else {
+            cell(d)
+        }
+    }
+
+    private func cell(_ d: DSWeekDay) -> some View {
                 VStack(spacing: 4) {
                     Text(d.weekday).font(AppFont.caption)
                         .foregroundStyle(d.isToday ? Palette.textPrimary : Palette.textSecondary)
@@ -622,16 +644,19 @@ struct DSWeekStrip: View {
                     }
                     .foregroundStyle(d.isFuture ? Palette.textTertiary : Palette.textPrimary)
                     .frame(height: 22)
+                    Circle().fill(Palette.textPrimary)
+                        .frame(width: 4, height: 4)
+                        .opacity(d.active && !d.done ? 1 : 0)
+                        .accessibilityHidden(true)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
                 .background(
                     RoundedRectangle(cornerRadius: Radius.cell, style: .continuous)
                         .strokeBorder(d.isToday ? Palette.hairline : .clear, lineWidth: 1.5))
+                .contentShape(Rectangle())
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(d.weekday) \(d.number)\(d.done ? ", done" : "")")
-            }
-        }
     }
 }
 

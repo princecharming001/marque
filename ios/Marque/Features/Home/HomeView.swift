@@ -5,6 +5,8 @@ import SwiftUI
 // and influencer reels to mimic ("Steal these"). Feed state lives in FeedStore.
 struct HomeView: View {
     @Environment(AppStore.self) private var store
+    /// The week strip's day summary (what was filmed and posted that day).
+    @State private var summaryDay: DaySheetDay? = nil
     @Environment(AppRouter.self) private var router
     @Environment(TourManager.self) private var tour
     @State private var showVoice = false
@@ -28,7 +30,9 @@ struct HomeView: View {
                 // date or @handle line under the greeting.)
                 VStack(spacing: Space.md) {
                     topBar
-                    DSWeekStrip(days: weekDays)
+                    DSWeekStrip(days: weekDays) { d in
+                        if let date = d.date { summaryDay = DaySheetDay(date: date) }
+                    }
                 }
                 .staggerReveal(0)
                 // The one hero card per screen: the voice orb (VoiceBubble draws the card).
@@ -48,6 +52,11 @@ struct HomeView: View {
             .padding(.bottom, MarqueTabBar.clearance + Space.xxl)
         }
         .background(Palette.canvas.ignoresSafeArea())
+        .sheet(item: $summaryDay) { d in
+            DaySummarySheet(day: d.date)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         // The nav bar is hidden, so scrolled content ran straight under the system
         // clock ("STEAL TH[3:55]ESE"). A canvas fade over the status-bar band keeps
         // that region legible without blocking touches or reserving layout space.
@@ -147,6 +156,7 @@ struct HomeView: View {
             .filter { $0.posted || $0.outcome?.didPost == true }
             .map { cal.startOfDay(for: $0.date) })
         let symbols = cal.shortWeekdaySymbols
+        let active = DaySummary.activeDays(clips: store.clips, footage: store.footage, schedule: store.schedule)
         return (0..<7).compactMap { i -> DSWeekDay? in
             guard let d = cal.date(byAdding: .day, value: i, to: week.start) else { return nil }
             let day = cal.startOfDay(for: d)
@@ -156,7 +166,9 @@ struct HomeView: View {
                              number: "\(cal.component(.day, from: day))",
                              done: postedDays.contains(day),
                              isToday: day == today,
-                             isFuture: day > today)
+                             isFuture: day > today,
+                             date: day,
+                             active: active.contains(day))
         }
     }
 
@@ -328,4 +340,11 @@ struct HomeView: View {
         Task { await feed.loadMoreReels(store: store) }
     }
 
+}
+
+
+/// Sheet item for the week strip's day summary.
+struct DaySheetDay: Identifiable {
+    let date: Date
+    var id: Double { date.timeIntervalSince1970 }
 }

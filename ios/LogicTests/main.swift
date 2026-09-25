@@ -11,6 +11,8 @@ runRenderCacheTests()
 runEditRestorePolicyTests()
 runRetryJobPolicyTests()
 runRerenderStartTests()
+runTeleprompterLayoutTests()
+runDaySummaryTests()
 
 print("\n\(logicTestPasses) passed, \(logicTestFailures) failed")
 exit(logicTestFailures == 0 ? 0 : 1)
