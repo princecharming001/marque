@@ -11,6 +11,7 @@ import pathlib
 import functools
 import json
 import math
+import collections
 import re
 import copy
 import time
@@ -14242,14 +14243,110 @@ async def _feed_impl(creator_id: str, brand: dict, styles: str, watched: str, cu
     return {"mode": mode, "items": items, "next_cursor": next_cursor}
 
 
-async def _merge_briefs(result: dict, creator_id: str, cursor: int) -> dict:
+# --- idea briefs → written scripts, server-side (owner 2026-09-25) --------------------
+# "The scripts are showing a description of the video instead of an actual script": idea
+# briefs reached the app as title + one-line pitch, and only the app wrote them into a
+# script (on tap). The server now writes each brief in the background the first time it
+# serves it and, from then on, serves the WRITTEN script as a normal script item — so the
+# App Store build (which can't be updated over the air) gets real scripts too. The first
+# paint never waits on a write; the app's own refresh (~45 s later) picks the scripts up.
+_BRIEF_SCRIPTS: "collections.OrderedDict[tuple[str, str], dict]" = collections.OrderedDict()
+_BRIEF_SCRIPTS_MAX = 600
+_BRIEF_WRITING: set[tuple[str, str]] = set()
+_BRIEF_WRITE_SEM = asyncio.Semaphore(2)          # at most 2 Opus writes at once, process-wide
+_CTA_VERBS = {"follow", "comment", "save", "share", "like", "subscribe", "drop", "tag", "dm",
+              "send", "hit", "link", "grab", "join", "check", "watch", "let"}
+
+
+def _spoken_sentences(text: str) -> list[str]:
+    parts = re.split(r'(?<=[.!?])\s+(?=[^\s])', " ".join((text or "").split()))
+    out: list[str] = []
+    for p in parts:                               # re-join ellipsis splits ("Wait... what?")
+        if out and out[-1].endswith("..."):
+            out[-1] = f"{out[-1]} {p}"
+        elif p:
+            out.append(p)
+    return out
+
+
+def _split_spoken_script(full: str) -> tuple[str, str, str]:
+    """(hook, body, cta) from the write agent's single spoken blob — same rules as the app's
+    TeleprompterLayout.splitSpoken: first sentence = hook, a closing call to action = CTA."""
+    sents = _spoken_sentences(full)
+    if len(sents) < 2:
+        return (sents[0] if sents else "", "", "")
+    hook, rest = sents[0], sents[1:]
+    cta = ""
+    last = re.sub(r"[^a-z0-9' ]", "", rest[-1].lower()).split()
+    if last and len(last) <= 14 and (last[0] in _CTA_VERBS or "follow for" in " ".join(last)
+                                     or "link in bio" in " ".join(last)):
+        cta = rest.pop()
+    return hook, " ".join(rest), cta
+
+
+def _brief_script_item(brief: dict, written: dict) -> dict:
+    hook, body, cta = _split_spoken_script(written.get("body", ""))
+    title = _clamp_title(str(written.get("title") or brief.get("title") or ""))
+    script = {"title": title, "summary": brief.get("summary", ""), "hook": hook,
+              "hookSignal": "curiosity", "formatId": "myth-buster", "body": body or hook,
+              "cta": cta, "style": "talking_head", "altHooks": [], "shotPlan": [],
+              "pillar": "Idea bank", "why_picked": ""}
+    script["targetSeconds"] = _est_seconds(script)
+    script["predictedScore"] = int(min(95, max(60, 70 + 25 * float(brief.get("score", 0) or 0))))
+    return {"type": "script", "script": script, "source": "idea_bank", "brief_id": brief.get("id")}
+
+
+async def _write_brief_bg(creator_id: str, brief: dict, brand: dict | None) -> None:
+    key = (creator_id, str(brief.get("id")))
+    try:
+        async with _BRIEF_WRITE_SEM:
+            out = await write_agent.script_from_brief(
+                _palo_store, creator_id, {"title": brief.get("title", ""),
+                                          "summary": brief.get("summary", "")}, brand or {})
+        if not (isinstance(out, dict) and out.get("mode") == "live" and out.get("body")):
+            return                                 # off / keyless / failed → keep the brief
+        (fixed,) = await _ensure_speakable([out], policy="repair_or_fallback",
+                                           fallback=lambda i: {})
+        if not fixed or not fixed.get("body"):
+            return
+        _BRIEF_SCRIPTS[key] = _scrub_voice(fixed)
+        _BRIEF_SCRIPTS.move_to_end(key)
+        while len(_BRIEF_SCRIPTS) > _BRIEF_SCRIPTS_MAX:
+            _BRIEF_SCRIPTS.popitem(last=False)
+    except Exception as e:
+        logging.warning("[feed] brief write failed (%s): %s", key[1], e)
+    finally:
+        _BRIEF_WRITING.discard(key)
+
+
+def _briefs_as_scripts(creator_id: str, briefs: list[dict], brand: dict | None) -> list[dict]:
+    """Written briefs become script items; unwritten ones stay briefs and get written in
+    the background (bounded) for the next request."""
+    out = []
+    for b in briefs:
+        key = (creator_id, str(b.get("id")))
+        written = _BRIEF_SCRIPTS.get(key)
+        if written:
+            out.append(_brief_script_item(b, written))
+            continue
+        if key not in _BRIEF_WRITING and palo_flags.enabled(palo_flags.WRITE_AGENT):
+            _BRIEF_WRITING.add(key)
+            _spawn(_write_brief_bg(creator_id, b, brand))
+        out.append(b)
+    return out
+
+
+async def _merge_briefs(result: dict, creator_id: str, cursor: int, brand: dict | None = None) -> dict:
     """Palo port (flag IDEA_BANK, OFF): prepend the idea bank's ranked briefs onto the
     first feed page. No-op off / on later pages, so paginated fetches don't duplicate."""
     if not palo_flags.enabled(palo_flags.IDEA_BANK) or cursor or not isinstance(result, dict):
         return result
     try:
         briefs = await ideas.brief_feed_items(_palo_store, creator_id)
-        result["items"] = ideas.merge_briefs_into_feed(result.get("items", []), briefs)
+        merged = ideas.merge_briefs_into_feed(result.get("items", []), briefs)
+        result["items"] = [x for x in merged if not (isinstance(x, dict) and x.get("kind") == "idea")]
+        idea_items = [x for x in merged if isinstance(x, dict) and x.get("kind") == "idea"]
+        result["items"] = _briefs_as_scripts(creator_id, idea_items, brand) + result["items"]
     except Exception as e:
         logging.warning("[feed] idea-bank merge failed: %s", e)
     return result
@@ -14274,7 +14371,7 @@ async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
         brand["goal"] = goal
     brand.setdefault("goal", goal)
     result = await _feed_impl(creator_id, brand, styles, watched, cursor, fresh, None)
-    return await _merge_briefs(result, creator_id, cursor)
+    return await _merge_briefs(result, creator_id, cursor, brand)
 
 
 @app.post("/v1/feed")
@@ -14286,7 +14383,7 @@ async def feed_post(req: FeedRequest):
     brand = _brand_only(req.model_dump())
     result = await _feed_impl(req.creator_id, brand, req.styles, req.watched, req.cursor,
                               req.fresh, req.memory)
-    return await _merge_briefs(result, req.creator_id, req.cursor)
+    return await _merge_briefs(result, req.creator_id, req.cursor, brand)
 
 
 class _IdeasRequest(BaseModel):

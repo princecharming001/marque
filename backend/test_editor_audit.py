@@ -1063,3 +1063,85 @@ def test_retighten_keeps_a_short_protected_beat():
     e = {"segments": [{"src_in": 0, "src_out": total}], "drops": []}
     out = E.retighten_restored_silence(e, words, [(1_560, 2_410)], protect=[(0, total)])
     assert out == e
+
+
+# ── Owner 2026-09-25: idea briefs are served as WRITTEN scripts (server-side) ─────────
+
+def test_split_spoken_script_matches_the_app_rules():
+    hook, body, cta = main._split_spoken_script(
+        "You're planning your week wrong. Most people write a list on Sunday. Then Monday eats it. "
+        "Follow for the next one.")
+    assert hook == "You're planning your week wrong."
+    assert body == "Most people write a list on Sunday. Then Monday eats it."
+    assert cta == "Follow for the next one."
+    h, b, c = main._split_spoken_script("Hook here. Body there. That reframes the whole thing.")
+    assert c == "" and b.endswith("whole thing.")
+    assert main._split_spoken_script("Wait... what? It works.")[0] == "Wait... what?"
+
+
+def test_feed_serves_briefs_as_written_scripts_after_the_background_write(monkeypatch):
+    import asyncio
+    main._BRIEF_SCRIPTS.clear(); main._BRIEF_WRITING.clear()
+    brief = {"id": "b1", "kind": "idea", "source": "idea_bank", "title": "why your week plan dies",
+             "summary": "A talking-head take on why Sunday planning fails.", "score": 0.8}
+    calls = []
+
+    async def fake_items(store, cid, limit=6, min_score=0.0):
+        return [dict(brief)]
+
+    async def fake_write(store, cid, b, brand=None):
+        calls.append(b)
+        return {"title": "why your week plan dies", "mode": "live", "reasoning": "",
+                "body": "Your Sunday plan is lying to you. It assumes Monday goes to plan. "
+                        "It never does. Plan one thing instead. Follow for the next one."}
+
+    async def passthrough(scripts, **kw):
+        return scripts
+
+    monkeypatch.setattr(main.palo_flags, "enabled", lambda f: True)
+    monkeypatch.setattr(main.ideas, "brief_feed_items", fake_items)
+    monkeypatch.setattr(main.write_agent, "script_from_brief", fake_write)
+    monkeypatch.setattr(main, "_ensure_speakable", passthrough)
+
+    async def run():
+        first = await main._merge_briefs({"items": [{"type": "script", "script": {"title": "x"}}]},
+                                         "creator-1", 0, {"niche": "fitness"})
+        await asyncio.gather(*list(main._bg_tasks))            # let the background write land
+        second = await main._merge_briefs({"items": []}, "creator-1", 0, {"niche": "fitness"})
+        third = await main._merge_briefs({"items": []}, "creator-1", 0, {"niche": "fitness"})
+        return first, second, third
+
+    first, second, third = asyncio.run(run())
+    assert first["items"][0].get("kind") == "idea", "the first paint never waits on a write"
+    assert first["items"][1]["type"] == "script", "the regular picks keep their order"
+    item = second["items"][0]
+    assert item["type"] == "script" and item["source"] == "idea_bank"
+    s = item["script"]
+    assert s["hook"] == "Your Sunday plan is lying to you."
+    assert s["cta"] == "Follow for the next one."
+    assert "A talking-head take" not in s["body"], "the body is the script, not the pitch"
+    assert s["title"] == "why your week plan dies" and s["hook"] != s["title"]
+    assert len(calls) == 1 and third["items"][0]["type"] == "script", "written once, then cached"
+
+
+def test_feed_briefs_stay_briefs_when_the_writer_is_off(monkeypatch):
+    import asyncio
+    main._BRIEF_SCRIPTS.clear(); main._BRIEF_WRITING.clear()
+
+    async def fake_items(store, cid, limit=6, min_score=0.0):
+        return [{"id": "b2", "kind": "idea", "source": "idea_bank", "title": "t", "summary": "s"}]
+
+    async def off_write(store, cid, b, brand=None):
+        return {"title": "t", "body": "s", "mode": "off"}
+
+    monkeypatch.setattr(main.palo_flags, "enabled", lambda f: True)
+    monkeypatch.setattr(main.ideas, "brief_feed_items", fake_items)
+    monkeypatch.setattr(main.write_agent, "script_from_brief", off_write)
+
+    async def run():
+        await main._merge_briefs({"items": []}, "creator-2", 0, {})
+        await asyncio.gather(*list(main._bg_tasks))
+        return await main._merge_briefs({"items": []}, "creator-2", 0, {})
+
+    out = asyncio.run(run())
+    assert out["items"][0].get("kind") == "idea", "no live write → the brief is served as before"
