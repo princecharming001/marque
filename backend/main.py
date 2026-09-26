@@ -1908,9 +1908,11 @@ def mock_scripts(req: ScriptRequest) -> list[dict]:
     # personal history ("I tracked my X for 90 days") in the creator's mouth either.
     # B-3: bodies are broken into short paragraphs (\n\n) — one beat each — so the reader/
     # teleprompter shows structure, not a wall of text (mirrors the live BODY_FORMAT_RULE).
+    # "Most your craft advice" reads broken when no niche is set; the fallback takes "about".
+    most = f"Most advice about {niche}" if niche.lower().startswith("your ") else f"Most {niche} advice"
     angles = [
         ("contrarian",
-         f"Most {niche} advice is backwards. Here's what the top 1% actually do.",
+         f"{most} is backwards. Here's what the top 1% actually do.",
          f"Everyone tells you to do more.\n\n"
          f"The people winning at {niche} do the opposite. They cut the noise and go deep on one thing.\n\n"
          f"Here's the one move to start this week."),
@@ -1933,7 +1935,10 @@ def mock_scripts(req: ScriptRequest) -> list[dict]:
                  else None)
         # Titles are plain spoken sentence case now (TITLE_DOCTRINE): no force-capitalize,
         # and the dash scrub runs so a template/topic dash never reaches a card.
-        title = prompts.scrub_em_dashes((topic or hook)[:48])
+        # First sentence, cut on a word boundary (a hard [:48] left cards reading "here'").
+        first = re.split(r"(?<=[.!?])\s", (topic or hook).strip(), maxsplit=1)[0]
+        first = first if len(first) <= 48 else first[:48].rsplit(" ", 1)[0]
+        title = prompts.scrub_em_dashes(first.rstrip("."))
         entry = {
             "title": title,
             "summary": f"A {s['label'].lower()} on {niche}.",

@@ -1145,3 +1145,15 @@ def test_feed_briefs_stay_briefs_when_the_writer_is_off(monkeypatch):
 
     out = asyncio.run(run())
     assert out["items"][0].get("kind") == "idea", "no live write → the brief is served as before"
+
+
+def test_mock_contrarian_hook_reads_right_without_a_niche():
+    # Seen in the 1.0.1 App Store screenshots: "Most your craft advice is backwards."
+    hooks = [s["hook"] for s in main.mock_scripts(main.ScriptRequest(count=3))]
+    assert not any("Most your" in h for h in hooks)
+    assert any(h.startswith("Most advice about your craft is backwards.") for h in hooks)
+    niche = [s["hook"] for s in main.mock_scripts(main.ScriptRequest(niche="fitness", count=3))]
+    assert any(h.startswith("Most fitness advice is backwards.") for h in niche)
+    titles = [s["title"] for s in main.mock_scripts(main.ScriptRequest(count=3))]
+    assert "Most advice about your craft is backwards" in titles, titles
+    assert all(len(t) <= 48 and not t.endswith("'") for t in titles), titles
