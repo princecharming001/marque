@@ -1,7 +1,7 @@
 import SwiftUI
 
 // The opening screen, in the Stoic interstitial pattern (DESIGN.md §6 Onboarding):
-// the clay unicorn centered, then the brand word and an oversized muted tagline
+// the Yunicorn mark centered, then the brand word and an oversized muted tagline
 // left-aligned, one content-sized primary capsule, a text link and the legal line.
 struct WelcomeLanding: View {
     let onStart: () -> Void

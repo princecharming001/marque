@@ -311,24 +311,11 @@ struct PaymentScreen: View {
     }
 }
 
-/// Yunicorn's line-drawn unicorn mark, monochrome in both schemes. The asset is black
-/// line art on an opaque white square, so it is turned into an alpha mask (invert, then
-/// luminance -> alpha) and filled with textPrimary: black lines on light, white on dark,
-/// never a white tile.
+/// Yunicorn's mark (the app-icon blob with a horn), monochrome in both schemes: black on
+/// light, white on dark, the eye knocked out to the canvas.
 struct GateMonoMark: View {
     var size: CGFloat = 48
     var body: some View {
-        Palette.textPrimary
-            .frame(width: size, height: size)
-            .mask(
-                // The line art fills ~45% of its square canvas: scale it up and clip so
-                // `size` is roughly the visible drawing.
-                Image("YunicornMark").resizable().scaledToFit()
-                    .scaleEffect(1.8)
-                    .frame(width: size, height: size)
-                    .clipped()
-                    .colorInvert()
-                    .luminanceToAlpha())
-            .accessibilityHidden(true)
+        YunicornMarkView(size: size)
     }
 }

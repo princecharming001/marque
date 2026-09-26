@@ -1,89 +1,79 @@
 import SwiftUI
 
-// The Marque mascot — a matte-black clay 3D unicorn (Higgsfield renders in Assets.xcassets).
-// Poses that have a real character animation (a looping video where the unicorn actually
-// performs an action — the landing "whip & nae nae" dance, the pondering leg-kicks) play
-// that clip; the clip's first frame == last frame so it loops invisibly. Remaining poses
-// render the static image with only a gentle breath (NO whole-body bobbing/sliding — the
-// character should look alive, not like a sticker being dragged around).
+// The Yunicorn mascot is the app-icon mark (owner 2026-09-26, icon option "B"): one chunky
+// blob with a horn and a closed happy eye. It is a template image tinted textPrimary, so it
+// is black on the light canvas and white on the dark one, with the eye knocked out to the
+// canvas either way. Poses add one small accent (thought dots, sparkles) and the mark only
+// ever breathes (a tiny scale pulse), never bobs or slides.
 struct UnicornMascot: View {
-    enum Pose: String {
-        case hero = "UnicornHero"
-        case thinking = "UnicornThinking"
-        case proud = "UnicornProud"
-        case celebrate = "UnicornCelebrate"
-
-        /// Looping video clip (bundle .mp4) for poses with a real performed animation.
-        var videoResource: String? {
-            switch self {
-            case .hero: return "unicorn_dance"       // whip & nae nae
-            case .thinking: return "unicorn_ponder"  // leg-kicks + thought bubble
-            default: return nil
-            }
-        }
-    }
+    enum Pose { case hero, thinking, proud, celebrate }
 
     let pose: Pose
     var size: CGFloat = 180
 
     @State private var appeared = false
     @State private var breathing = false
-    @Environment(\.colorScheme) private var scheme
-
-    private var videoResource: String? {
-        guard let r = pose.videoResource,
-              Bundle.main.url(forResource: r, withExtension: "mov") != nil
-                || Bundle.main.url(forResource: r, withExtension: "mp4") != nil else { return nil }
-        return r
-    }
+    @State private var beat = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Group {
-            // Videos carry an opaque light-canvas backdrop (MP4 has no alpha): on the black
-            // dark-mode canvas that would read as a bright square, so dark mode uses the
-            // transparent still for the same pose instead.
-            if let r = videoResource, scheme != .dark {
-                // Real performed animation — no procedural transform, and NO drop shadow
-                // (the clip bakes in its own soft contact shadow; an outer shadow would
-                // outline the square video frame and read as a card).
-                MascotVideoView(resource: r)
-                    .frame(width: size, height: size)
-                    .scaleEffect(appeared ? 1 : 0.85)
-            } else {
-                staticImage
-                    .frame(width: size, height: size)
-                    // Breath = a tiny scale pulse only. No offset/rotation — the whole
-                    // character must never look like it's sliding around as one block.
-                    .scaleEffect(appeared ? (breathing ? 1.02 : 1.0) : 0.7)
-                    .shadow(color: Palette.shadowWarm.opacity(0.14), radius: 24, y: 12)
-            }
+        ZStack {
+            YunicornMarkView(size: size * 0.72)
+                .scaleEffect(appeared ? (breathing ? 1.02 : 1.0) : 0.7)
+            accent
         }
-        // The clay unicorn is matte black: on the true-black dark canvas it would
-        // vanish, so dark mode seats it on a soft grayscale halo (no hue, no motion).
-        .background {
-            if scheme == .dark {
-                Circle()
-                    .fill(RadialGradient(colors: [Palette.onNight.opacity(0.16), Palette.onNight.opacity(0)],
-                                         center: .center, startRadius: 0, endRadius: size * 0.55))
-                    .frame(width: size * 1.1, height: size * 1.1)
-                    .accessibilityHidden(true)
-            }
-        }
+        .frame(width: size, height: size)
         .opacity(appeared ? 1 : 0)
+        .accessibilityHidden(true)
         .onAppear {
             withAnimation(Motion.standard) { appeared = true }
+            guard !reduceMotion else { return }
             withAnimation(Motion.breath.delay(0.35)) { breathing = true }
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true).delay(0.2)) { beat = true }
         }
     }
 
-    @ViewBuilder private var staticImage: some View {
-        if UIImage(named: pose.rawValue) != nil {
-            Image(pose.rawValue).resizable().scaledToFit()
-        } else {
-            // Pre-asset fallback so builds/screenshots never break.
-            Image(systemName: "sparkle")
-                .font(.system(size: size * 0.35, weight: .light))
-                .foregroundStyle(Palette.textTertiary)
+    @ViewBuilder private var accent: some View {
+        switch pose {
+        case .thinking:
+            // Three thought dots off the face side, pulsing in turn.
+            HStack(spacing: size * 0.035) {
+                ForEach(0..<3, id: \.self) { i in
+                    Circle().fill(Palette.textPrimary)
+                        .frame(width: size * 0.06, height: size * 0.06)
+                        .opacity(reduceMotion ? 0.8 : (beat ? (i == 1 ? 0.35 : 1) : (i == 1 ? 1 : 0.35)))
+                }
+            }
+            .offset(x: size * 0.36, y: -size * 0.34)
+        case .celebrate:
+            ZStack {
+                sparkle(size * 0.14).offset(x: size * 0.38, y: -size * 0.36)
+                sparkle(size * 0.09).offset(x: -size * 0.40, y: -size * 0.20)
+                sparkle(size * 0.07).offset(x: size * 0.44, y: size * 0.02)
+            }
+            .opacity(reduceMotion ? 1 : (beat ? 1 : 0.45))
+        case .hero, .proud:
+            EmptyView()
         }
+    }
+
+    private func sparkle(_ s: CGFloat) -> some View {
+        Image(systemName: "sparkle")
+            .font(.system(size: s, weight: .bold))
+            .foregroundStyle(Palette.textPrimary)
+    }
+}
+
+/// The app-icon mark on its own: black on light, white on dark (template image).
+struct YunicornMarkView: View {
+    var size: CGFloat = 48
+    var body: some View {
+        Image("YunicornMark")
+            .renderingMode(.template)
+            .resizable()
+            .scaledToFit()
+            .foregroundStyle(Palette.textPrimary)
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }

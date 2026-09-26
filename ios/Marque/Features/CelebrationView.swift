@@ -27,9 +27,8 @@ struct CelebrationView: View {
     private var wrap: some View {
         VStack(spacing: Space.md) {
             Spacer(minLength: 0)
-            // The clay unicorn (matte black) sits on a tone disc so it reads in dark mode too.
-            Image("UnicornCelebrate").resizable().scaledToFit()
-                .grayscale(1)
+            // The Yunicorn mark on a tone disc (it inverts to white in dark mode).
+            YunicornMarkView(size: 58)
                 .frame(width: 76, height: 76)
                 .frame(width: 104, height: 104)
                 .background(Circle().fill(scheme == .dark ? Palette.ink : Palette.surface))
