@@ -1,0 +1,681 @@
+{
+"media": "/Users/home/studio-testdata/qa-editor-real-take40.mov",
+"note": "ASR word times for qa-editor-real-take40.mov (older AssemblyAI run: fillers dropped, edges drift); used as ASR input by the gaps/prosody slow tests.",
+"words": [
+{
+"text": "I",
+"start_ms": 674,
+"end_ms": 706
+},
+{
+"text": "run",
+"start_ms": 754,
+"end_ms": 979
+},
+{
+"text": "every",
+"start_ms": 1236,
+"end_ms": 1525
+},
+{
+"text": "cuisine",
+"start_ms": 1557,
+"end_ms": 1958
+},
+{
+"text": "collision",
+"start_ms": 2023,
+"end_ms": 2328
+},
+{
+"text": "through",
+"start_ms": 2424,
+"end_ms": 2681
+},
+{
+"text": "3",
+"start_ms": 2681,
+"end_ms": 2986
+},
+{
+"text": "questions",
+"start_ms": 2986,
+"end_ms": 3451
+},
+{
+"text": "before",
+"start_ms": 3484,
+"end_ms": 3789
+},
+{
+"text": "I",
+"start_ms": 3789,
+"end_ms": 3869
+},
+{
+"text": "let",
+"start_ms": 3869,
+"end_ms": 3933
+},
+{
+"text": "it",
+"start_ms": 3933,
+"end_ms": 3997
+},
+{
+"text": "near",
+"start_ms": 4046,
+"end_ms": 4158
+},
+{
+"text": "a",
+"start_ms": 4222,
+"end_ms": 4286
+},
+{
+"text": "pan,",
+"start_ms": 4286,
+"end_ms": 4495
+},
+{
+"text": "and",
+"start_ms": 4913,
+"end_ms": 4977
+},
+{
+"text": "the",
+"start_ms": 5009,
+"end_ms": 5057
+},
+{
+"text": "3rd",
+"start_ms": 5073,
+"end_ms": 5250
+},
+{
+"text": "one",
+"start_ms": 5250,
+"end_ms": 5378
+},
+{
+"text": "is",
+"start_ms": 5635,
+"end_ms": 5699
+},
+{
+"text": "the",
+"start_ms": 5731,
+"end_ms": 5796
+},
+{
+"text": "one",
+"start_ms": 5812,
+"end_ms": 5956
+},
+{
+"text": "you're",
+"start_ms": 5956,
+"end_ms": 6052
+},
+{
+"text": "skipping.",
+"start_ms": 6052,
+"end_ms": 6390
+},
+{
+"text": "1,",
+"start_ms": 6919,
+"end_ms": 7048
+},
+{
+"text": "do",
+"start_ms": 7562,
+"end_ms": 7819
+},
+{
+"text": "the",
+"start_ms": 7819,
+"end_ms": 8011
+},
+{
+"text": "2",
+"start_ms": 8043,
+"end_ms": 8156
+},
+{
+"text": "cuisines\u2014",
+"start_ms": 8220,
+"end_ms": 8670
+},
+{
+"text": "do",
+"start_ms": 10131,
+"end_ms": 10227
+},
+{
+"text": "the",
+"start_ms": 10227,
+"end_ms": 10387
+},
+{
+"text": "2",
+"start_ms": 10387,
+"end_ms": 10548
+},
+{
+"text": "cuisines",
+"start_ms": 10612,
+"end_ms": 11078
+},
+{
+"text": "share",
+"start_ms": 11174,
+"end_ms": 11527
+},
+{
+"text": "a",
+"start_ms": 11527,
+"end_ms": 11592
+},
+{
+"text": "base",
+"start_ms": 11592,
+"end_ms": 11913
+},
+{
+"text": "fat",
+"start_ms": 11913,
+"end_ms": 12170
+},
+{
+"text": "or",
+"start_ms": 12170,
+"end_ms": 12234
+},
+{
+"text": "a",
+"start_ms": 12234,
+"end_ms": 12314
+},
+{
+"text": "base",
+"start_ms": 12314,
+"end_ms": 12619
+},
+{
+"text": "acid?",
+"start_ms": 12619,
+"end_ms": 12876
+},
+{
+"text": "If",
+"start_ms": 13294,
+"end_ms": 13374
+},
+{
+"text": "one's",
+"start_ms": 13438,
+"end_ms": 13679
+},
+{
+"text": "built",
+"start_ms": 13679,
+"end_ms": 13920
+},
+{
+"text": "on",
+"start_ms": 13920,
+"end_ms": 13968
+},
+{
+"text": "butter",
+"start_ms": 14064,
+"end_ms": 14305
+},
+{
+"text": "and",
+"start_ms": 14466,
+"end_ms": 14530
+},
+{
+"text": "one",
+"start_ms": 14546,
+"end_ms": 14690
+},
+{
+"text": "on",
+"start_ms": 14722,
+"end_ms": 14819
+},
+{
+"text": "lime,",
+"start_ms": 14883,
+"end_ms": 15204
+},
+{
+"text": "then",
+"start_ms": 15284,
+"end_ms": 15493
+},
+{
+"text": "you",
+"start_ms": 15509,
+"end_ms": 15557
+},
+{
+"text": "need",
+"start_ms": 15557,
+"end_ms": 15654
+},
+{
+"text": "a",
+"start_ms": 15670,
+"end_ms": 15686
+},
+{
+"text": "bridge,",
+"start_ms": 15686,
+"end_ms": 15975
+},
+{
+"text": "not",
+"start_ms": 16167,
+"end_ms": 16312
+},
+{
+"text": "a",
+"start_ms": 16312,
+"end_ms": 16328
+},
+{
+"text": "blender.",
+"start_ms": 16328,
+"end_ms": 16617
+},
+{
+"text": "2,",
+"start_ms": 17131,
+"end_ms": 17388
+},
+{
+"text": "does",
+"start_ms": 17548,
+"end_ms": 17693
+},
+{
+"text": "the",
+"start_ms": 17693,
+"end_ms": 17789
+},
+{
+"text": "texture",
+"start_ms": 17789,
+"end_ms": 18174
+},
+{
+"text": "survive",
+"start_ms": 18174,
+"end_ms": 18656
+},
+{
+"text": "the",
+"start_ms": 18656,
+"end_ms": 18720
+},
+{
+"text": "marriage?",
+"start_ms": 18720,
+"end_ms": 19074
+},
+{
+"text": "Mole",
+"start_ms": 19443,
+"end_ms": 19539
+},
+{
+"text": "is",
+"start_ms": 19539,
+"end_ms": 19748
+},
+{
+"text": "thick,",
+"start_ms": 19860,
+"end_ms": 20101
+},
+{
+"text": "ramen",
+"start_ms": 20406,
+"end_ms": 20711
+},
+{
+"text": "broth",
+"start_ms": 20743,
+"end_ms": 21000
+},
+{
+"text": "is",
+"start_ms": 21000,
+"end_ms": 21080
+},
+{
+"text": "thin.",
+"start_ms": 21209,
+"end_ms": 21353
+},
+{
+"text": "Pour",
+"start_ms": 21691,
+"end_ms": 21867
+},
+{
+"text": "one",
+"start_ms": 21867,
+"end_ms": 21996
+},
+{
+"text": "into",
+"start_ms": 22108,
+"end_ms": 22236
+},
+{
+"text": "the",
+"start_ms": 22269,
+"end_ms": 22413
+},
+{
+"text": "other",
+"start_ms": 22413,
+"end_ms": 22542
+},
+{
+"text": "and",
+"start_ms": 22670,
+"end_ms": 22734
+},
+{
+"text": "you",
+"start_ms": 22734,
+"end_ms": 22814
+},
+{
+"text": "get",
+"start_ms": 22814,
+"end_ms": 22943
+},
+{
+"text": "sludge",
+"start_ms": 23232,
+"end_ms": 23681
+},
+{
+"text": "unless",
+"start_ms": 23874,
+"end_ms": 24115
+},
+{
+"text": "you",
+"start_ms": 24115,
+"end_ms": 24243
+},
+{
+"text": "thin",
+"start_ms": 24259,
+"end_ms": 24484
+},
+{
+"text": "first.",
+"start_ms": 24516,
+"end_ms": 24918
+},
+{
+"text": "3,",
+"start_ms": 25560,
+"end_ms": 25721
+},
+{
+"text": "The",
+"start_ms": 26010,
+"end_ms": 26090
+},
+{
+"text": "one",
+"start_ms": 26106,
+"end_ms": 26266
+},
+{
+"text": "you",
+"start_ms": 26266,
+"end_ms": 26299
+},
+{
+"text": "skip.",
+"start_ms": 26299,
+"end_ms": 26604
+},
+{
+"text": "What",
+"start_ms": 27069,
+"end_ms": 27230
+},
+{
+"text": "am",
+"start_ms": 27230,
+"end_ms": 27278
+},
+{
+"text": "I",
+"start_ms": 27278,
+"end_ms": 27310
+},
+{
+"text": "actually",
+"start_ms": 27326,
+"end_ms": 27744
+},
+{
+"text": "removing?",
+"start_ms": 27792,
+"end_ms": 28129
+},
+{
+"text": "Fusion",
+"start_ms": 28530,
+"end_ms": 28916
+},
+{
+"text": "isn't",
+"start_ms": 28932,
+"end_ms": 29173
+},
+{
+"text": "an",
+"start_ms": 29173,
+"end_ms": 29221
+},
+{
+"text": "addition.",
+"start_ms": 29221,
+"end_ms": 29542
+},
+{
+"text": "If",
+"start_ms": 30072,
+"end_ms": 30200
+},
+{
+"text": "I",
+"start_ms": 30200,
+"end_ms": 30296
+},
+{
+"text": "put",
+"start_ms": 30296,
+"end_ms": 30489
+},
+{
+"text": "butter",
+"start_ms": 30618,
+"end_ms": 30858
+},
+{
+"text": "chicken",
+"start_ms": 30858,
+"end_ms": 31147
+},
+{
+"text": "in",
+"start_ms": 31340,
+"end_ms": 31388
+},
+{
+"text": "a",
+"start_ms": 31581,
+"end_ms": 31645
+},
+{
+"text": "taco,",
+"start_ms": 31645,
+"end_ms": 32047
+},
+{
+"text": "the",
+"start_ms": 32063,
+"end_ms": 32143
+},
+{
+"text": "tortilla",
+"start_ms": 32143,
+"end_ms": 32625
+},
+{
+"text": "can't",
+"start_ms": 32625,
+"end_ms": 32849
+},
+{
+"text": "also",
+"start_ms": 32930,
+"end_ms": 33187
+},
+{
+"text": "carry",
+"start_ms": 33187,
+"end_ms": 33427
+},
+{
+"text": "cheese",
+"start_ms": 33492,
+"end_ms": 33797
+},
+{
+"text": "and",
+"start_ms": 34070,
+"end_ms": 34134
+},
+{
+"text": "crema",
+"start_ms": 34214,
+"end_ms": 34648
+},
+{
+"text": "and",
+"start_ms": 34856,
+"end_ms": 34921
+},
+{
+"text": "cilantro.",
+"start_ms": 34937,
+"end_ms": 35290
+},
+{
+"text": "Take",
+"start_ms": 35659,
+"end_ms": 35836
+},
+{
+"text": "something",
+"start_ms": 35836,
+"end_ms": 36044
+},
+{
+"text": "out",
+"start_ms": 36077,
+"end_ms": 36414
+},
+{
+"text": "or",
+"start_ms": 36494,
+"end_ms": 36558
+},
+{
+"text": "it's",
+"start_ms": 36558,
+"end_ms": 36703
+},
+{
+"text": "just",
+"start_ms": 36703,
+"end_ms": 36879
+},
+{
+"text": "a",
+"start_ms": 36879,
+"end_ms": 36895
+},
+{
+"text": "mess",
+"start_ms": 36895,
+"end_ms": 37136
+},
+{
+"text": "with",
+"start_ms": 37200,
+"end_ms": 37265
+},
+{
+"text": "the",
+"start_ms": 37265,
+"end_ms": 37345
+},
+{
+"text": "passport.",
+"start_ms": 37345,
+"end_ms": 37730
+},
+{
+"text": "Save",
+"start_ms": 38180,
+"end_ms": 38421
+},
+{
+"text": "this",
+"start_ms": 38469,
+"end_ms": 38646
+},
+{
+"text": "before",
+"start_ms": 38646,
+"end_ms": 38951
+},
+{
+"text": "your",
+"start_ms": 38951,
+"end_ms": 39111
+},
+{
+"text": "next",
+"start_ms": 39111,
+"end_ms": 39288
+},
+{
+"text": "fusion",
+"start_ms": 39288,
+"end_ms": 39545
+},
+{
+"text": "experiment.",
+"start_ms": 39545,
+"end_ms": 39930
+}
+]
+}

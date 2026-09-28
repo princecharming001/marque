@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yunicorn-studio"
+version = "0.1.0"
+description = "Yunicorn Studio: a quality-first agentic talking-head video editing engine (standalone)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+dependencies = [
+    "pydantic>=2.10",
+    "python-dotenv>=1.0",
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "soundfile>=0.12",
+    "soxr>=0.5",
+    "librosa>=0.10",
+    "pyloudnorm>=0.1",
+    "pedalboard>=0.9",
+    "praat-parselmouth>=0.4",
+    "silero-vad>=6.0",
+    "torch>=2.4",
+    "torchaudio>=2.4",
+    "mediapipe==0.10.35",  # 1.0.1 aborts building face graphs on macOS CPU (google-ai-edge/mediapipe#6356)
+    "opencv-python-headless>=4.10",
+    "open_clip_torch>=2.26",  # b-roll recall (PE-Core-B-16 weights in models/open_clip)
+    "huggingface_hub>=0.24",  # open_clip weight download/cache (studio.broll.rank)
+    "playwright>=1.50",  # b-roll web captures; Chromium in models/ms-playwright (studio.broll.sources)
+    "pyobjc-framework-Vision>=10; sys_platform == 'darwin'",  # Apple Vision OCR for b-roll text/watermark gates
+    "pillow>=10.0",
+    "pillow-heif>=0.18",  # HEIC/HEIF creator stills (studio.broll); bundles LGPL/GPL codecs: server-side only
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "rapidfuzz>=3.0",
+    "jiwer>=3.0",
+    "pystoi>=0.4",  # ESTOI intelligibility of the final mix (studio.qa.metrics)
+    "pydantic-ai-slim[anthropic,openai,google]>=1.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+dev = ["ruff>=0.6"]
+
+[project.scripts]
+studio = "studio.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["studio*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not real'"
+markers = [
+    "real: needs real API keys / network (run with STUDIO_REAL=1 STUDIO_ENV_FILE=... and -m real)",
+    "slow: slow test (large media or heavy models)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:mediapipe.*",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "SIM", "RUF", "I"]
+ignore = ["RUF001", "RUF002", "RUF003", "RUF022", "RUF059", "SIM108", "UP007", "B008"]
