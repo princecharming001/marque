@@ -1,0 +1,537 @@
+# Yunicorn Studio editing doctrine: DEFAULT PRIORS for critics and metrics.
+#
+# These are starting priors, not rules. A critic that finds a value outside a
+# range asks "is there a one-line reason?", never "fail". The only hard rules
+# are the validators in studio/ARCHITECTURE.md section 7; keys that mirror a
+# validator say "validator". Creator memory overrides priors, never validators.
+#
+# Tiers: L lab/peer-reviewed | A platform or large-scale data | V vendor
+#        P practitioner or standards-body convention | I Yunicorn internal
+#        X our inference or arithmetic. "L->X" = a finding applied by inference.
+# Every value is ledgered in evidence.md (source link, tier, re-check 2027-03).
+# Each comment gives the tier, then the topic file that owns the number.
+# Units: seconds unless the key ends in _ms, _frames, _px, _db, _lu, _lufs,
+# _pct, _frac, _x (multiplier) or _wpm. Pixels assume 1080x1920 (9:16).
+# Pairs are [min, max]. Transition frame counts assume 30 fps; double at 60.
+
+meta:                                             # I; SKILL.md
+  version: "2026-09-27"                           # I; SKILL.md
+  recheck: "2027-03"                              # I; evidence.md
+  output_frame_px: [1080, 1920]                   # X + A; platforms.md
+
+# ---------------------------------------------------------------- calibration
+calibration_take:                                 # I n=1; backend/eval/pro_cut_reference.py via SKILL.md
+  raw_s: 50                                       # I; SKILL.md, cutting-and-pacing.md
+  output_s: 42                                    # I (approx.); cutting-and-pacing.md
+  pro_content_splices_mid_video: 1                # I; the "1 cut"; SKILL.md
+  pro_small_fixes: 3                              # I; 0.27 s stumble + stalls of 577 and 690 ms; cutting-and-pacing.md
+  old_engine_dead_air_splices: 19                 # I; the "19"; SKILL.md, cutting-and-pacing.md
+  pauses_ge_300ms_total: 22                       # I; cutting-and-pacing.md, speed.md
+  pauses_kept_verbatim: 17                        # I (approx.); cutting-and-pacing.md, speed.md
+  silence_ratio_before_after: [0.32, 0.30]        # I; cutting-and-pacing.md
+  content_removed_s: 6.9                          # I; SKILL.md
+
+# ---------------------------------------------------------------- hook & structure
+hook:                                             # mixed tiers; story-and-hook.md
+  first_word_target_s: [0.1, 0.5]                 # X; story-and-hook.md
+  first_word_or_payoff_ceiling_s: 2.5             # V n=13; story-and-hook.md, critique.md
+  topic_clear_by_s: 3.0                           # A (ads); story-and-hook.md
+  hook_set_by_s: 6.0                              # A (ads) + V; story-and-hook.md
+  one_idea_max_words: 25                          # X; story-and-hook.md
+  alternates: [2, 3]                              # X; story-and-hook.md
+  sales_ad_alternates: [3, 5]                     # A (TikTok ads); styles/podcast-sales-founder.md
+  hook_speed_x: 1.0                               # X; story-and-hook.md, speed.md
+  no_fullscreen_cutaway_s: [1.5, 3.0]             # V; broll.md, story-and-hook.md
+  face_returns_after_visual_hook_s: 2.0           # X; broll.md
+  no_punch_in_first_s: [1.0, 2.0]                 # X; framing-and-zooms.md
+  signature_greeting_max_s: 1.0                   # X; story-and-hook.md
+  cold_open_clean_gap_min_ms: 150                 # X; story-and-hook.md
+  payoff_position_frac: [0.55, 0.85]              # V n=13; story-and-hook.md
+
+hook_title:                                       # P + X; captions-and-text.md
+  max_words: 7                                    # P + X; story-and-hook.md, captions-and-text.md
+  zone_y_px: [288, 600]                           # I from A; platforms.md
+
+# ---------------------------------------------------------------- length
+length_s:                                         # style files own these; platforms.md mirrors them
+  default: [30, 60]                               # A + V (correlational); story-and-hook.md
+  real_arc_max: 180                               # A + V; story-and-hook.md
+  explainer: [30, 60]                             # A (correlational) -> X; styles/educational-tutorial-listicle.md (45-90 for two-step mechanisms)
+  tutorial: [45, 120]                             # A -> X; styles/educational-tutorial-listicle.md
+  listicle: [30, 75]                              # L -> X; styles/educational-tutorial-listicle.md (3-5 items)
+  storytime: [45, 120]                            # I from A; styles/story-comedy-hottake.md (to 180 if the arc holds)
+  comedy: [15, 45]                                # I from A; styles/story-comedy-hottake.md
+  hot_take: [15, 45]                              # I from A; styles/story-comedy-hottake.md
+  podcast_clip: [30, 90]                          # X + V (DOAC n=3); styles/podcast-sales-founder.md (to ~140)
+  sales_ugc: [15, 40]                             # X; styles/podcast-sales-founder.md (aim 20-35)
+  founder_brand: [30, 60]                         # X; styles/podcast-sales-founder.md
+  loop_candidate_max: 35                          # X; endings-loops-ctas.md
+
+# ---------------------------------------------------------------- pauses and gaps
+pauses:                                           # mixed tiers; cutting-and-pacing.md
+  articulatory_max_ms: 200                        # L + P; cutting-and-pacing.md (not a picture seam)
+  mid_phrase_cut_gap_ms: 100                      # L (one phrase) -> X; cutting-and-pacing.md
+  sentence_boundary_keep_ms: [250, 550]           # L (median read pause 493 ms); cutting-and-pacing.md, speed.md
+  hesitation_tighten_from_s: [0.6, 1.5]           # X + L; cutting-and-pacing.md
+  hesitation_target_ms: [250, 400]                # X; cutting-and-pacing.md, speed.md
+  deliberate_beat_s: [0.5, 1.2]                   # X + L; cutting-and-pacing.md (storytime to ~1.5)
+  dead_air_cut_over_s: 1.5                        # X; cutting-and-pacing.md, critique.md
+  confession_hold_s: [1.5, 3.0]                   # X; cutting-and-pacing.md
+  relative_keep_x_median: [0.7, 1.3]              # X; cutting-and-pacing.md, styles/story-comedy-hottake.md
+  relative_tighten_over_x_median: 2.0             # X; cutting-and-pacing.md
+  boundary_by_energy_ms:                          # X; cutting-and-pacing.md (style files inherit)
+    high: [200, 300]                              # X; cutting-and-pacing.md (or the speaker's own if shorter)
+    conversational: [250, 450]                    # X; cutting-and-pacing.md
+    calm: [350, 700]                              # X; cutting-and-pacing.md
+    comedy: performer                             # X + L (weak); cutting-and-pacing.md (cut dead air only)
+    podcast_in_turn: [200, 300]                   # X; cutting-and-pacing.md, styles/podcast-sales-founder.md
+    podcast_between_turns: [0, 250]               # L; cutting-and-pacing.md, styles/podcast-sales-founder.md
+  deliberate_beat_by_energy_s:                    # X; cutting-and-pacing.md
+    high: [0.0, 0.6]                              # X; cutting-and-pacing.md, styles/story-comedy-hottake.md
+    conversational: [0.5, 0.9]                    # X; cutting-and-pacing.md
+    calm: [0.8, 1.5]                              # X; cutting-and-pacing.md, styles/story-comedy-hottake.md
+  reluctant_gap_min_ms: 700                       # L; styles/podcast-sales-founder.md (never create or erase one)
+  answer_beat_after_s: [0.5, 1.2]                 # X from L; styles/educational-tutorial-listicle.md
+  step_boundary_beat_s: [0.4, 0.8]                # X from L; styles/educational-tutorial-listicle.md
+
+fillers:                                          # L -> X; cutting-and-pacing.md
+  in_first_sentence: 0                            # X; cutting-and-pacing.md, story-and-hook.md
+  per_min_budget: [3, 5]                          # L -> X; cutting-and-pacing.md
+  natural_disfluencies_per_100_words: 6           # L; cutting-and-pacing.md
+  acceptable_per_min: 5                           # L; cutting-and-pacing.md
+  hurts_effectiveness_per_min: 12                 # L; cutting-and-pacing.md
+  cut_if_bounded_by_gap_ms: 150                   # X; cutting-and-pacing.md
+  coarticulated_cut_min_closure_ms: 20            # X; cutting-and-pacing.md
+
+# ---------------------------------------------------------------- seams
+seams:                                            # mixed tiers; cutting-and-pacing.md
+  per_60s_clean_take: [1, 4]                      # I n=1 -> X; critic signal, never a gate; cutting-and-pacing.md, critique.md
+  every_seam_needs_named_problem: true            # I + X; cutting-and-pacing.md
+  cut_padding_ms: [30, 200]                       # P; cutting-and-pacing.md
+  asr_drift_ms: [50, 120]                         # P + V; cutting-and-pacing.md, captions-and-text.md
+  forced_align_error_ms: 20                       # L; captions-and-text.md, framing-and-zooms.md
+  visual_change_interval_s: [3, 8]                # V n=13; cutting-and-pacing.md
+  visual_change_median_s: 5                       # V n=13; cutting-and-pacing.md
+  static_stretch_question_s: 8                    # X; cutting-and-pacing.md, broll.md, framing-and-zooms.md
+  scale_change_to_hide_seam_min_x: 1.25           # X from P; cutting-and-pacing.md, framing-and-zooms.md
+  scale_change_to_hide_seam_pref_x: [1.3, 1.5]    # X from P; cutting-and-pacing.md, framing-and-zooms.md
+  insert_cover_each_side_s: 0.25                  # X; broll.md
+  two_speaker_switch_after_onset_ms: [0, 300]     # L; styles/podcast-sales-founder.md, cutting-and-pacing.md
+  two_speaker_motivated_early_ms: 200             # X; styles/podcast-sales-founder.md
+  podcast_sustained_switch_max_per_s: 0.5         # L; styles/podcast-sales-founder.md
+  podcast_hold_break_s: 12                        # V; styles/podcast-sales-founder.md
+  podcast_reaction_cutaway_s: [1.0, 1.5]          # V; styles/podcast-sales-founder.md
+
+audio_seam:                                       # P + X; cutting-and-pacing.md, voice-and-loudness.md
+  crossfade_default_ms: [10, 30]                  # P + X; cutting-and-pacing.md, voice-and-loudness.md
+  crossfade_silence_or_stop_ms: 2                 # P; cutting-and-pacing.md, voice-and-loudness.md
+  crossfade_across_breath_ms: [30, 100]           # P + X; cutting-and-pacing.md, voice-and-loudness.md
+  crossfade_coarticulated_filler_ms: [5, 10]      # X; cutting-and-pacing.md
+  loop_declick_ramp_ms: [5, 10]                   # X; endings-loops-ctas.md
+  level_jump_audible_db: [4, 5]                   # P; cutting-and-pacing.md, voice-and-loudness.md, critique.md
+  room_tone_match_db: [1, 2]                      # P + X; voice-and-loudness.md
+  never_digital_silence: true                     # validator; voice-and-loudness.md
+
+av_sync_ms:                                       # L; cutting-and-pacing.md, critique.md
+  detect_audio_early: 45                          # L (ITU-R BT.1359); cutting-and-pacing.md, critique.md
+  detect_audio_late: 125                          # L (ITU-R BT.1359); cutting-and-pacing.md, critique.md
+  acceptable_audio_early: 90                      # L (ITU-R BT.1359); speed.md, critique.md
+  acceptable_audio_late: 185                      # L (ITU-R BT.1359); speed.md, critique.md
+  per_neural_stage_max: 1                         # I; voice-and-loudness.md
+
+# ---------------------------------------------------------------- speed
+speed:                                            # mixed tiers; speed.md
+  default_x: 1.0                                  # I; speed.md
+  gentle_x: [1.03, 1.08]                          # X on L; speed.md
+  start_x: 1.05                                   # X; speed.md
+  soft_ceiling_x: 1.10                            # X on L; speed.md
+  needs_written_reason_x: [1.10, 1.20]            # X on L; speed.md
+  effect_only_above_x: 1.20                       # X on L; speed.md
+  jnd_tempo_pct: 5                                # L; speed.md
+  adjacent_segment_max_delta_x: 0.05              # X; speed.md
+  candidate_below_wpm: 150                        # X; speed.md
+  very_slow_speaker_wpm: 130                      # X; speed.md
+  very_slow_speaker_x: [1.12, 1.15]               # X; speed.md
+  dense_content_max_output_wpm: [170, 180]        # L -> X; speed.md
+  change_only_at_gap_min_ms: 300                  # X; speed.md
+  min_total_saving_s: 1.0                         # X; speed.md
+  hard_cap_uniform_x: [1.02, 1.04]                # X; speed.md
+  protected_at_1x: [hook, punchline, emotional_line, instruction, payoff, cta]   # X + L; speed.md
+  style_cap_x:                                    # X; speed.md and the style files
+    educational: 1.0                              # X; speed.md, styles/educational-tutorial-listicle.md
+    tutorial_steps: 1.0                           # X; styles/educational-tutorial-listicle.md
+    storytime: 1.0                                # X; styles/story-comedy-hottake.md
+    comedy: 1.0                                   # X; styles/story-comedy-hottake.md
+    podcast_clip: 1.0                             # X; styles/podcast-sales-founder.md
+    founder_brand: 1.0                            # X; styles/podcast-sales-founder.md
+    hot_take: 1.10                                # X; styles/story-comedy-hottake.md (outside the hook and the take)
+    listicle: 1.10                                # X; styles/educational-tutorial-listicle.md
+    sales_ugc: 1.10                               # X; styles/podcast-sales-founder.md (demo only)
+  fast_forward_gag_x: [1.5, 3.0]                  # X; speed.md
+  fast_forward_gag_max_s: 3                       # X; speed.md, styles/story-comedy-hottake.md
+  fast_broll_x: [2, 3]                            # P + X; speed.md, broll.md
+  timelapse_max_x: 8                              # P + X; speed.md
+  ramps_max_per_short: 2                          # V; speed.md (0 by default, picture only)
+  ramp_length_s: [0.5, 1.5]                       # V; speed.md
+  slow_motion_min_factor: "output_fps / source_fps"   # A + P; speed.md, broll.md
+  viewer_side_speed_x: 2                          # A; speed.md
+
+# ---------------------------------------------------------------- framing
+framing:                                          # mixed tiers; framing-and-zooms.md
+  punch_accident_below_x: 1.10                    # V + P; framing-and-zooms.md
+  punch_lean_in_x: [1.15, 1.25]                   # V + P; framing-and-zooms.md
+  punch_new_shot_x: [1.4, 1.6]                    # V + P; framing-and-zooms.md
+  punch_seam_hide_min_x: 1.25                     # X from P; framing-and-zooms.md
+  punch_seam_hide_pref_x: [1.3, 1.5]              # X from P; framing-and-zooms.md
+  ab_crop_b_x: 1.5                                # V n=3; framing-and-zooms.md
+  ab_crop_interval_s: [3.5, 5.6]                  # V n=3; framing-and-zooms.md
+  sizes_max: 3                                    # V + X; framing-and-zooms.md
+  emphasis_punches_per_60s:                       # I from V; framing-and-zooms.md and the style files
+    typical: [0, 2]                               # I from V; framing-and-zooms.md
+    ceiling: 4                                    # I from V; framing-and-zooms.md
+    hot_take: [0, 2]                              # X; styles/story-comedy-hottake.md
+    explainer: [0, 2]                             # I + V; styles/educational-tutorial-listicle.md
+    sales_ugc: [2, 4]                             # X; styles/podcast-sales-founder.md
+    founder_brand: [0, 2]                         # X; styles/podcast-sales-founder.md
+    listicle: one_per_item_one_scale              # X; framing-and-zooms.md
+    storytime: slow_push_instead                  # P; framing-and-zooms.md
+    podcast_clip: active_speaker_crops            # V; framing-and-zooms.md
+  punch_min_spacing_s: 5                          # X; framing-and-zooms.md
+  punch_onset_lead_ms: [0, 70]                    # X; framing-and-zooms.md
+  punch_late_reads_as_mistake_ms: 200             # V; framing-and-zooms.md
+  punch_snap_anim_max_ms: 150                     # V; framing-and-zooms.md
+  punch_hold_min_s: 1.5                           # X; framing-and-zooms.md
+  lossless_ceiling_4k_to_1080_x: 2.0              # X; framing-and-zooms.md
+  upsample_face_default_x: 1.1                    # P + X; framing-and-zooms.md
+  upsample_face_clean_x: 1.2                      # P + X; framing-and-zooms.md (after a 1:1 eye check)
+  upsample_face_hard_limit_x: 1.25                # P + X; framing-and-zooms.md
+  landscape_4k_crop_px: [1215, 2160]              # X; framing-and-zooms.md, broll-sourcing.md
+  landscape_1080_upsample_x: 1.78                 # X; framing-and-zooms.md, broll-sourcing.md
+  eye_line_y_px: [600, 700]                       # P; framing-and-zooms.md
+  face_height_frac_base: [0.25, 0.35]             # X; framing-and-zooms.md
+  face_height_frac_tight: [0.38, 0.50]            # X; framing-and-zooms.md
+  take_match_face_size_pct: 5                     # X + I; framing-and-zooms.md, endings-loops-ctas.md
+  take_match_eye_line_pct: 2                      # X + I; framing-and-zooms.md, endings-loops-ctas.md
+  slow_push_pct: [3, 8]                           # X from V; framing-and-zooms.md, styles/story-comedy-hottake.md
+  slow_push_over_s: [4, 12]                       # X from V; framing-and-zooms.md
+  reframe_deadzone_frac: 0.10                     # X; framing-and-zooms.md
+  reframe_deadzone_hold_s: 0.7                    # X; framing-and-zooms.md
+  reframe_ease_min_s: 0.4                         # X; framing-and-zooms.md
+  comedy_crash_punch_x: [1.5, 2.0]                # X; framing-and-zooms.md (4K only, on the button)
+
+# ---------------------------------------------------------------- b-roll and inserts
+broll:                                            # mixed tiers; broll.md, broll-sourcing.md
+  fullscreen_hold_s: [1, 3]                       # V; broll.md
+  fullscreen_ceiling_s: [3, 5]                    # V; broll.md, critique.md
+  meme_flash_s: [0.5, 1.5]                        # I; broll.md, styles/story-comedy-hottake.md
+  montage_insert_s: [0.5, 0.8]                    # X; broll.md
+  named_object_min_s: 0.5                         # L -> X; broll.md
+  entry_early_max_frames: 2                       # X; broll.md
+  entry_late_max_ms: 45                           # X from L; broll.md
+  runtime_share: [0.15, 0.25]                     # V + X; broll.md
+  runtime_share_soft_cap: 0.33                    # V + X; broll.md
+  face_between_fullscreen_s: 1.5                  # X; broll.md
+  face_kept_layout_over_s: 3                      # L + V; broll.md
+  split_top_frac: [0.40, 0.50]                    # V + X; broll.md
+  subject_min_frac: 0.33                          # P; broll.md, broll-sourcing.md
+  still_push_pct: [5, 10]                         # X; broll.md
+  grade_transfer_max_strength: 0.5                # I; broll.md, broll-sourcing.md, color-and-look.md
+  reject_neutral_delta_e: 5                       # I + X; color-and-look.md
+  cheaper_tool_order: [nothing, punch_in, caption_emphasis, designed_card, broll]   # V + I; broll.md
+  per_60s_by_style:                               # X; broll.md and the style files (zero valid everywhere)
+    educational: {inserts: [0, 4], fullscreen_share: [0.0, 0.15]}      # X; broll.md
+    storytime: {inserts: [0, 2], fullscreen_share: [0.0, 0.10]}        # X; broll.md
+    comedy: {inserts: [0, 2], fullscreen_share: [0.0, 0.05]}           # X; broll.md
+    hot_take: {inserts: [0, 2], fullscreen_share: [0.0, 0.10]}         # X; broll.md
+    listicle: {inserts: "0 or 1 per item", fullscreen_share: [0.10, 0.30]}   # X; broll.md
+    tutorial: {screen_share_as_split_or_pip: [0.30, 0.70]}             # X; broll.md
+    sales_ugc: {inserts: [2, 5], fullscreen_share: [0.20, 0.40]}       # X; broll.md
+    founder_brand: {inserts: [1, 3], fullscreen_share: [0.05, 0.15]}   # X; broll.md
+    podcast_clip: {inserts: [0, 1]}                                    # X; styles/podcast-sales-founder.md
+  sourcing:                                       # I; broll-sourcing.md
+    queries_per_beat: [5, 10]                     # I; broll-sourcing.md
+    candidates: [50, 200]                         # I; broll-sourcing.md
+    embedding_top_k: 20                           # I; broll-sourcing.md
+    judged_max: 8                                 # I; broll-sourcing.md
+    frames_embedded: [3, 5]                       # I; broll-sourcing.md
+    gate_sampling_s: [0.25, 0.5]                  # I; broll-sourcing.md
+    contact_sheet_frames: [4, 6]                  # I; broll-sourcing.md
+    accept_rubric_min_of_5: 4                     # I; broll-sourcing.md
+    wrong_subject_rate_max: 0.05                  # I; broll-sourcing.md
+    rounds_before_refusing: 3                     # I; broll-sourcing.md
+    upscale_max_x: 1.25                           # X + I; broll-sourcing.md
+    own_footage_upscale_max_x: 1.5                # X; broll-sourcing.md
+    min_fps_for_motion: 30                        # X; broll-sourcing.md
+    photoreal_ai_default: 0                       # I; broll-sourcing.md
+    photoreal_ai_max: 2                           # I; broll-sourcing.md
+    ai_label_like_cost_pct: [7, 8]                # L; broll-sourcing.md, broll.md, platforms.md
+    pickups_to_request: [2, 3]                    # X; broll.md, broll-sourcing.md
+    sdr_in_hdr_diffuse_white_nits: 203            # P; broll-sourcing.md
+
+# ---------------------------------------------------------------- text dwell (shared)
+text_dwell:                                       # P + X; captions-and-text.md
+  s_per_word: 0.3                                 # P (BBC); captions-and-text.md, transitions-and-graphics.md, broll.md
+  margin_s: 1.0                                   # X; captions-and-text.md, transitions-and-graphics.md, broll.md
+  silent_reading_wpm: 238                         # L; captions-and-text.md, broll-sourcing.md
+  lower_third_s: [3, 5]                           # X; captions-and-text.md
+
+# ---------------------------------------------------------------- captions
+captions:                                         # mixed tiers; captions-and-text.md
+  default_on: true                                # A; captions-and-text.md
+  words_per_page: [2, 4]                          # X + V; captions-and-text.md
+  podcast_words_per_page: [1, 3]                  # V; styles/podcast-sales-founder.md
+  lines: 1                                        # L; captions-and-text.md (2 only in the sentence style)
+  chars_per_line_max: 20                          # P; captions-and-text.md
+  line_width_max_px: 690                          # P + X; captions-and-text.md
+  cps_max: 20                                     # P; captions-and-text.md, speed.md, critique.md
+  page_min_s: 0.5                                 # X + P; captions-and-text.md
+  punch_page_min_s: 0.25                          # X; captions-and-text.md
+  page_gap_frames: 2                              # P; captions-and-text.md
+  close_gaps_under_s: 0.5                         # P; captions-and-text.md
+  lead_ms: [70, 100]                              # X on L; captions-and-text.md
+  lead_max_ms: 125                                # X on L; captions-and-text.md
+  lag_max_ms: 0                                   # X on L; captions-and-text.md
+  snap_to_seam_within_frames: 4                   # X; captions-and-text.md
+  end_hold_s: [0.3, 0.5]                          # X on P; captions-and-text.md
+  font_weight: [700, 900]                         # P; captions-and-text.md (600-700 for the sentence style)
+  size_px_phrase: [64, 96]                        # X; captions-and-text.md
+  size_px_punch: [110, 140]                       # X; captions-and-text.md
+  stroke_frac_of_font: [0.08, 0.12]               # P; captions-and-text.md
+  accent_max_per_page: 1                          # X + P + L; captions-and-text.md
+  accent_max_page_frac: 0.25                      # X; captions-and-text.md
+  accent_min_prosody_z: 1.5                       # X; captions-and-text.md
+  podcast_emphasis_words_per_clip: [3, 5]         # V; styles/podcast-sales-founder.md
+  entry_anim_ms: [100, 200]                       # X on P; captions-and-text.md
+  entry_scale_from_min: 0.9                       # X on P; captions-and-text.md
+  current_word_scale_max: 1.1                     # X on P; captions-and-text.md
+  flashes_per_s_max: 3                            # P (WCAG); validator; captions-and-text.md, transitions-and-graphics.md
+  emoji_default: 0                                # L + A; captions-and-text.md
+  emoji_playful_per_s_max: 0.1                    # X; captions-and-text.md (about 1 per 10 s)
+  below_chin_px: [40, 120]                        # X; captions-and-text.md
+  bad_legacy_anchor_y_px: 1600                    # I; captions-and-text.md, platforms.md
+  callouts_every_s: [5, 10]                       # X; captions-and-text.md, transitions-and-graphics.md
+  callout_words: [1, 3]                           # X + L; captions-and-text.md
+  screen_text_min_px: 45                          # X from P; styles/educational-tutorial-listicle.md (never under ~30)
+  styles: [phrase, sentence, beat]                # X; captions-and-text.md (phrase is the default)
+
+# ---------------------------------------------------------------- safe zones (px from each edge at 1080x1920)
+safe_zones_px:                                    # A + V; platforms.md
+  instagram_reels: {top: 269, bottom: 672, left: 65, right: 65}                # A (Meta ads spec); platforms.md
+  youtube_shorts: {top: 288, bottom: 672, left: 48, right: 192}                # A for ads, X organic; platforms.md
+  tiktok: {top: [140, 200], bottom: [250, 480], left: 60, right: [120, 180]}   # V (third-party maps); platforms.md
+  house_band: {x: [65, 888], y: [288, 1248]}                                   # I from A; platforms.md
+  house_band_centre_x: 476                        # X; platforms.md
+  relaxed_organic_caption_floor_y: 1436           # X; captions-and-text.md, platforms.md
+  ig_only_text_right_x: 1015                      # X; platforms.md
+  grid_crop_3x4_y: [240, 1680]                    # V; platforms.md
+
+# ---------------------------------------------------------------- transitions and graphics (frames at 30 fps)
+transitions:                                      # mixed tiers; transitions-and-graphics.md
+  hard_or_jl_share_min: 0.90                      # V; transitions-and-graphics.md
+  stylized_default: 0                             # P + V; transitions-and-graphics.md
+  stylized_max: 2                                 # P + V; transitions-and-graphics.md
+  whip_frames: [6, 12]                            # P + X; transitions-and-graphics.md
+  flash_frames: [2, 4]                            # X; transitions-and-graphics.md
+  zoom_transition_frames: [4, 8]                  # X; transitions-and-graphics.md
+  dissolve_frames: [8, 15]                        # P + X; transitions-and-graphics.md (never inside a talking head)
+  j_cut_lead_frames: [1, 3]                       # V + X; transitions-and-graphics.md
+  j_cut_section_change_max_s: 0.5                 # V + X; transitions-and-graphics.md
+  ui_animation_ms: [100, 500]                     # P; transitions-and-graphics.md
+  graphic_enter_frames: [5, 9]                    # X on P; transitions-and-graphics.md
+  graphic_exit_frames: [3, 6]                     # X on P; transitions-and-graphics.md
+  graphic_lead_frames: [0, 2]                     # X; transitions-and-graphics.md
+  stagger_frames: [2, 4]                          # X; transitions-and-graphics.md
+  arrow_draw_frames: [6, 10]                      # X; transitions-and-graphics.md
+  gap_between_elements_frames: 6                  # X; transitions-and-graphics.md
+  land_on_seam_within_frames: 6                   # X; transitions-and-graphics.md
+  overshoot_max_pct: 5                            # P + V; transitions-and-graphics.md
+  changing_elements_at_once_max: 1                # X + L; transitions-and-graphics.md, captions-and-text.md
+  progress_bar_default: false                     # L (other domains); transitions-and-graphics.md
+
+# ---------------------------------------------------------------- music
+music:                                            # mixed tiers; music.md
+  level_under_speech_start_lu: [16, 20]           # V + I; music.md, critique.md
+  level_under_speech_range_lu: [12, 25]           # V + I; music.md
+  sparse_bed_under_speech_lu: [12, 15]            # X; music.md
+  separation_floor_lu: 10                         # L; music.md
+  separation_floor_over_ambience_lu: 15           # L; music.md
+  listener_spread_iqr_lu: 5.7                     # L; music.md
+  expert_vs_nonexpert_gap_lu: 4                   # L; music.md
+  duck_attack_ms: [50, 300]                       # V + X; music.md
+  duck_preroll_ms: [100, 250]                     # X; music.md
+  duck_hold_gaps_under_s: 1.0                     # P + X; music.md
+  duck_release_s: [0.5, 1.0]                      # P + X; music.md
+  swell_db: [4, 8]                                # X; music.md
+  swell_gap_min_s: 1.2                            # X; music.md
+  carve_db: [2, 4]                                # V + X; music.md
+  carve_band_hz: [1000, 4000]                     # V; music.md
+  hit_tolerance_frames: 1                         # X on L; music.md
+  hits_stingers_dropouts_max: 3                   # X; music.md, critique.md
+  stinger_s: [0.5, 2.0]                           # X; music.md
+  dropout_s: [0.3, 1.0]                           # X; music.md
+  tail_max_s: 0.5                                 # I + P; music.md, endings-loops-ctas.md
+  tempo_bpm:                                      # X; music.md (tempo drives arousal, L)
+    calm: [60, 90]                                # X; music.md (or no music)
+    conversational: [85, 105]                     # X; music.md
+    high_energy: [100, 125]                       # X; music.md
+  no_music_over_wpm: 185                          # X; music.md
+  stretch_max_pct: 3                              # X; music.md ("a few percent")
+  generated_tail_s: [1, 2]                        # X; music.md
+  candidates: 3                                   # X; music.md
+  vocals_under_speech: false                      # L; music.md
+  no_music_master_always: true                    # validator; music.md, platforms.md
+  style_default:                                  # I; music.md and the style files
+    educational: none_or_very_low                 # I; music.md
+    tutorial: none_or_light_bed                   # I; styles/educational-tutorial-listicle.md
+    listicle: none_or_light_bed                   # I; styles/educational-tutorial-listicle.md
+    storytime: none_or_ambient                    # I; styles/story-comedy-hottake.md (18-20 LU if ambient)
+    comedy: none_under_jokes                      # X; styles/story-comedy-hottake.md
+    hot_take: none                                # I; styles/story-comedy-hottake.md
+    podcast_clip: none                            # I + V; styles/podcast-sales-founder.md
+    sales_ugc: cleared_bed                        # I + A; styles/podcast-sales-founder.md
+    founder_brand: none_or_subtle                 # I; styles/podcast-sales-founder.md
+
+# ---------------------------------------------------------------- sfx
+sfx:                                              # mixed tiers; sfx.md
+  per_60s_by_style:                               # X; sfx.md and the style files (zero valid everywhere)
+    educational: [0, 2]                           # X; sfx.md (0 default, up to 2 functional)
+    storytime: [0, 1]                             # X; sfx.md
+    comedy: [0, 3]                                # X; sfx.md
+    hot_take: [0, 1]                              # X; sfx.md
+    listicle: "0 or 1 per item"                   # X; sfx.md
+    tutorial: [0, 4]                              # X; sfx.md
+    podcast_clip: [0, 0]                          # X; sfx.md
+    sales_ugc: [0, 4]                             # X; sfx.md
+    founder_brand: [0, 2]                         # X; sfx.md
+    premium: [0, 2]                               # X; sfx.md
+  min_spacing_s: 4                                # P (weak); sfx.md (rhythmic sets excepted)
+  nonvoice_layers_max: 2                          # X from P; sfx.md
+  families_per_video: [1, 2]                      # X; sfx.md (3 at most)
+  transient_sync_frames: 1                        # L + P + V -> X; sfx.md
+  whoosh_peak_before_cut_frames: [0, 2]           # P; sfx.md
+  whoosh_onset_lead_frames: [2, 4]                # P; sfx.md
+  riser_s: [0.8, 2.0]                             # P + X; sfx.md
+  transient_under_speech_peak_db: [4, 10]         # X; sfx.md
+  texture_under_speech_lu_min: 10                 # X on L; sfx.md
+  texture_continuous_under_speech_lu: 15          # X on L; sfx.md
+  texture_in_gap_under_speech_lu: 6               # X; sfx.md
+  foley_under_voice_lu_min: 15                    # P; sfx.md
+  extra_bed_duck_db: [2, 4]                       # X; sfx.md
+  drop_if_music_hit_within_ms: 150                # X; sfx.md
+  protect_gap_min_ms: 150                         # X; sfx.md
+  comedy_button_after_punch_ms: 150               # X; sfx.md, styles/story-comedy-hottake.md
+  limiter_pull_max_db: 1                          # X; sfx.md
+  repeat_variation_semitones_max: 1               # P + X; sfx.md
+  repeat_variation_db: [1, 2]                     # P + X; sfx.md
+  phone_highpass_hz: 200                          # X; sfx.md
+  generated_candidates: [4, 8]                    # X; sfx.md
+
+# ---------------------------------------------------------------- voice processing
+voice:                                            # mixed tiers; voice-and-loudness.md
+  denoise_by_snr_db:                              # X bands (+-4 dB fuzzy); voice-and-loudness.md
+    none_at_or_above: 25                          # X; voice-and-loudness.md
+    light_band: [20, 25]                          # X; voice-and-loudness.md (limit 6-12 dB, only if audible)
+    standard_band: [10, 20]                       # X; voice-and-loudness.md (limit 12-18 dB)
+    heavy_below: 10                               # X; voice-and-loudness.md (limit 18-24 dB; consider a pickup)
+  attenuation_limit_max_db: 24                    # I + V; voice-and-loudness.md
+  dereverb_by_c50_db: {none_at_or_above: 20, only_if_tails: [10, 20], candidate_below: 10}   # X; voice-and-loudness.md
+  restoration_wer_increase_max_points: 1          # I; voice-and-loudness.md
+  restoration_rolloff_change_max_pct: 10          # X; voice-and-loudness.md
+  restoration_lag_max_ms: 1                       # I; voice-and-loudness.md
+  clipping_flag_samples: 3                        # X; voice-and-loudness.md (at >= -0.1 dBFS in a kept word)
+  highpass_hz: [80, 100]                          # P; voice-and-loudness.md (85 thin, 110-120 boomy)
+  mud_cut_db: [2, 4]                              # V + X; voice-and-loudness.md
+  mud_band_hz: [200, 400]                         # V; voice-and-loudness.md
+  presence_boost_db: [0, 3]                       # V + X; voice-and-loudness.md
+  deess_db: [2, 6]                                # V + X; voice-and-loudness.md
+  compression_ratio: [1.5, 2.0]                   # P; voice-and-loudness.md (3-4:1 only for dense delivery over music)
+  compression_gr_db: [2, 3]                       # P; voice-and-loudness.md (5-6 on emphasised words)
+  compression_attack_ms: 10                       # P; voice-and-loudness.md
+  compression_release_ms: [100, 150]              # P; voice-and-loudness.md
+  leveler_range_db: [2, 3]                        # P + X; voice-and-loudness.md
+  adjacent_segment_match_lu: 1.5                  # P + X; voice-and-loudness.md, styles/podcast-sales-founder.md
+  breath_attenuate_to_below_speech_db: [15, 20]   # V + X; voice-and-loudness.md
+  breath_that_aids_recall_ms: 600                 # L; voice-and-loudness.md
+  mono_fold_voice_change_max_db: 1                # X; voice-and-loudness.md
+
+# ---------------------------------------------------------------- loudness
+loudness:                                         # I + P; voice-and-loudness.md
+  integrated_lufs: -14.0                          # I; validator; voice-and-loudness.md, platforms.md, critique.md
+  aim_tolerance_lu: 0.5                           # I; voice-and-loudness.md, platforms.md
+  gate_tolerance_lu: 1.0                          # I; validator (ARCHITECTURE s7); critique.md
+  true_peak_max_dbtp: -1.0                        # P + A; validator; voice-and-loudness.md, platforms.md
+  limiter_ceiling_dbtp: -1.5                      # P; voice-and-loudness.md
+  max_short_term_over_integrated_lu: 5            # P -> X; voice-and-loudness.md, sfx.md
+  limiter_work_max_db: [2, 3]                     # X; voice-and-loudness.md
+  speech_stream_reference_lufs: -18               # P (AES TD1008); voice-and-loudness.md, music.md, platforms.md
+  ab_alternative_lufs: -16                        # X; voice-and-loudness.md, platforms.md
+
+# ---------------------------------------------------------------- colour
+color:                                            # mixed tiers; color-and-look.md
+  reference_white_nits: 203                       # P (ITU-R BT.2408); color-and-look.md, platforms.md
+  hdr_ref_white_in_sdr_pct: 90                    # P + X; color-and-look.md (95 is a ceiling)
+  face_luma_sdr_pct:                              # V; color-and-look.md
+    lighter: [45, 70]                             # V; color-and-look.md
+    medium: [30, 60]                              # V; color-and-look.md
+    deep: [15, 35]                                # V; color-and-look.md
+  lit_skin_soft_ceiling_pct: 80                   # P + X; color-and-look.md
+  skin_hue_tolerance_deg: 2                       # V + X; color-and-look.md
+  skin_hue_investigate_deg: 5                     # V + X; color-and-look.md
+  saturation_x: [0.9, 1.1]                        # X; color-and-look.md
+  exposure_change_stops: 0.5                      # X; color-and-look.md (beyond ~1 stop, fix partially)
+  shadow_detail_min_pct: 5                        # X; color-and-look.md
+  crushed_pixels_max_frac: 0.02                   # X; color-and-look.md
+  take_match_delta_e2000_max: 2                   # L + X; color-and-look.md
+  take_match_face_luma_points: 3                  # X; color-and-look.md
+  look_lut_strength: [0.0, 0.4]                   # I + X; color-and-look.md
+  look_lut_strength_typical: [0.2, 0.3]           # I + X; color-and-look.md
+  ui_white_if_glaring_pct: [90, 95]               # X from P; color-and-look.md
+  cambi_max: 3                                    # L; color-and-look.md (~5 slightly annoying)
+  crossfade_between_takes: false                  # X; color-and-look.md
+
+# ---------------------------------------------------------------- endings
+endings:                                          # mixed tiers; endings-loops-ctas.md
+  last_word_to_end_s: [0.15, 0.5]                 # I + X; endings-loops-ctas.md, critique.md
+  last_word_to_end_target_s: 0.3                  # I + X; endings-loops-ctas.md
+  emotional_hold_s: [0.8, 1.5]                    # X; endings-loops-ctas.md
+  held_visual_total_s: [1.5, 2.0]                 # V + X; endings-loops-ctas.md
+  comedy_after_button_max_s: 1.0                  # I + X; styles/story-comedy-hottake.md
+  comedy_reaction_hold_s: [0.3, 1.0]              # X from P; styles/story-comedy-hottake.md
+  signoff_memory_max_s: 1.5                       # I + X; endings-loops-ctas.md
+  end_card_on_request_max_s: 1.5                  # X; endings-loops-ctas.md
+  podcast_title_card_s: [1.5, 2.0]                # V; styles/podcast-sales-founder.md
+  asks_max: 1                                     # X; endings-loops-ctas.md (two only when linked)
+  spoken_cta_retained_frac: 1.0                   # I; validator (pinned IDs); endings-loops-ctas.md
+  loop_seam_continuation_ms: [100, 250]           # X on L; endings-loops-ctas.md
+  restart_lead_in_s: [0.1, 0.5]                   # X; endings-loops-ctas.md, story-and-hook.md
+
+# ---------------------------------------------------------------- critique
+critique:                                         # mixed tiers; critique.md
+  notes_per_round: 5                              # P + X; critique.md
+  p1_upstream_threshold: 5                        # X; critique.md
+  stop_after_rounds_without_win: 2                # I; critique.md
+  judges_min_families: 2                          # L + I; critique.md
+  both_orders_required: true                      # L; critique.md
+  seam_review_slice_s: 1.0                        # V; critique.md
+  blind_pairs_for_60_40: 200                      # X; critique.md
+  blind_pairs_for_55_45: 800                      # X; critique.md
+
+# ---------------------------------------------------------------- platforms and delivery
+delivery:                                         # A + I; platforms.md
+  frame_px: [1080, 1920]                          # X + A; platforms.md
+  fps_range: [23, 60]                             # A; platforms.md (constant, source cadence; mixed 30/60 -> 30)
+  crf: [14, 16]                                   # I; platforms.md
+  keyint: "fps / 2"                               # A; platforms.md
+  ig_bitrate_cap: "min(25 Mbps, 0.9 * 300 MB / duration)"   # A + X; platforms.md
+  audio_codec: AAC-LC                             # A; platforms.md
+  audio_rate_hz: 48000                            # A; platforms.md
+  audio_kbps: {instagram: 128, youtube: 384, tiktok: [256, 320]}   # A + X; platforms.md
+  shorts_max_s: 180                               # A; platforms.md
+  reels_api_s: [3, 900]                           # A; platforms.md
+  tiktok_api_max_s: 600                           # A; platforms.md
+  tiktok_creator_rewards_min_s: 60                # A; platforms.md, endings-loops-ctas.md (strictly longer)
+  qualified_view_min_s: 5                         # A; platforms.md, endings-loops-ctas.md
+  reels_tab_max_s: 180                            # V; platforms.md (unconfirmed by Meta)
+  shorts_music_most_songs_s: 90                   # A; platforms.md, music.md
+  ig_audio_api_audio_volume: [10, 20]             # X; platforms.md (set video_volume 100; both default to 100)
+  variants_default: 0                             # X; platforms.md (each needs a named reason)
