@@ -573,13 +573,19 @@ def _page_cost(toks: Sequence[_Tok], j: int, i: int, *, style: CaptionStyle, par
             cost += 2.0
         elif t.strong_after:
             cost += 1.2
-    d = float(page[-1].end - page[0].start)
+    # time on screen, not the speech span: a page shows from its first onset (minus the lead) until the next
+    # page takes over (the 2-frame gap before it) or, at the end of a run, until the hold after its last word
+    if i < len(toks):
+        d = float(toks[i].start - page[0].start) - params.gap_s
+    else:
+        d = float(page[-1].end - page[0].start) + params.hold_s
+    d = max(d, float(page[-1].end - page[0].start), 1e-3)
     if d < params.min_page_s and not (n == 1 and _is_punch(page[0])):
-        cost += 1.5 * (params.min_page_s - d) / params.min_page_s
-    if d > 0:
-        cps = chars / d
-        if cps > params.max_cps:
-            cost += 0.1 * (cps - params.max_cps)
+        cost += 6.0 * (params.min_page_s - d) / params.min_page_s
+    cps = chars / d
+    if cps > params.max_cps:
+        # doctrine: <= 20 CPS; a fast page is a reason to re-page (never to delete words)
+        cost += 0.3 * (cps - params.max_cps)
     return cost
 
 

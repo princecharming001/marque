@@ -941,8 +941,9 @@ def _real_check(job: Job, info: MediaInfo, src: Path) -> None:
     fd = Fraction(1, 30)
     src_v = _vstream(src)
     src_dur = Fraction(src_v["duration"])
+    pre = int((job.meta["meta"]["ingest"].get("preroll") or {}).get("frames") or 0)  # held first frames
     mezz_dur = Fraction(int(v["nb_frames"])) / info.fps
-    assert abs(mezz_dur - src_dur) <= fd, (float(mezz_dur), float(src_dur))
+    assert abs(mezz_dur - pre / info.fps - src_dur) <= fd, (float(mezz_dur), float(src_dur), pre)
     a = sf.info(str(job.audio_path))
     assert a.samplerate == 48000 and a.channels == 1
     assert abs(Fraction(a.frames, 48000) - mezz_dur) <= Fraction(1, 48000)
@@ -974,7 +975,8 @@ def test_real_vfr(ingested, mod_dir: Path):
     src = TESTDATA / "qa-editor-var-vfr.mov"
     _skip_unless_room(src, mod_dir)
     job, info = ingested("real_vfr", src)
-    assert info.vfr and has_flag(info, FLAG_VFR) and info.frame_count == 1080
+    pre = int((job.meta["meta"]["ingest"].get("preroll") or {}).get("frames") or 0)  # the take opens mid-word
+    assert info.vfr and has_flag(info, FLAG_VFR) and info.frame_count == 1080 + pre
     assert info.start_us == 20990  # empty edit; audio.wav trimmed to match
     assert job.meta["meta"]["ingest"]["audio"]["first_pts_samples"] == 1008
     _real_check(job, info, src)
@@ -987,3 +989,50 @@ def test_audio_info_model_roundtrip():
                              priming_samples=1024), notes=[FLAG_NO_AUDIO + " x"])
     back = MediaInfo.model_validate_json(mi.model_dump_json())
     assert back == mi and has_flag(back, FLAG_NO_AUDIO)
+
+
+# ============================================================================================ pre-roll
+def test_detect_speech_at_start() -> None:
+    from studio.media.ingest import detect_speech_at_start
+
+    sr = 48000
+    rng = np.random.default_rng(1)
+    floor = rng.standard_normal(sr * 4).astype(np.float32) * 10 ** (-70 / 20)
+    speech = floor.copy()
+    t = np.arange(sr) / sr
+    burst = (0.2 * np.sin(2 * np.pi * 180 * t) * (0.6 + 0.4 * np.sin(2 * np.pi * 4 * t))).astype(np.float32)
+    speech[:sr] += burst
+    speech[2 * sr:3 * sr] += burst
+    assert detect_speech_at_start(speech, sr)["speech_at_start"]
+    late = floor.copy()
+    late[sr // 2:sr // 2 + sr] += burst  # first word at 0.5 s
+    assert not detect_speech_at_start(late, sr)["speech_at_start"]
+    tone = np.tile(burst, 4)  # constant music-like level: undetermined, no pre-roll
+    assert not detect_speech_at_start(tone, sr)["speech_at_start"]
+
+
+@needs_ffmpeg
+def test_preroll_when_speech_starts_on_the_first_frame(tmp_path: Path, mod_settings: Settings) -> None:
+    """Speech on frame 0 → the first frame is held for ceil(0.15 s) of frames over the take's room tone, so the
+    first word survives AAC priming in every deliverable and lands after 0.1 s."""
+    from studio.media.ingest import FLAG_PREROLL
+
+    src = tmp_path / "speech_at_start.mov"
+    expr = "(lt(t\\,1)+between(t\\,2\\,3))*0.2*sin(2*PI*180*t)+0.0003*sin(2*PI*50*t)"
+    _ff(["-f", "lavfi", "-i", "testsrc2=size=360x640:rate=30:duration=4", "-f", "lavfi", "-i",
+         f"aevalsrc=exprs='{expr}':s=48000:d=4", "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset",
+         "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", str(src)])
+    job = Job.create("preroll", work_dir=tmp_path / "work")
+    info = ingest(src, job, settings=mod_settings, options=IngestOptions(mezz_codec="prores", proxy=False,
+                                                                        min_free_bytes=64 << 20))
+    pre = job.meta["meta"]["ingest"]["preroll"]
+    assert pre["applied"] and pre["frames"] == 5 and has_flag(info, FLAG_PREROLL)
+    assert info.frame_count == 125 and int(_vstream(job.mezz_path)["nb_frames"]) == 125
+    a, sr = sf.read(job.audio_path, dtype="float32")
+    assert len(a) == 125 * 1600
+    head = np.sqrt(np.mean(a[:7000] ** 2))
+    assert 0 < head < 10 ** (-50 / 20)  # room tone, not digital silence and not speech
+    assert np.sqrt(np.mean(a[8000:12000] ** 2)) > 0.05  # the first word now starts at 5 frames
+    off = ingest(src, Job.create("no-preroll", work_dir=tmp_path / "work"), settings=mod_settings,
+                 options=IngestOptions(mezz_codec="prores", proxy=False, preroll_s=0.0, min_free_bytes=64 << 20))
+    assert off.frame_count == 120 and not has_flag(off, FLAG_PREROLL)

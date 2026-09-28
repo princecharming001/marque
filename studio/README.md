@@ -37,10 +37,18 @@ cd studio
 .venv/bin/studio qa /Users/home/studio-work/<job_id>
 ```
 
-Status: `index`, `render`, `qa` and `report` are wired end to end (`tests/test_integration_smoke.py` runs
-them through the CLI on a synthetic take). `edit` and `chat` exit with code 3 until the Director, critics and
-champion loop (`studio/agent/director.py`, `critics.py`, `loop.py`) are built; until then a document can be
-edited with ops through `studio.agent.tools.EditSession(job).apply_ops([...])` and rendered with `studio render`.
+Status: every command is wired end to end. `studio edit` runs ingest → Take Index → the Director's staged
+edit (brief, story + radio test, fine cut, then reframe → b-roll/cards → captions → sound → colour, finalize)
+→ the champion loop (full-quality render → invariants → critics → Director revision → position-swapped
+pairwise; stop after 2 winless rounds, guard 12 or `--rounds`) → delivery into `<job>/deliver/`
+(`final_<platform>.mp4`, `final_nomusic.mp4`, `cover.jpg`, `captions.srt`, `edit_v<n>.json`, `report.md`).
+Run `studio edit <job_dir>` to resume after a crash (finished steps are skipped). `studio chat` applies an
+instruction to the champion (user intent wins; invariants still gate) and re-delivers.
+
+Operational notes: at most 2 edits run machine-wide (`STUDIO_MAX_CONCURRENT_EDITS`); every render checks free
+disk first (`STUDIO_MIN_FREE_GB`, default 1.5) and loser/delivered renders are pruned to their finals;
+`STUDIO_DIRECTOR_EFFORT` (default `high`) sets the Director's effort; `--media FILE` gives the Director
+creator b-roll. Real runs: `STUDIO_REAL=1 STUDIO_ENV_FILE=/Users/home/Marque/backend/.env`.
 
 Jobs live in `$STUDIO_WORK_DIR` (default `/Users/home/studio-work`). Keys come from the environment or
 from a dotenv file named by `STUDIO_ENV_FILE` (read into memory, never exported or logged); see

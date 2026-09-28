@@ -472,3 +472,35 @@ def test_extreme_speech_rate_never_overlaps_pages(take_index: TakeIndex, cut_doc
         assert a.out_start < a.out_end <= b.out_start
     shown = [w.word_id for p in pages for w in p.words]
     assert len(shown) == len(set(shown))
+
+
+# ============================================================================================== fast speech
+def test_fast_speech_pages_stay_readable(take_index: TakeIndex):
+    """Regression (real d030 render: 'The belief' shown for 0.36 s at 30 CPS): the pager judges a page by its
+    time on screen and merges short, fast pages instead of flickering them (never dropping words)."""
+    from studio.compile.timeline import compile as compile_timeline
+    from studio.doc.model import Deliverable
+    from studio.perception.index import Sentence
+
+    sentence = ("They're wrong. The belief is that if your why is real and vulnerable and true to you, people "
+                "will buy. But here's what actually moves customers.")
+    text = sentence.split(" ")
+    words, t = [], 300_000
+    for k, w in enumerate(text, start=1):
+        dur = 110_000 + 20_000 * len(w.strip(".,"))  # ~4 words/s: a fast delivery
+        words.append(Word(id=f"w{k:04d}", text=w, start_us=t, end_us=t + dur, kind="word", confidence=0.97,
+                          sentence_id="s001", emphasis=0.1))
+        t += dur + (150_000 if w.endswith((".", ",")) else 25_000)
+    media = take_index.media.model_copy(update={"duration_us": t + 400_000})
+    ix = TakeIndex(media=media, words=words, sentences=[Sentence(
+        id="s001", word_ids=[w.id for w in words], text=" ".join(text), start_us=words[0].start_us,
+        end_us=words[-1].end_us, complete=True)], transcript_text=" ".join(text))
+    doc = CutDocument(version=1, segments=[Segment(id="seg001", from_word="w0001", to_word=words[-1].id)],
+                      deliverables=[Deliverable(platform="tiktok")])
+    tl = compile_timeline(doc, ix)
+    pages = tl.captions
+    assert [w.word_id for p in pages for w in p.words] == [w.id for w in words]  # every word, in order
+    short = [t for p, t in zip(pages, page_texts(pages), strict=True)
+             if len(p.words) > 1 and float(p.out_end - p.out_start) < 0.5 - 1e-6]
+    assert len(short) <= 1, short  # the old pager flashed three (e.g. 'The belief' for 0.40 s)
+    assert "The belief" not in page_texts(pages) and "But here's" not in page_texts(pages)

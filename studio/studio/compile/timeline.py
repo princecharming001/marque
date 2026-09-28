@@ -85,11 +85,11 @@ import shutil
 import statistics
 import subprocess
 from bisect import bisect_right
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from studio.compile.models import (
     FramingKey,
@@ -165,6 +165,10 @@ class CompileOptions:
     #: a J/L picture extension stops this far from the neighbouring (removed) word: the mouth shapes a word
     #: before it is heard and closes after it
     jl_picture_margin_ms: float = 80.0
+    #: a J/L picture edit may move this many frames (and at most this share of the lead) from the Director's
+    #: lead onto a blink or a closed-mouth frame (doctrine: "pick a blink"); 0 disables the snap
+    jl_snap_frames: int = 3
+    jl_snap_frac: float = 0.5
     face_dead_zone: float = 0.10  # fraction of the crop size the face may wander before re-centring
     face_dead_time_ms: float = 700.0
     face_move_ms: float = 500.0  # eased re-centre duration (doctrine ≥ 400 ms)
@@ -660,7 +664,8 @@ def _check_segments(doc: CutDocument, index: TakeIndex) -> list[tuple[int, int]]
 
 
 # ============================================================================================ story → pieces
-def _build_pieces(doc: CutDocument, index: TakeIndex, opts: CompileOptions, grid: _Grid) -> list[_Piece]:
+def _build_pieces(doc: CutDocument, index: TakeIndex, opts: CompileOptions, grid: _Grid,
+                  dense: _DenseVisual | None = None) -> list[_Piece]:
     spans = _check_segments(doc, index)
     n = len(doc.segments)
     words = index.words
@@ -793,14 +798,115 @@ def _build_pieces(doc: CutDocument, index: TakeIndex, opts: CompileOptions, grid
                 aout = ain + grid.frame
             pieces.append(_Piece(seg=seg, seg_idx=i, words=list(p_words), speed=speed, a_in=ain, a_out=aout,
                                  p_in=ain, p_out=aout, join_in=kind, seam_in=seam))
-    _apply_jl(pieces, index, grid, opts)
+    _apply_jl(pieces, index, grid, opts, dense)
     _assign_output_times(pieces, grid)
     return pieces
 
 
-def _apply_jl(pieces: list[_Piece], index: TakeIndex, grid: _Grid, opts: CompileOptions | None = None) -> None:
-    """Shift picture edits for J/L cuts at true cuts (audio stays at its snap-bounded edit)."""
+class _DenseVisual:
+    """Frame-accurate eyes/mouth signals from ``index/visual_dense.npz`` (the analysis grid of
+    :func:`studio.perception.visual.analyze_visual`), for seam placement."""
+
+    def __init__(self, t_us: Any, eyes: Any, mouth: Any, frame_us: float):
+        self.t_us, self._eyes, self._mouth, self.frame_us = t_us, eyes, mouth, frame_us
+
+    @classmethod
+    def load(cls, job: Job | None) -> _DenseVisual | None:
+        if job is None:
+            return None
+        try:
+            from studio.perception.visual import load_dense
+
+            d = load_dense(job)
+        except Exception:
+            return None
+        if not d or "t_us" not in d or not len(d["t_us"]):
+            return None
+        fps = d.get("fps")
+        frame_us = 1e6 * float(fps[1]) / float(fps[0]) if fps is not None and len(fps) == 2 and fps[0] else 33_333.0
+        return cls(d["t_us"], d.get("eyes_open"), d.get("mouth_open"), frame_us)
+
+    def _at(self, arr: Any, src_t: Fraction) -> float | None:
+        import numpy as np
+
+        if arr is None:
+            return None
+        t = float(src_t * US)
+        i = int(np.searchsorted(self.t_us, t))
+        cands = [j for j in (i - 1, i) if 0 <= j < len(self.t_us)]
+        if not cands:
+            return None
+        j = min(cands, key=lambda k: abs(float(self.t_us[k]) - t))
+        if abs(float(self.t_us[j]) - t) > self.frame_us:
+            return None
+        v = float(arr[j])
+        return None if v != v else v  # NaN: no face on that frame
+
+    def eyes(self, src_t: Fraction) -> float | None:
+        return self._at(self._eyes, src_t)
+
+    def mouth(self, src_t: Fraction) -> float | None:
+        return self._at(self._mouth, src_t)
+
+
+def _mouth_at(index: TakeIndex, src_t: Fraction) -> float | None:
+    """Measured mouth opening (0..1) at a source instant (nearest visual sample; None when unmeasured)."""
+    samples = index.visual.samples if index.visual is not None else []
+    if not samples:
+        return None
+    t_us = int(src_t * US)
+    lo, hi = 0, len(samples) - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if samples[mid].t_us < t_us:
+            lo = mid + 1
+        else:
+            hi = mid
+    cands = [j for j in (lo - 1, lo) if 0 <= j < len(samples)]
+    s = samples[min(cands, key=lambda j: abs(samples[j].t_us - t_us))]
+    if abs(s.t_us - t_us) > 150_000:
+        return None
+    return s.mouth_open
+
+
+def _jl_frames(want: int, room: int, cut_frames: Callable[[int], tuple[Fraction, Fraction]], index: TakeIndex,
+               blinks: Sequence[tuple[Fraction, Fraction]], grid: _Grid, opts: CompileOptions | None,
+               dense: _DenseVisual | None = None) -> int:
+    """How many frames to shift a J/L picture edit: the Director's lead, moved by at most ``jl_snap_frac`` of
+    it (and ``jl_snap_frames``) onto a better frame pair (doctrine cutting-and-pacing.md: the picture cut sits
+    in the shared silent gap "where the mouth is closed on both sides: pick a blink"). A blink touching the
+    last outgoing or first incoming frame hides the cut; an open outgoing mouth reads as a word being cut."""
+    m0 = max(0, min(want, room))
+    if m0 == 0 or opts is None or opts.jl_snap_frames <= 0:
+        return m0
+    span = max(1, min(opts.jl_snap_frames, math.floor(want * opts.jl_snap_frac)))
+    lo, hi = max(1, m0 - span), min(room, m0 + span)
+    half = grid.frame / 2
+
+    def cost(m: int) -> float:
+        t_out, t_in = cut_frames(m)
+        c = abs(m - want) / max(1, want) * 0.8
+        in_blink = any(a - half <= t_out < b + half or a - half <= t_in < b + half for a, b in blinks)
+        if not in_blink and dense is not None:  # frame-accurate eyes from the dense analysis
+            in_blink = any(e is not None and e < 0.35 for e in (dense.eyes(t_out), dense.eyes(t_in)))
+        if in_blink:
+            c -= 1.0
+        mo = dense.mouth(t_out) if dense is not None else None
+        if mo is None:
+            mo = _mouth_at(index, t_out)
+        if mo is not None:
+            c += 0.6 * max(0.0, mo - 0.15)
+        return c
+
+    return min(range(lo, hi + 1), key=lambda m: (cost(m), abs(m - m0)))
+
+
+def _apply_jl(pieces: list[_Piece], index: TakeIndex, grid: _Grid, opts: CompileOptions | None = None,
+              dense: _DenseVisual | None = None) -> None:
+    """Shift picture edits for J/L cuts at true cuts (audio stays at its snap-bounded edit); the shift is the
+    Director's lead nudged onto a blink / a closed mouth when one is within reach (:func:`_jl_frames`)."""
     margin = Fraction(round((opts.jl_picture_margin_ms if opts is not None else 0.0) * 1000), US)
+    blinks = _blinks(index)
     for k in range(1, len(pieces)):
         B = pieces[k]
         if B.join_in != "cut" or B.seam_in.kind not in ("jcut", "lcut") or B.seam_in.lead_ms <= 0:
@@ -816,13 +922,21 @@ def _apply_jl(pieces: list[_Piece], index: TakeIndex, grid: _Grid, opts: Compile
             # outgoing picture extends past its audio; incoming picture starts after its audio
             room_a = math.floor((a_hard_hi - A.p_out) * grid.fps / A.speed)
             room_b = math.floor((B.p_out - B.p_in) * grid.fps / B.speed) - 1
-            m = max(0, min(want, room_a, room_b))
+            a_out, b_in = A.p_out, B.p_in
+            m = _jl_frames(want, max(0, min(room_a, room_b)),
+                           lambda n, a_out=a_out, b_in=b_in, A=A, B=B, L=L: (a_out + (n - 1) * L * A.speed,
+                                                                              b_in + n * L * B.speed),
+                           index, blinks, grid, opts, dense)
             A.p_out += m * L * A.speed
             B.p_in += m * L * B.speed
         else:
             room_a = math.floor((A.p_out - A.p_in) * grid.fps / A.speed) - 1
             room_b = math.floor((B.p_in - b_hard_lo) * grid.fps / B.speed)
-            m = max(0, min(want, room_a, room_b))
+            a_out, b_in = A.p_out, B.p_in
+            m = _jl_frames(want, max(0, min(room_a, room_b)),
+                           lambda n, a_out=a_out, b_in=b_in, A=A, B=B, L=L: (a_out - (n + 1) * L * A.speed,
+                                                                              b_in - n * L * B.speed),
+                           index, blinks, grid, opts, dense)
             A.p_out -= m * L * A.speed
             B.p_in -= m * L * B.speed
         if m == 0:
@@ -1381,7 +1495,7 @@ def compile(doc: CutDocument, index: TakeIndex, *, job: Job | None = None, width
         return Timeline(fps=fps, width=width, height=height, duration=_ZERO, doc_version=doc.version,
                         job_id=job_id, source_path=source_path,
                         word_map={w.id: None for w in index.words})
-    pieces = _build_pieces(doc, index, opts, grid)
+    pieces = _build_pieces(doc, index, opts, grid, _DenseVisual.load(job))
     word_map = _word_map(pieces, index)
     duration = pieces[-1].out_end
     order = [w for s in doc.segments for w in index.word_ids(s.from_word, s.to_word)]

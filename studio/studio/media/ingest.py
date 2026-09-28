@@ -64,6 +64,15 @@ packets. Doing the alignment in a separate 48k→48k stage matters: a single res
 inverted polarity is corrected; uncorrelated channels with very different SNR keep the cleaner one.
 No-audio sources get a silent track and ``flag:no_audio``.
 
+**Pre-roll.** Creators often start talking on the first frame. Every deliverable's first ~21–44 ms of audio
+is AAC encoder priming (the files carry no edit list), so a word on the first frame loses its onset and sits
+over digital silence (invariant 9), and the doctrine wants the first word at 0.1–0.5 s. When the dialogue is
+already at speech level in its first ``preroll_onset_ms`` (:func:`detect_speech_at_start`), ingest holds the
+first frame for ``preroll_s`` (whole frames, ``tpad`` clone in the mezzanine) and puts the take's own room
+tone under it (its quietest window, joined with a 5 ms equal-power crossfade). Everything downstream reads the
+padded mezzanine/audio, so source times are consistent; ``flag:preroll`` and ``meta.ingest.preroll`` record
+it. ``STUDIO_INGEST_PREROLL_S=0`` disables it.
+
 **Proxy.** From the mezzanine (so it inherits rotation, tone map and CFR): Lanczos downscale to 540x960
 (native aspect for non-9:16 sources, e.g. 960x540 for landscape, so normalised face boxes map 1:1),
 x264 CRF 20 with 1 s GOPs for fast seeks, ``HH:MM:SS:FF`` timecode burned bottom-left (non-drop, same
@@ -141,8 +150,12 @@ __all__ = [
     "FLAG_HDR_TONEMAPPED",
     "FLAG_DV_UNSUPPORTED",
     "FLAG_MEZZ_FALLBACK",
+    "FLAG_PREROLL",
     "has_flag",
+    "detect_speech_at_start",
 ]
+
+FLAG_PREROLL = "flag:preroll"  # the first frame is held (with room tone) because speech starts on it
 
 TONEMAP_OPERATORS: tuple[str, ...] = ("mobius", "hable", "reinhard", "clip", "linear", "gamma", "none")
 _DEFAULT_TONEMAP_PARAM: dict[str, float] = {"mobius": 0.6}  # our tuned knee; others use ffmpeg's default
@@ -267,6 +280,8 @@ class IngestOptions:
     burn_timecode: bool = True
     link_original: bool = True
     verify: bool = True
+    preroll_s: float = 0.15  # hold of the first frame when speech starts on it (0 disables)
+    preroll_onset_ms: float = 80.0  # speech this close to the first frame triggers the pre-roll
 
     def __post_init__(self) -> None:
         if self.mezz_codec not in MEZZ_CODECS:
@@ -283,6 +298,9 @@ class IngestOptions:
             kw["mezz_codec"] = c
         if (enc := (e.get("STUDIO_PRORES_ENCODER") or "").strip().lower()):
             kw["prores_encoder"] = enc
+        if (pr := (e.get("STUDIO_INGEST_PREROLL_S") or "").strip()):
+            with contextlib.suppress(ValueError):
+                kw["preroll_s"] = max(0.0, float(pr))
         return cls(**kw)
 
 
@@ -351,7 +369,8 @@ def _zs(mapping: Mapping[str, str], value: str | None) -> str | None:
 
 # ============================================================================================ filters
 def mezz_video_filter(info: MediaInfo, *, tonemap: ToneMapConfig | None = None, peak_nits: float | None = None,
-                      chroma_location: str | None = None, field_order: str | None = None) -> str:
+                      chroma_location: str | None = None, field_order: str | None = None,
+                      pre_frames: int = 0) -> str:
     """The ``-vf`` graph that turns the (auto-rotated) original into the mezzanine picture.
 
     Every zscale output property is set explicitly: zscale's defaults are "same as the input frame", which
@@ -363,7 +382,8 @@ def mezz_video_filter(info: MediaInfo, *, tonemap: ToneMapConfig | None = None, 
     parts = []
     if (field_order or "").lower() in _INTERLACED and info.rotation == 0:
         parts.append("bwdif=mode=send_frame:parity=auto:deint=all")
-    parts += ["setpts=PTS-STARTPTS", f"fps=fps={_fps_str(fps)}:round=near", "tpad=stop_mode=clone:stop=3"]
+    pad = f"start={int(pre_frames)}:start_mode=clone:" if pre_frames > 0 else ""
+    parts += ["setpts=PTS-STARTPTS", f"fps=fps={_fps_str(fps)}:round=near", f"tpad={pad}stop_mode=clone:stop=3"]
     size = ""
     if info.sar != 1:
         size = f":w={info.width}:h={info.height}"
@@ -630,7 +650,7 @@ def _source_path(job: Job, info: MediaInfo) -> Path:
 
 
 def _make_mezzanine(job: Job, info: MediaInfo, settings: Settings, options: IngestOptions,
-                    probe_data: Mapping[str, Any]) -> tuple[Path, list[str], dict[str, Any]]:
+                    probe_data: Mapping[str, Any], *, pre_frames: int = 0) -> tuple[Path, list[str], dict[str, Any]]:
     src = _source_path(job, info)
     notes: list[str] = []
     codec = options.mezz_codec
@@ -652,7 +672,8 @@ def _make_mezzanine(job: Job, info: MediaInfo, settings: Settings, options: Inge
     peak = _source_peak(info, probe_data)
     field_order = _vstream_field(probe_data, "field_order")
     vf = mezz_video_filter(info, tonemap=options.tonemap, peak_nits=peak,
-                           chroma_location=_vstream_field(probe_data, "chroma_location"), field_order=field_order)
+                           chroma_location=_vstream_field(probe_data, "chroma_location"), field_order=field_order,
+                           pre_frames=pre_frames)
     if (field_order or "").lower() in _INTERLACED:
         notes.append(f"interlaced source (field order {field_order}): "
                      + ("deinterlaced with bwdif in the mezzanine" if info.rotation == 0
@@ -767,6 +788,105 @@ def extract_audio(job: Job, info: MediaInfo, *, settings: Settings | None = None
     """Write ``media/audio.wav`` (48 kHz float32 mono dialogue; honours edit lists and AAC priming)."""
     path, _notes, _meta = _extract_audio(job, info, _settings(settings), options or IngestOptions.from_env())
     return path
+
+
+def detect_speech_at_start(audio: np.ndarray, sr: int = SAMPLE_RATE, *, onset_ms: float = 80.0,
+                           analyse_s: float = 12.0, min_spread_db: float = 15.0, frac: float = 0.6) -> dict[str, Any]:
+    """Is the dialogue already at speech level in its first ``onset_ms``? Levels are 10 ms RMS over the first
+    ``analyse_s``: floor = 10th percentile, speech = 95th; the head counts as speech when it reaches
+    ``floor + frac·(speech − floor)``. A take whose level spread is under ``min_spread_db`` (music, constant
+    noise) is undetermined and reported as no speech."""
+    x = np.asarray(audio, dtype=np.float64).reshape(-1)[: int(analyse_s * sr)]
+    hop = max(1, sr // 100)
+    n = len(x) // hop
+    if n < 20:
+        return {"speech_at_start": False, "reason": "too short"}
+    db = 10.0 * np.log10(np.mean(x[: n * hop].reshape(n, hop) ** 2, axis=1) + 1e-12)
+    floor, loud = float(np.percentile(db, 10)), float(np.percentile(db, 95))
+    head = float(db[: max(1, round(onset_ms / 10.0))].max())
+    spread = loud - floor
+    speech = bool(spread >= min_spread_db and head >= floor + frac * spread)
+    return {"speech_at_start": speech, "floor_db": round(floor, 1), "speech_db": round(loud, 1),
+            "head_db": round(head, 1), "spread_db": round(spread, 1)}
+
+
+def _room_tone(x: np.ndarray, sr: int, n: int, *, win_s: float = 0.15, skip_s: float = 0.3,
+               search_s: float = 30.0) -> np.ndarray:
+    """``n`` samples of the take's own room tone: its quietest ``win_s`` window (tiled with equal-power joins
+    when shorter than ``n``)."""
+    x = np.asarray(x, dtype=np.float32)
+    w = max(1, int(win_s * sr))
+    lo, hi = min(len(x), int(skip_s * sr)), min(len(x), int(search_s * sr))
+    if hi - lo < w:
+        lo, hi = 0, len(x)
+    if hi - lo < w:
+        return np.zeros(n, np.float32)
+    hop = max(1, sr // 100)
+    starts = np.arange(lo, hi - w + 1, hop)
+    energy = np.array([float(np.mean(x[a:a + w].astype(np.float64) ** 2)) for a in starts])
+    a = int(starts[int(np.argmin(energy))])
+    seg = x[a:a + w].copy()
+    if n <= w:
+        return seg[:n]
+    xf = max(1, min(w // 4, int(0.01 * sr)))
+    ramp = np.sin(np.linspace(0.0, np.pi / 2, xf, dtype=np.float32)) ** 2
+    out = seg.copy()
+    while len(out) < n:
+        head = out[:-xf]
+        join = out[-xf:] * np.sqrt(1.0 - ramp) + seg[:xf] * np.sqrt(ramp)
+        out = np.concatenate([head, join, seg[xf:]])
+    return out[:n]
+
+
+def _prepend_room_tone(path: Path, pad: int, sr: int) -> None:
+    """Prepend ``pad`` samples of room tone to a WAV (mono or multichannel), joined with a 5 ms equal-power
+    crossfade into the original first samples."""
+    import soundfile as sf
+
+    data, rate = sf.read(str(path), dtype="float32", always_2d=True)
+    if rate != sr:
+        raise IngestError(f"{path.name}: {rate} Hz, expected {sr}")
+    xf = min(max(1, int(0.005 * sr)), pad, len(data))
+    chans = []
+    t = np.linspace(0.0, np.pi / 2, xf, dtype=np.float32)
+    fade_in, fade_out = np.sin(t) ** 2, np.cos(t) ** 2
+    for c in range(data.shape[1]):
+        x = data[:, c]
+        tone = _room_tone(x, sr, pad + xf)
+        head = tone[:pad].copy()
+        body = x.copy()
+        body[:xf] = x[:xf] * np.sqrt(fade_in) + tone[pad:pad + xf] * np.sqrt(fade_out)
+        chans.append(np.concatenate([head, body]))
+    out = np.stack(chans, axis=1)
+    tmp = _tmp(path)
+    sf.write(str(tmp), out if out.shape[1] > 1 else out[:, 0], sr, subtype="FLOAT", format="WAV")
+    os.replace(tmp, path)
+
+
+def _preroll(job: Job, info: MediaInfo, options: IngestOptions) -> tuple[int, dict[str, Any]]:
+    """Frames of first-frame hold the take needs (0 when its dialogue does not start on the first frame)."""
+    import soundfile as sf
+
+    if options.preroll_s <= 0 or info.audio is None or not job.audio_path.exists():
+        return 0, {"applied": False, "reason": "disabled" if options.preroll_s <= 0 else "no audio"}
+    x, sr = sf.read(str(job.audio_path), dtype="float32", frames=int(12.5 * SAMPLE_RATE))
+    det = detect_speech_at_start(x, sr, onset_ms=options.preroll_onset_ms)
+    if not det.get("speech_at_start"):
+        return 0, {"applied": False, **det}
+    frames = max(1, math.ceil(options.preroll_s * float(info.fps) - 1e-9))
+    return frames, {"applied": True, "frames": frames, **det}
+
+
+def _padded_info(info: MediaInfo, frames: int) -> MediaInfo:
+    """``info`` with ``frames`` more frames of duration (exactly ``frame_count + frames``)."""
+    target = info.frame_count + frames
+    dur = info.duration_us + round(frames / float(info.fps) * 1_000_000)
+    for _ in range(64):
+        cand = info.model_copy(update={"duration_us": dur})
+        if cand.frame_count == target:
+            return cand
+        dur += 1 if cand.frame_count < target else -1
+    raise IngestError("could not express the pre-roll as whole frames")
 
 
 def _timecode_filter(info: MediaInfo, ph: int, ffmpeg: str) -> str | None:
@@ -907,10 +1027,22 @@ def ingest(src_path: str | os.PathLike[str], job: Job, *, settings: Settings | N
         notes.append(f"{FLAG_HDR_TONEMAPPED} {info.color.hdr_format} → SDR BT.709 once at ingest "
                      f"({tm.operator}, param {tm.effective_param}, npl {tm.npl:g}, source peak {peak:g} cd/m²)")
 
-    _mezz, mz_notes, mz_meta = _make_mezzanine(job, info, s, opts, data)
-    notes += mz_notes
     _wav, a_notes, a_meta = _extract_audio(job, info, s, opts)
     notes += a_notes
+    pre_frames, pre_meta = _preroll(job, info, opts)
+    if pre_frames:
+        padded = _padded_info(info, pre_frames)
+        pad = frame_to_sample(padded.frame_count, padded.fps) - frame_to_sample(info.frame_count, info.fps)
+        _prepend_room_tone(job.audio_path, pad, SAMPLE_RATE)
+        if stereo_audio_path(job).exists():
+            _prepend_room_tone(stereo_audio_path(job), pad, SAMPLE_RATE)
+        pre_meta.update({"samples": pad, "ms": round(pad / SAMPLE_RATE * 1000, 1)})
+        notes.append(f"{FLAG_PREROLL} speech starts on the first frame: held it for {pre_frames} frames "
+                     f"({pre_meta['ms']:.0f} ms) over the take's room tone, so the first word survives AAC "
+                     "priming and lands after 0.1 s")
+        info = padded
+    _mezz, mz_notes, mz_meta = _make_mezzanine(job, info, s, opts, data, pre_frames=pre_frames)
+    notes += mz_notes
     info = info.model_copy(update={"notes": notes})
     job.save_media_info(info)
     p_meta: dict[str, Any] | None = None
@@ -924,7 +1056,7 @@ def ingest(src_path: str | os.PathLike[str], job: Job, *, settings: Settings | N
     job.update_meta(ingest={
         "source_path": str(src), "original": original.name, "seconds": elapsed,
         "flags": [n.split(" ", 1)[0] for n in notes if n.startswith("flag:")],
-        "mezz": mz_meta, "audio": a_meta, "proxy": p_meta, "verify": report,
+        "mezz": mz_meta, "audio": a_meta, "proxy": p_meta, "verify": report, "preroll": pre_meta,
     })
     job.trace("ingest", source=src.name, seconds=elapsed, width=info.width, height=info.height,
               fps=_fps_str(info.fps), frames=info.frame_count, hdr=info.color.hdr, vfr=info.vfr,

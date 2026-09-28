@@ -2,9 +2,10 @@
 
 ::
 
-    studio edit <video> [--brief TEXT] [--style NAME] [--platform tiktok|reels|shorts]
-                [--director-provider P --director-model M --director-key-env VAR] [--rounds N] [--out DIR]
-    studio chat <job_dir> "<instruction>" [--director-…]
+    studio edit <video | job_dir> [--brief TEXT] [--style NAME] [--platform tiktok|reels|shorts]
+                [--media FILE …] [--director-provider P --director-model M --director-key-env VAR]
+                [--rounds N] [--out DIR] [--asr-provider elevenlabs|assemblyai]
+    studio chat <job_dir> "<instruction>" [--director-…] [--out DIR]
     studio index <video> [--asr-provider elevenlabs|assemblyai]
     studio render <job_dir> [--version N] [--preview]
     studio report <job_dir>
@@ -13,7 +14,9 @@
 Global options: ``--work-dir DIR`` (overrides ``STUDIO_WORK_DIR``), ``--json`` (machine-readable
 output). Keys are never read here: ``--director-key-env`` passes the *name* of an env var.
 
-Exit codes: 0 ok · 1 error · 2 usage · 3 stage not implemented yet.
+``studio edit <job_dir>`` resumes an interrupted edit (finished steps are skipped). Progress goes to stderr.
+
+Exit codes: 0 ok · 1 error (including too little free disk for a render) · 2 usage · 3 stage not implemented yet.
 """
 
 from __future__ import annotations
@@ -62,19 +65,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="Print results as JSON")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
 
-    p = sub.add_parser("edit", help="Edit a video end to end")
-    p.add_argument("video", type=Path)
+    p = sub.add_parser("edit", help="Edit a video end to end (or resume a job directory)")
+    p.add_argument("video", type=Path, help="The take, or a job directory to resume")
     p.add_argument("--brief", metavar="TEXT", help="Creator intent (goal, CTA, audience, vibe)")
     p.add_argument("--style", metavar="NAME", help="Style name, e.g. educational, storytime, comedy")
-    p.add_argument("--platform", choices=PLATFORMS, default="tiktok")
+    p.add_argument("--platform", choices=PLATFORMS, default=None, help="Destination (default tiktok)")
+    p.add_argument("--media", type=Path, action="append", default=[], metavar="FILE",
+                   help="Creator b-roll (video or still) the Director may use; repeatable")
     _add_director_flags(p)
-    p.add_argument("--rounds", type=_positive_int, metavar="N", help="Champion-loop round guard")
+    p.add_argument("--rounds", type=_positive_int, metavar="N", help="Champion-loop round guard (default 12)")
     p.add_argument("--out", type=Path, metavar="DIR", help="Copy deliverables into DIR")
+    p.add_argument("--asr-provider", choices=("elevenlabs", "assemblyai"))
 
     p = sub.add_parser("chat", help="Apply an instruction to an edited job")
     p.add_argument("job_dir", type=Path)
     p.add_argument("instruction")
     _add_director_flags(p)
+    p.add_argument("--out", type=Path, metavar="DIR", help="Copy the new deliverables into DIR")
 
     p = sub.add_parser("index", help="Ingest a video and build its Take Index")
     p.add_argument("video", type=Path)
@@ -126,7 +133,12 @@ def _print_result(command: str, result: Any, as_json: bool) -> None:
             for k, v in value.items():
                 print(f"  {k}: {v}")
         elif isinstance(value, list):
-            print(f"{key}: {len(value)} item(s)")
+            if value and all(isinstance(v, str) for v in value):
+                print(f"{key}:")
+                for v in value:
+                    print(f"  - {v}")
+            else:
+                print(f"{key}: {len(value)} item(s)")
         elif value is not None:
             print(f"{key}: {value}")
 
@@ -140,21 +152,34 @@ def _settings(args: argparse.Namespace) -> Any:
     return s
 
 
+def _progress(msg: str) -> None:
+    print(f"studio: {msg}", file=sys.stderr, flush=True)
+
+
 def _dispatch(args: argparse.Namespace) -> Any:
     from studio import pipeline
 
     settings = _settings(args)
     cmd = args.command
     if cmd == "edit":
+        resume = args.video.is_dir()
+        kw: dict[str, Any] = {}
+        if args.media:
+            kw["creator_media"] = list(args.media)
+        if args.asr_provider:
+            kw["asr_provider"] = args.asr_provider
         return pipeline.edit(
-            args.video, brief=args.brief, style=args.style, platform=args.platform,
+            args.video, brief=args.brief, style=args.style,
+            platform=args.platform or (None if resume else "tiktok"),
             director_provider=args.director_provider, director_model=args.director_model,
             director_key_env=args.director_key_env, rounds=args.rounds, out=args.out, settings=settings,
+            log=_progress, **kw,
         )
     if cmd == "chat":
+        kw = {"out": args.out} if args.out is not None else {}
         return pipeline.chat(
             args.job_dir, args.instruction, director_provider=args.director_provider,
-            director_model=args.director_model, director_key_env=args.director_key_env, settings=settings,
+            director_model=args.director_model, director_key_env=args.director_key_env, settings=settings, **kw,
         )
     if cmd == "index":
         return pipeline.index(args.video, asr_provider=args.asr_provider, settings=settings)
@@ -170,6 +195,12 @@ def _dispatch(args: argparse.Namespace) -> Any:
 def _check_inputs(args: argparse.Namespace) -> str | None:
     if getattr(args, "video", None) is not None and not args.video.exists():
         return f"video not found: {args.video}"
+    if getattr(args, "video", None) is not None and args.video.is_dir() and args.command == "edit" \
+            and not (args.video / "job.json").exists():
+        return f"not a video file or a job directory: {args.video}"
+    for m in getattr(args, "media", None) or []:
+        if not m.is_file():
+            return f"media file not found: {m}"
     if getattr(args, "job_dir", None) is not None and not args.job_dir.is_dir():
         return f"job directory not found: {args.job_dir}"
     if getattr(args, "director_model", None) and not getattr(args, "director_provider", None):
