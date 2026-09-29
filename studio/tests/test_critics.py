@@ -184,15 +184,18 @@ def test_watcher_notes_cross_confirm_the_frame_judge(env: SimpleNamespace) -> No
     assert rec["watcher"]["ran"] and rec["watcher"]["attention_left_speaker"] == ["the card"]
 
 
-def test_a_failing_judge_is_recorded_not_raised(env: SimpleNamespace) -> None:
+def test_a_failing_judge_raises_unreviewed_never_empty_notes(env: SimpleNamespace) -> None:
     def boom(messages: list[ModelMessage], info: AgentInfo) -> dict[str, Any]:
         raise RuntimeError("provider down")
 
     panel = JudgePanel(frame_judge=_judge(boom), second_judge=_judge(boom, "second_judge"))
-    notes = critics.critique(env.job, env.doc, env.index, env.renders["r2"], panel=panel, label="t_fail")
-    assert notes and all(n["by"] == "metrics" for n in notes)  # invariant P0s survive a critic outage
-    rec = json.loads((env.job.critique_dir / "t_fail" / "notes.json").read_text())
-    assert any("frame judge failed" in e for e in rec["errors"])
+    # a review that did not happen is never "nothing to change": it raises, and nothing is cached as notes
+    with pytest.raises(critics.CritiqueUnavailable) as ei:
+        critics.critique(env.job, env.doc, env.index, env.renders["r2"], panel=panel, label="t_fail")
+    assert ei.value.metric_notes and all(n["by"] == "metrics" for n in ei.value.metric_notes)
+    assert not (env.job.critique_dir / "t_fail" / "notes.json").exists()
+    rec = json.loads((env.job.critique_dir / "t_fail" / "unreviewed.json").read_text())
+    assert rec["complete"] is False and any("frame judge failed" in e for e in rec["errors"])
 
 
 # ============================================================================================ pairwise
@@ -285,3 +288,183 @@ def test_overview_samples_avoid_caption_page_changes(env: SimpleNamespace) -> No
         near_change = any(abs(t - Fraction(p.out_start)) < guard or abs(t - Fraction(p.out_end)) < guard
                           for p in tl.captions)
         assert not near_change, float(t)
+
+
+# ============================================================================================ review-loop fixes
+def test_transient_critic_errors_are_retried_with_backoff(env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+                                                           ) -> None:
+    from studio.agent.providers import ProviderError
+
+    waits: list[float] = []
+    monkeypatch.setattr(critics, "_sleep", lambda s: waits.append(s))
+    calls = {"n": 0}
+
+    def flaky(messages: list[ModelMessage], info: AgentInfo) -> dict[str, Any]:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise ProviderError("connection", "Could not reach the provider (network error).", retryable=True)
+        return {"notes": [], "verdict": "ship_it"}
+
+    panel = JudgePanel(frame_judge=_judge(flaky), second_judge=_judge(lambda m, i: {"items": []}, "second_judge"))
+    notes = critics.critique(env.job, env.doc, env.index, env.renders["r1"], panel=panel, label="t_flaky",
+                             naive=False)
+    assert notes == [] and calls["n"] == 3 and waits == list(critics.CRITIC_BACKOFF_S[:2])
+    rec = json.loads((env.job.critique_dir / "t_flaky" / "notes.json").read_text())
+    assert rec["complete"] is True
+    # a persistent network failure exhausts the retries and raises: never an empty "nothing to change"
+    waits.clear()
+
+    def down(messages: list[ModelMessage], info: AgentInfo) -> dict[str, Any]:
+        raise ProviderError("connection", "Could not reach the provider (network error).", retryable=True)
+
+    panel2 = JudgePanel(frame_judge=_judge(down), second_judge=_judge(down, "second_judge"))
+    with pytest.raises(critics.CritiqueUnavailable, match="network error"):
+        critics.critique(env.job, env.doc, env.index, env.renders["r1"], panel=panel2, label="t_down")
+    assert len(waits) == 2 * len(critics.CRITIC_BACKOFF_S)  # naive pass and rubric pass each retried fully
+
+
+def test_rubric_uses_topic_critic_questions_and_no_plan(env: SimpleNamespace) -> None:
+    seen: dict[str, str] = {}
+
+    def frame(messages: list[ModelMessage], info: AgentInfo) -> dict[str, Any]:
+        text = prompt_text(messages)
+        if "reactions" in json.dumps(info.output_tools[0].parameters_json_schema):
+            seen["naive"] = text
+            return {"reactions": [], "remembered_sentence": ""}
+        seen["rubric"] = text
+        return {"notes": [], "verdict": "ship_it"}
+
+    panel = JudgePanel(frame_judge=_judge(frame), second_judge=_judge(lambda m, i: {"items": []}, "second_judge"))
+    critics.critique(env.job, env.doc, env.index, env.renders["r1"], panel=panel, label="t_rubric")
+    rub = seen["rubric"]
+    # captions-and-text's critic questions join the rubric while captions are on (K), with critique.md's (C)
+    assert "C1. " in rub and "K1. " in rub and "Muted, can you follow the whole video from the text alone?" in rub
+    assert "Caption geometry (measured by code" in rub and "DOCUMENT SUMMARY" not in rub
+    assert "IDS YOU CAN LOCALIZE BY" in rub and "Visual plan" not in rub
+    # the naive viewer sees the words as heard: no segment headers, cut markers or document version
+    naive = seen["naive"]
+    assert "w0001" in naive and "‖" not in naive and "seg00" not in naive and "document v" not in naive
+    rec = json.loads((env.job.critique_dir / "t_rubric" / "notes.json").read_text())
+    assert any(q.startswith("K") for q in rec["rubric_questions"])
+
+
+def test_packet_measures_caption_geometry_and_cuts_a_phone_sheet(env: SimpleNamespace) -> None:
+    pk = critics.build_packet(env.job, env.renders["r1"], index=env.index)
+    geo = pk.caption_geometry
+    assert geo["summary"]["pages"] == len(env.timeline.captions)
+    row = geo["pages"][0]
+    assert {"top_px", "size_px", "cap_height_px", "cap_height_pct", "relation", "into_ui_px"} <= set(row)
+    assert "captions" in pk.layers and pk.sheets.get("captions_phone")
+    from studio.perception.frames import read_sheet_meta
+
+    assert read_sheet_meta(pk.sheets["captions_phone"][0]).get("ui_mask") == "tiktok"
+    assert "Caption geometry" in pk.caption_text()
+
+
+def test_metric_confirmation_needs_the_same_claim() -> None:
+    from studio.perception.index import TakeIndex
+
+    ix = TakeIndex.model_construct(words=[])  # not consulted: refs are empty or page IDs
+    ev = [{"kind": "late_start", "area": "hook", "words": [], "global": True, "text": "first speech at 0.9 s"},
+          {"kind": "lingering_end", "area": "ending", "words": [], "global": True, "text": "1.1 s after"},
+          {"kind": "video_freeze", "area": "seams", "words": [], "global": True, "text": "freeze"},
+          {"kind": "caption_fast", "area": "captions", "words": [], "ids": ["p003"], "text": "p003 24 CPS"}]
+    story = {"area": "story", "refs": [], "text": "the middle repeats the hook's point", "claim": "story"}
+    hook = {"area": "hook", "refs": [], "text": "the hook starts late", "claim": "late_hook"}
+    framing = {"area": "framing", "refs": [], "text": "the reframe crops the forehead", "claim": "other"}
+    placed = {"area": "captions", "refs": ["p003"], "text": "p003 sits on the hair", "claim": "text_position"}
+    fast = {"area": "captions", "refs": ["p003"], "text": "p003 flashes by too fast to read"}
+    conf = lambda n: critics._metric_confirm(n, ev, None, ix, {"p003": []})  # noqa: E731
+    assert conf(story) == [] and conf(framing) == []
+    assert conf(hook) == ["metrics:late_start"]
+    assert conf(placed) == []  # a reading-speed hit never confirms a placement claim
+    assert conf(fast) == ["metrics:caption_fast"]  # no declared claim: its words say reading speed
+
+
+def test_invariant_failures_name_the_layer_that_can_fix_them() -> None:
+    head = critics.invariant_layer({"number": 9, "detail": "final_tiktok.mp4: 44 ms of digital silence at 0.00 s "
+                                                           "under w0001"})
+    assert head.startswith("engine/render layer") and "cutting or moving words does not help" in head
+    assert critics.invariant_layer({"number": 9, "detail": "12 ms of digital silence at 7.31 s under w0040"}
+                                   ).startswith("audio layer")
+    assert critics.invariant_layer({"number": 10, "detail": "edit list"}).startswith("engine/render")
+
+
+def _same_both(messages: list[ModelMessage], info: AgentInfo) -> dict[str, Any]:
+    return {"areas": [{"area": "captions", "verdict": "same"}], "overall": "same", "reason": "cannot tell"}
+
+
+def test_pairwise_abstention_and_the_fix_rule(env: SimpleNamespace) -> None:
+    ra, rb = env.renders["r2"], env.renders["r1"]  # b (r1) fixes a's click
+    seen: dict[str, str] = {}
+
+    def clean_and_record(messages: list[ModelMessage], info: AgentInfo) -> dict[str, Any]:
+        seen["text"] = prompt_text(messages)
+        return _prefers_clean(messages, info)
+
+    panel = JudgePanel(frame_judge=_judge(clean_and_record), second_judge=_judge(_same_both, "second_judge"))
+    # a taste round keeps the unanimous rule: an abstaining judge is not a win
+    out = critics.pairwise(env.job, ra, rb, panel=panel, label="t_taste")
+    assert out["winner"] == "tie" and out["verdicts"]["test:second_judge"] == "same"
+    assert "WHERE A AND B DIFFER" in seen["text"] or "CODE FOUND NO DIFFERENCE" in seen["text"]
+    assert "framing" in seen["text"] and "Caption geometry of A" in seen["text"]
+    # a round answering a confirmed P0: no judge prefers the champion and one prefers b → b wins by the fix rule
+    fix = [{"by": "frame_judge", "severity": "P0", "area": "audio", "refs": [], "text": "click at the first cut",
+            "confirmed_by": ["metrics:click"]}]
+    out2 = critics.pairwise(env.job, ra, rb, panel=panel, label="t_fix", fix_notes=fix)
+    assert out2["winner"] == "b" and out2["rule"] == "fix"
+    # every judge abstaining still accepts a fix that code measures as resolved (the invariant passes in b)
+    panel3 = JudgePanel(frame_judge=_judge(_same_both), second_judge=_judge(_same_both, "second_judge"))
+    inv_fail = [{"by": "metrics", "severity": "P0", "text": "Invariant 1 failed (no_seam_click): click"}]
+    out3 = critics.pairwise(env.job, ra, rb, panel=panel3, label="t_fix_measured", fix_notes=inv_fail)
+    assert out3["winner"] == "b" and out3["resolved"]
+    # a judge consistently preferring the champion blocks the fix rule (a position-biased judge is only a split)
+    def prefers_click(messages: list[ModelMessage], info: AgentInfo) -> dict[str, Any]:
+        a_block = prompt_text(messages).split("=== VERSION B ===")[0]
+        return {"areas": [], "overall": "A" if '"clicks": [{' in a_block else "B", "reason": "livelier"}
+
+    panel4 = JudgePanel(frame_judge=_judge(prefers_click), second_judge=_judge(_same_both, "second_judge"))
+    out4 = critics.pairwise(env.job, ra, rb, panel=panel4, label="t_fix_blocked", fix_notes=fix)
+    assert out4["winner"] == "tie" and out4["verdicts"]["test:frame_judge"] == "a"
+    panel5 = JudgePanel(frame_judge=_judge(_always_a), second_judge=_judge(_same_both, "second_judge"))
+    out5 = critics.pairwise(env.job, ra, rb, panel=panel5, label="t_fix_split", fix_notes=fix)
+    assert out5["verdicts"]["test:frame_judge"] == "split"
+
+
+def test_pairwise_judge_errors_are_retried_then_marked_incomplete(env: SimpleNamespace,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    from studio.agent.providers import ProviderError
+
+    monkeypatch.setattr(critics, "_sleep", lambda s: None)
+
+    def down(messages: list[ModelMessage], info: AgentInfo) -> dict[str, Any]:
+        raise ProviderError("connection", "peer closed connection", retryable=True)
+
+    panel = JudgePanel(frame_judge=_judge(_prefers_clean), second_judge=_judge(down, "second_judge"))
+    out = critics.pairwise(env.job, env.renders["r2"], env.renders["r1"], panel=panel, label="t_incomplete")
+    assert out["incomplete"] and out["winner"] == "tie" and out["verdicts"]["test:second_judge"] == "error"
+
+
+def test_final_watch_notes_go_through_confirmation(env: SimpleNamespace) -> None:
+    def fn(messages: list[ModelMessage], info: AgentInfo) -> dict[str, Any]:
+        return {"pulls_attention": "yes", "verdict": "fix the payoff",
+                "moments": [{"severity": "P0", "area": "captions", "refs": ["p002"],
+                             "text": "the payoff has no captions", "claim": "text_position"},
+                            {"severity": "P1", "area": "pacing", "refs": ["w0030"], "text": "a dead stretch at w0030"}]}
+
+    def confirm(messages: list[ModelMessage], info: AgentInfo) -> dict[str, Any]:
+        return {"items": [{"note": 0, "confirmed": "no", "reason": "p002 is on screen"},
+                          {"note": 1, "confirmed": "yes", "reason": "2 s of silence"}]}
+
+    panel = JudgePanel(frame_judge=_judge(fn), second_judge=_judge(confirm, "second_judge"))
+    out = critics.attention_check(env.job, env.renders["r1"], panel=panel)
+    assert [n["text"] for n in out["confirmed"]] == ["a dead stretch at w0030"]
+    assert [n["text"] for n in out["refuted"]] == ["the payoff has no captions"]
+    assert out["refuted"][0]["severity"] == "P2" and out["refuted"][0]["unconfirmed_severity"] == "P0"
+
+
+def test_the_frame_judge_is_never_the_model_that_wrote_the_edit() -> None:
+    s = Settings.load(env={"ANTHROPIC_API_KEY": "sk-ant-test-000000000000"})
+    p = critics.default_panel(s, avoid_models=[s.critic_model])  # the Director fell back to the critic model
+    assert p.frame_judge.spec is not None and p.frame_judge.spec.model == s.director_model != s.critic_model
+    assert any("wrote this edit" in n for n in p.notes)

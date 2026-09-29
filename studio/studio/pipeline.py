@@ -50,6 +50,10 @@ class EditResult:
     rounds: int = 0
     stop_reason: str = ""
     invariants_passed: bool | None = None
+    #: False when the critics could not review the shipped version (it ships NOT REVIEWED; see review_note)
+    reviewed: bool | None = None
+    review_note: str = ""
+    alternates: dict[str, Path] = field(default_factory=dict)  # label -> final of a delivered variant
 
 
 @dataclass
@@ -134,6 +138,33 @@ def edit_slot(*, max_concurrent: int | None = None, poll_s: float = 10.0,
         time.sleep(poll_s)
 
 
+def _ingest_for_edit(job: Job, source: str, settings: Settings, say: Callable[[str], None]) -> None:
+    """Ingest inside the machine-wide heavy-write slot, keeping room for the edit's renders when choosing the
+    mezzanine codec (ProRes HQ → ProRes 422 → lean) and reclaiming idle jobs first."""
+    import dataclasses
+
+    from studio import storage
+    from studio.media.ingest import IngestError, IngestOptions, ingest
+
+    opts = dataclasses.replace(IngestOptions.from_env(), reserve_render=True, reclaim_dir=str(job.root.parent))
+    with storage.render_slot(on_wait=lambda: say("waiting for another edit's render or ingest to finish")):
+        try:
+            ingest(source, job, settings=settings, options=opts)
+        except IngestError as e:
+            if "insufficient disk" in str(e):
+                raise storage.DiskSpaceError(str(e)) from e
+            raise
+
+
+def _after_delivery(job: Job) -> None:
+    """A delivered job keeps its finals, documents and index; its mezzanine is dropped (``studio chat`` and
+    ``studio render`` rebuild it from ``media/original.*``) unless ``STUDIO_KEEP_MEZZ=1``."""
+    from studio import storage
+
+    keep = (os.environ.get("STUDIO_KEEP_MEZZ") or "").strip().lower() in ("1", "true", "yes")
+    storage.reclaim_job(job, drop_mezz=not keep, reason="delivered")
+
+
 def _link_or_copy(src: Path, dst: Path) -> Path:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists() or dst.is_symlink():
@@ -158,15 +189,30 @@ def director_spec_for(provider: str | None, model: str | None, key_env: str | No
             model = settings.director_model
         else:
             raise PipelineError(f"--director-provider {provider} needs --director-model")
-    effort = os.environ.get("STUDIO_DIRECTOR_EFFORT") or "high"
+    effort = os.environ.get("STUDIO_DIRECTOR_EFFORT") or settings.director_effort or "max"
     return spec_from_cli(provider, model, key_env, settings=settings, effort=effort)
+
+
+def _director_flags(job: Job, provider: str | None, model: str | None, key_env: str | None,
+                    house: bool) -> tuple[str | None, str | None, str | None]:
+    """The Director flags for a resumed edit or a chat: flags given now win; otherwise the ones the job was edited
+    with (``job.json`` keeps the provider, model and the NAME of the key's env var, never the key). A job edited
+    with a creator's key never silently switches to the house model and billing: without the key it refuses, and
+    ``--house`` switches explicitly."""
+    if provider is not None or house:
+        return provider, model, key_env
+    d = _job_meta(job).get("director") or {}
+    if not d.get("provider"):
+        return None, None, None
+    return d.get("provider"), d.get("model"), d.get("key_env")
 
 
 def _job_for(video: Path, settings: Settings, meta: dict[str, Any]) -> tuple[Job, bool]:
     """``(job, resumed)``: a directory holding ``job.json`` is resumed, a video starts a new job."""
-    from studio.jobs import Job
+    from studio.jobs import Job, resolve_job_dir
 
     if video.is_dir():
+        video = resolve_job_dir(video)
         if not (video / "job.json").exists():
             raise PipelineError(f"{video} is a directory but not a job directory")
         return Job.open(video, work_dir=settings.work_dir), True
@@ -206,6 +252,9 @@ def make_preview_callback(job: Job, index: TakeIndex, settings: Settings) -> Cal
                          settings=settings)
             metrics = pk.summary()
         prune_render(rd, keep_finals=True, job=job, reason="preview")
+        from studio.agent.loop import prune_overlay_cache
+
+        prune_overlay_cache(job, keep=1)
         scope_note = "" if scope in ("full", "", None) else \
             f" Scope '{scope}' was not honoured: previews always render the whole document."
         return PreviewResult(
@@ -218,8 +267,10 @@ def make_preview_callback(job: Job, index: TakeIndex, settings: Settings) -> Cal
 
 
 def make_critique_callback(job: Job, index: TakeIndex, settings: Settings,
-                           panel: JudgePanel | None = None) -> Callable[..., Any]:
-    """``critique(session, questions)`` for the Director: the critics answer questions about the latest preview."""
+                           panel: JudgePanel | None = None, director: ModelSpec | None = None) -> Callable[..., Any]:
+    """``critique(session, questions)`` for the Director: the critics answer questions about the latest render (a
+    proxy preview is labelled as such: the doctrine judges the final encode). The panel is built against the
+    Director's own spec, so ``same_family`` is right for a BYOK Director."""
 
     def critique_cb(session: Any, questions: list[str]) -> Any:
         from studio.agent import critics
@@ -227,22 +278,41 @@ def make_critique_callback(job: Job, index: TakeIndex, settings: Settings,
         if session.last_render is None:
             return "No render yet: call render_preview first, then ask the critics about it."
         rd = Path(session.last_render).parent
-        return critics.critique(job, None, index, rd, questions=questions, settings=settings, panel=panel,
-                                label=f"preview_{rd.name}", confirm=True)
+        man = {}
+        with contextlib.suppress(Exception):
+            import json as _json
+
+            man = _json.loads((rd / "render.json").read_text(encoding="utf-8"))
+        proxy = bool(man.get("preview"))
+        pn = panel or critics.default_panel(settings, director=director)
+        try:
+            notes = critics.critique(job, None, index, rd, questions=questions, settings=settings, panel=pn,
+                                     label=f"{'preview' if proxy else 'render'}_{rd.name}", confirm=True)
+        except critics.CritiqueUnavailable as e:
+            return f"The critics could not review {rd.name} ({e}). Nothing was reviewed: do not read this as approval."
+        if proxy:
+            notes = [{**n, "evidence": (str(n.get("evidence", "")) + " (reviewed on a proxy preview, not the final "
+                                        "encode: fidelity notes are provisional)").strip()} for n in notes]
+        return notes
 
     return critique_cb
 
 
 # ============================================================================================ deliver
 def deliver(job: Job, render_dir: Path, doc: CutDocument, *, out: PathLike | None = None,
-            report: Path | None = None) -> tuple[dict[str, Path], dict[str, Path]]:
+            report: Path | None = None, alternates: Sequence[tuple[str, Path]] = ()) -> tuple[dict[str, Path],
+                                                                                              dict[str, Path]]:
     """Put the champion's deliverables in ``<job>/deliver/`` (and ``out``): finals per platform, the no-music
-    master, cover, SRT, the document JSON and the report. Returns ``(finals, extras)``."""
+    master, cover, SRT, the document JSON and the report; the finals of ``alternates`` (label, render dir: variants
+    the champion beat, or the version a winning variant replaced) go under ``alternates/<label>/``. Returns
+    ``(finals, extras)``; extras carries ``alt:<label>`` entries."""
     ddir = job.root / "deliver"
     if ddir.exists():
         for p in ddir.iterdir():
             if p.is_file():
                 p.unlink()
+            elif p.is_dir() and p.name == "alternates":
+                shutil.rmtree(p, ignore_errors=True)
     ddir.mkdir(parents=True, exist_ok=True)
     finals: dict[str, Path] = {}
     extras: dict[str, Path] = {}
@@ -265,11 +335,26 @@ def deliver(job: Job, render_dir: Path, doc: CutDocument, *, out: PathLike | Non
         extras["timeline"] = _link_or_copy(tl, ddir / "timeline.json")
     if report is not None and report.exists():
         extras["report"] = report
+    alt_files: list[tuple[str, Path]] = []
+    for label, rd in alternates:
+        for f in sorted(Path(rd).glob("final_*.mp4")):
+            if f.stem == "final_nomusic":
+                continue
+            dst = _link_or_copy(f, ddir / "alternates" / label / f.name)
+            extras[f"alt:{label}"] = dst
+            alt_files.append((label, dst))
     if out is not None:
         od = Path(out).expanduser()
         od.mkdir(parents=True, exist_ok=True)
-        for p in [*finals.values(), *extras.values()]:
+        if (od / "alternates").is_dir():
+            shutil.rmtree(od / "alternates", ignore_errors=True)
+        for p in [*finals.values(), *(v for k, v in extras.items() if not k.startswith("alt:"))]:
             _link_or_copy(p, od / p.name)
+        for label, p in alt_files:
+            _link_or_copy(p, od / "alternates" / label / p.name)
+        from studio.jobs import JOB_POINTER
+
+        (od / JOB_POINTER).write_text(str(job.root) + "\n", encoding="utf-8")
         extras["out"] = od
     return finals, extras
 
@@ -277,7 +362,8 @@ def deliver(job: Job, render_dir: Path, doc: CutDocument, *, out: PathLike | Non
 # ============================================================================================ edit
 def edit(video: PathLike, *, brief: str | None = None, style: str | None = None, platform: str | None = None,
          director_provider: str | None = None, director_model: str | None = None,
-         director_key_env: str | None = None, rounds: int | None = None, out: PathLike | None = None,
+         director_key_env: str | None = None, house: bool = False, rounds: int | None = None,
+         out: PathLike | None = None,
          settings: Settings | None = None, creator_media: Sequence[PathLike] = (),
          asr_provider: str | None = None, director_model_override: Any = None,
          panel: JudgePanel | None = None, loop_kwargs: dict[str, Any] | None = None,
@@ -285,9 +371,9 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
     """Edit ``video`` end to end (or resume the job directory ``video``). ``out`` receives copies of the
     deliverables. ``director_model_override`` / ``panel`` / ``loop_kwargs`` inject models and loop callbacks
     (tests)."""
+    from studio import storage
     from studio.agent.director import Director
-    from studio.agent.loop import ChampionLoop, clean_incomplete_renders, ensure_disk, prune_overlay_cache, prune_render
-    from studio.media.ingest import ingest
+    from studio.agent.loop import ChampionLoop, clean_incomplete_renders, prune_overlay_cache, prune_render
     from studio.perception.index import build_index
     from studio.qa.report import write_report
 
@@ -297,8 +383,10 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
     meta = {"source_name": src.name, "source_path": str(src), "brief": brief, "style": style,
             "platform": platform or "tiktok",
             "creator_media": [str(Path(m).expanduser().resolve()) for m in creator_media]}
-    with edit_slot(on_wait=lambda: say("waiting for a free edit slot (at most 2 edits run at once)")):
+    with edit_slot(on_wait=lambda: say("waiting for a free edit slot (at most 2 edits run at once)")), \
+            contextlib.ExitStack() as stack:
         job, resumed = _job_for(src, s, meta)
+        stack.enter_context(storage.job_activity(job))
         m = _job_meta(job)
         if resumed:  # flags given now win; otherwise the job's own settings
             brief = brief if brief is not None else m.get("brief")
@@ -306,35 +394,49 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
             platform = platform or m.get("platform")
             creator_media = list(creator_media) or list(m.get("creator_media") or [])
         platform = platform or "tiktok"
+        if resumed:
+            director_provider, director_model, director_key_env = _director_flags(
+                job, director_provider, director_model, director_key_env, house)
         job.update_meta(brief=brief, style=style, platform=platform,
-                        creator_media=[str(x) for x in creator_media])
+                        creator_media=[str(x) for x in creator_media],
+                        director={"provider": director_provider, "model": director_model,
+                                  "key_env": director_key_env} if director_provider else None)
         job.trace("stage", stage="pipeline.edit", resumed=resumed)
         say(f"job {job.root}" + (" (resumed)" if resumed else ""))
 
-        # 1 — ingest
-        if not (job.media_info_path.exists() and job.mezz_path.exists() and job.audio_path.exists()):
+        # 1 — ingest (a mezzanine reclaimed after an earlier run is rebuilt on its own)
+        have_media = job.media_info_path.exists() and job.audio_path.exists()
+        if have_media and not job.mezz_path.exists() and job.original_path is not None:
+            storage.ensure_mezz(job, settings=s, log=say)
+        elif not (have_media and job.mezz_path.exists()):
             source = m.get("source_path") if resumed else str(src)
             if not source or not Path(source).is_file():
                 orig = job.original_path
                 if orig is None:
                     raise PipelineError(f"job {job.id} has no source video to ingest")
                 source = str(orig)
-            ensure_disk(job.root, what="ingest (the ProRes mezzanine)")
+            storage.ensure_space(job.root, 0, what="ingest (the mezzanine)", work_dir=job.root.parent,
+                                 exclude=job.root)
             say("ingest")
-            ingest(source, job, settings=s)
+            _ingest_for_edit(job, source, s, say)
         # 2 — Take Index
         if not job.index_path.exists():
             say("perception (Take Index)")
             index = build_index(job, asr_provider=asr_provider, settings=s)
         else:
             index = job.load_index()
-        # 3 — Director stages
-        spec = director_spec_for(director_provider, director_model, director_key_env, s)
+        # fail fast: the edit's renders must fit (lean intermediates, after reclaiming) before any Director work
         clean_incomplete_renders(job)
+        need = storage.edit_need_bytes(index, aroll="lean")
+        storage.ensure_space(job.root, need, what="this edit's renders (checked before the Director starts)",
+                             reclaim=lambda _short: storage.reclaim_job(job, reason="edit start"),
+                             work_dir=job.root.parent, exclude=job.root)
+        # 3 — Director stages
+        spec = _spec_or_refuse(director_provider, director_model, director_key_env, s)
         director = Director(job, index, spec=spec, settings=s, model=director_model_override, brief=brief,
                             style=style, platforms=(platform,),
                             render_preview=make_preview_callback(job, index, s),
-                            critique=make_critique_callback(job, index, s, panel),
+                            critique=make_critique_callback(job, index, s, panel, spec),
                             creator_media=creator_media)
         say(f"Director ({director.model_label})")
         director.run()
@@ -349,15 +451,44 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
             rep = write_report(job, render_dir=res.champion_render, settings=s)
         except Exception as e:
             job.trace("pipeline_note", note=f"report failed: {type(e).__name__}: {e}")
-        finals, extras = deliver(job, res.champion_render, doc, out=out, report=rep)
+        alts = [(a["label"], job.renders_dir / a["render"]) for a in
+                (v.get("alternate") for v in res.alternates) if a and (job.renders_dir / a["render"]).is_dir()]
+        finals, extras = deliver(job, res.champion_render, doc, out=out, report=rep, alternates=alts)
         prune_render(res.champion_render, keep_finals=True, job=job, reason="delivered")
         prune_overlay_cache(job, keep=0)
-        job.update_meta(champion_render=res.champion_render.name, champion_doc=res.champion_doc)
+        _after_delivery(job)
+        _delete_uploads(director)
+        job.update_meta(champion_render=res.champion_render.name, champion_doc=res.champion_doc,
+                        reviewed=res.reviewed, review_note=res.review_note)
         job.trace("stage", stage="pipeline.edit", status="done", render=res.champion_render.name,
-                  doc_version=res.champion_doc, rounds=len(res.rounds), stop=res.stop_reason)
+                  doc_version=res.champion_doc, rounds=len(res.rounds), stop=res.stop_reason, reviewed=res.reviewed)
+        if not res.reviewed:
+            say(f"NOT REVIEWED: the critics could not review the shipped version ({res.review_note})")
     return EditResult(job_dir=job.root, finals=finals, extras=extras, doc_version=res.champion_doc,
                       render=res.champion_render.name, rounds=len(res.rounds), stop_reason=res.stop_reason,
-                      invariants_passed=res.champion_passed)
+                      invariants_passed=res.champion_passed, reviewed=res.reviewed, review_note=res.review_note,
+                      alternates={k.removeprefix("alt:"): v for k, v in extras.items() if k.startswith("alt:")})
+
+
+def _spec_or_refuse(provider: str | None, model: str | None, key_env: str | None, settings: Settings) -> Any:
+    """The Director spec; a BYOK job whose key is missing refuses (never falls back to house billing)."""
+    try:
+        return director_spec_for(provider, model, key_env, settings)
+    except Exception as e:
+        if key_env:
+            raise PipelineError(f"this job's Director is {provider}/{model} with the creator's key from ${key_env}, "
+                                f"which is not available ({type(e).__name__}). Set ${key_env}, or pass --house to "
+                                "switch this job to the house Director explicitly.") from None
+        raise
+
+
+def _delete_uploads(director: Any) -> None:
+    """Frames uploaded for the Director (the Files API of the key's workspace, the creator's when BYOK) are deleted
+    once the edit is delivered instead of waiting for them to expire."""
+    with contextlib.suppress(Exception):
+        up = getattr(director.session, "image_uploader", None)
+        if up is not None and hasattr(up, "delete_all"):
+            up.delete_all()
 
 
 # ============================================================================================ chat
@@ -427,7 +558,7 @@ def describe_change(before: CutDocument, after: CutDocument, index: TakeIndex) -
 
 
 def chat(job_dir: PathLike, instruction: str, *, director_provider: str | None = None,
-         director_model: str | None = None, director_key_env: str | None = None,
+         director_model: str | None = None, director_key_env: str | None = None, house: bool = False,
          settings: Settings | None = None, director_model_override: Any = None, panel: JudgePanel | None = None,
          renderer: Callable[[CutDocument], Path] | None = None, qa: Callable[[Path], Any] | None = None,
          critic: Callable[..., list[dict[str, Any]]] | None = None, out: PathLike | None = None,
@@ -444,13 +575,17 @@ def chat(job_dir: PathLike, instruction: str, *, director_provider: str | None =
     if not instruction or not instruction.strip():
         raise PipelineError("empty instruction")
     job = _open(job_dir, s)
+    if out is None and Path(job_dir).expanduser().resolve() != job.root.resolve():
+        out = Path(job_dir).expanduser()  # run on a delivery folder: the new deliverables land there too
     index = job.load_index()
     loop_state = LoopState.load(job)
     base_version = loop_state.champion_doc if loop_state.champion_doc is not None else job.latest_doc_version()
     if base_version is None:
         raise PipelineError(f"job {job.id} has no document yet: run `studio edit` first")
     base = job.load_doc(base_version)
-    spec = director_spec_for(director_provider, director_model, director_key_env, s)
+    director_provider, director_model, director_key_env = _director_flags(job, director_provider, director_model,
+                                                                          director_key_env, house)
+    spec = _spec_or_refuse(director_provider, director_model, director_key_env, s)
     render_fn = renderer or (lambda d: render_full(job, d, index))
 
     def qa_fn(rd: Path) -> tuple[bool, list[dict[str, Any]]]:
@@ -462,12 +597,18 @@ def chat(job_dir: PathLike, instruction: str, *, director_provider: str | None =
         run = evaluate_render(job, rd, settings=s)
         return run.passed, [x.to_dict() for x in run.results if not x.passed]
 
-    with edit_slot():
+    from studio import storage
+
+    with edit_slot(), storage.job_activity(job):
+        storage.ensure_mezz(job, settings=s)
         platforms = tuple(d.platform for d in base.deliverables) or ("tiktok",)
+        media = [m for m in (_job_meta(job).get("creator_media") or []) if Path(m).exists()]
         director = Director(job, index, spec=spec, settings=s, model=director_model_override, platforms=platforms,
                             render_preview=make_preview_callback(job, index, s),
-                            critique=make_critique_callback(job, index, s, panel))
-        res = director.chat(instruction, base_version=base_version)
+                            critique=make_critique_callback(job, index, s, panel, spec), creator_media=media)
+        champ = job.renders_dir / loop_state.champion_render if loop_state.champion_render else None
+        res = director.chat(instruction, base_version=base_version,
+                            champion_render=champ if champ is not None and champ.is_dir() else None)
         doc = res["doc"]
         summary = res["summary"]
         changes = describe_change(base, doc, index)
@@ -517,7 +658,9 @@ def chat(job_dir: PathLike, instruction: str, *, director_provider: str | None =
             finals, _extras = deliver(job, rd, doc, out=out, report=rep)
             prune_render(rd, keep_finals=True, job=job, reason="delivered")
             prune_overlay_cache(job, keep=0)
+            _after_delivery(job)
             job.update_meta(champion_render=rd.name, champion_doc=doc.version)
+            _delete_uploads(director)
         else:
             prune_render(rd, keep_finals=True, job=job, reason="chat render failed invariants")
             summary += (" — NOT DELIVERED: the render still fails invariants ("
@@ -540,7 +683,7 @@ def index(video: PathLike, *, asr_provider: str | None = None, settings: Setting
     src = Path(video).expanduser().resolve()
     job = Job.create(work_dir=s.work_dir, meta={"source_name": src.name, "source_path": str(src)})
     job.trace("stage", stage="pipeline.index", video=src.name)
-    ensure_disk(job.root, what="ingest (the ProRes mezzanine)")
+    ensure_disk(job.root, what="ingest (the mezzanine)")
     ingest(src, job, settings=s)
     ix = build_index(job, asr_provider=asr_provider, settings=s)
     return IndexResult(job_dir=job.root, index_path=job.index_path, words=len(ix.words),
@@ -550,11 +693,13 @@ def index(video: PathLike, *, asr_provider: str | None = None, settings: Setting
 def render(job_dir: PathLike, *, version: int | None = None, preview: bool = False,
            settings: Settings | None = None) -> RenderResult:
     """Render a document version (latest by default) into a new ``renders/r{n}/`` (disk-checked)."""
+    from studio import storage
     from studio.agent.loop import render_full
 
     job = _open(job_dir, settings)
     doc = job.load_doc(version)
-    rd = render_full(job, doc, job.load_index(), preview=preview)
+    with storage.job_activity(job):
+        rd = render_full(job, doc, job.load_index(), preview=preview)
     finals = {p.stem.removeprefix("final_"): p for p in sorted(rd.glob("final_*.mp4"))
               if p.stem != "final_nomusic"}
     return RenderResult(job_dir=job.root, render_dir=rd, finals=finals)

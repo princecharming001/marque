@@ -639,10 +639,16 @@ def assemble_dialogue(timeline: Timeline, voice: np.ndarray, sr: int | None = No
     res.floor_db = round(floor, 2)
 
     pieces: list[tuple[np.ndarray, np.ndarray, int]] = []
+    mutes: list[np.ndarray | None] = []
+    kept = {w for w, sp in timeline.word_map.items() if sp is not None}
     for q in plans:
         p0, p1 = max(0, q.nS - H), min(N, q.nE + H)
         pc, v = _render_piece(voice, sr, q.seg, p0, p1, context_s=p.rubberband_context_s, preview=preview)
         pieces.append((pc, v, p0))
+        mutes.append(_pad_sound_mask(q.seg, index, sr, p0, pc.size, kept) if index is not None else None)
+        if mutes[-1] is not None:
+            res.warnings.append(f"{q.seg.seg_id}: sound in a cut pad that no kept word owns (a removed word's edge, "
+                                "a fragment of a lost word, a noise) muted under room tone")
 
     # fade regions per plan: (r0, r1, law_curve) for in and out
     fin: dict[int, tuple[int, int, np.ndarray]] = {}
@@ -766,6 +772,8 @@ def assemble_dialogue(timeline: Timeline, voice: np.ndarray, sr: int | None = No
         else:
             g[max(s_one, 0): max(e_own, 0)] = 1.0
         g *= v
+        if mutes[k] is not None:
+            g *= mutes[k]
         gains.append(g)
         out[off: off + pc.size] += g * pc
         cov[off: off + pc.size] += g * g
@@ -790,6 +798,97 @@ def assemble_dialogue(timeline: Timeline, voice: np.ndarray, sr: int | None = No
         s["click_db"] = seam_click_db(out, sr, int(s["sample"]))
     res.audio = out
     return res
+
+
+def _pad_sound_mask(seg: TimelineSegment, index: TakeIndex, sr: int, p0: int, n: int,
+                    kept: set[str] | None = None, *, ramp_ms: float = 12.0) -> np.ndarray | None:
+    """Gain over a piece's output samples ``[p0, p0 + n)`` that mutes sound no kept word owns where it falls in the
+    piece's cut pads (before its first kept word or after its last): non-word sound the Take Index measured in gaps
+    (``Gap.sound_us``: a fragment of a word a dropout lost, a noise) and the edges of removed words (where two words
+    abut, the frame grid can put up to a frame of the removed one inside the pad). Room tone fills the hole. Ramps
+    sit inside the muted span, so a kept word right beside it keeps its edge. None when nothing to mute."""
+    ws = [index.word(w) for w in seg.word_ids if index.has_word(w)]
+    if not ws:
+        return None
+    first, last = min(w.start_us for w in ws), max(w.end_us for w in ws)
+    regions = [(seg.audio_src_in_us, first), (last, seg.audio_src_out_us)]
+    foreign = [(sa, sb) for g in index.gaps for sa, sb in g.sound_us]
+    if kept is not None:
+        lo, hi = seg.audio_src_in_us, seg.audio_src_out_us
+        # a removed word reaching into the pad by more than a seam fade's reach (the fade itself handles less)
+        foreign += [(w.start_us, w.end_us) for w in index.words_between_us(lo, hi)
+                    if w.id not in kept and min(w.end_us, hi) - max(w.start_us, lo) >= 15_000]
+    spans: list[tuple[int, int, int, int]] = []
+    for sa, sb in foreign:
+        for ra, rb in regions:
+            a, b = max(sa, ra), min(sb, rb)
+            if b - a >= 1_000:
+                spans.append((a, b, ra, rb))
+    if not spans:
+        return None
+    mask = np.ones(n)
+    out0 = to_fraction(seg.out_start)
+    sp = to_fraction(seg.speed)
+    r = max(1, round(ramp_ms * sr / 1000))
+    ramp_us = ramp_ms * 1000.0 * float(sp)
+    for a, b, ra, rb in spans:
+        na = sample_index(out0 + Fraction(a - seg.src_in_us, US_PER_S) / sp, sr) - p0
+        nb = sample_index(out0 + Fraction(b - seg.src_in_us, US_PER_S) / sp, sr) - p0
+        na, nb = max(0, na), min(n, nb)
+        if nb <= na:
+            continue
+        # each ramp sits in the quiet beside the muted sound when there is room before the kept word (so no sliver of
+        # the muted sound is faded back in: that is a blip), else inside the muted span (a kept word right beside it
+        # keeps its edge)
+        pre = a > seg.audio_src_in_us + 1_000 and a - ra >= ramp_us  # quiet before the sound, after the last word
+        post = b < seg.audio_src_out_us - 1_000 and rb - b >= ramp_us  # quiet after the sound, before the first word
+        lo = max(0, na - r) if pre else na
+        hi = min(n, nb + r) if post else nb
+        # sound running past the piece's own edge continues into the crossfade handle: mute the handle too, or the
+        # seam's fade lets a few ms of it through (a blip right at the in- or out-point)
+        if a <= seg.audio_src_in_us + 1_000:
+            lo = 0
+        if b >= seg.audio_src_out_us - 1_000:
+            hi = n
+        m = np.zeros(hi - lo)
+        ramp_full = 0.5 + 0.5 * np.cos(np.pi * (np.arange(r) + 0.5) / r)  # 1 → 0
+        if a > seg.audio_src_in_us + 1_000:  # sound starts inside the piece: fade out into the mute
+            k = na - lo if pre else min(r, (nb - na) // 2)
+            if k > 0:
+                m[:k] = ramp_full[-k:] if pre else 0.5 + 0.5 * np.cos(np.pi * (np.arange(k) + 0.5) / k)
+        if b < seg.audio_src_out_us - 1_000:  # sound ends inside the piece: fade back in
+            k = hi - nb if post else min(r, (nb - na) // 2)
+            if k > 0:
+                up = ramp_full[:k][::-1] if post else (0.5 + 0.5 * np.cos(np.pi * (np.arange(k) + 0.5) / k))[::-1]
+                m[-k:] = np.maximum(m[-k:], up)
+        mask[lo:hi] = np.minimum(mask[lo:hi], m)
+    return mask
+
+
+def soften_dropout_edges(voice: np.ndarray, sr: int, index: TakeIndex | None, *, fade_ms: float = 8.0) -> np.ndarray:
+    """Raised-cosine fades (``fade_ms``) into and out of every recording dropout (digital-silence run the Take Index
+    recorded on its gaps): where speech runs straight into the zeros the waveform otherwise steps to zero (a click).
+    The source clock is the voice's (full source length); returns a copy only when something changed."""
+    if index is None or voice.size == 0:
+        return voice
+    runs = sorted({tuple(d) for g in index.gaps for d in g.dropouts_us})
+    if not runs:
+        return voice
+    v = np.array(voice, dtype=np.float64, copy=True)
+    n = max(2, round(fade_ms * sr / 1000))
+    k = np.arange(n, dtype=np.float64)
+    g_in = 0.5 - 0.5 * np.cos(np.pi * k / n)  # 0 → ~1
+    g_out = 0.5 + 0.5 * np.cos(np.pi * (k + 1) / n)  # ~1 → 0
+    N = v.shape[-1]
+    for a_us, b_us in runs:
+        a, b = round(a_us * sr / US_PER_S), round(b_us * sr / US_PER_S)
+        s0 = max(0, a - n)
+        if a > s0:
+            v[..., s0:a] *= g_out[n - (a - s0):]
+        e0 = min(N, b + n)
+        if e0 > b:
+            v[..., b:e0] *= g_in[: e0 - b]
+    return v
 
 
 def _floor_keeper(x: np.ndarray, tone: np.ndarray, sr: int, tone_db: float, below_db: float) -> np.ndarray:
@@ -1130,6 +1229,9 @@ def render_audio(job: Job, doc: CutDocument, timeline: Timeline, out_dir: str | 
     else:
         voice = np.zeros(0)
         warnings.append("job has no dialogue audio (media/audio.wav)")
+
+    # a recording dropout cuts sound off mid-waveform: soften each hard edge (8 ms) before any seam uses it
+    voice = soften_dropout_edges(voice, sr, index)
 
     # 2 — room tone + dialogue edit
     tone = None

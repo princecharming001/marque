@@ -381,10 +381,17 @@ def test_real_var_silences(tmp_path):
     TakeIndex.model_validate({"media": {"path": "x", "width": 1080, "height": 1920, "fps": "30/1",
                                          "duration_us": feat.duration_us},
                               "words": [w.model_dump() for w in res.words], "gaps": [g.model_dump() for g in res.gaps]})
+    edges = {e for d in feat.dropouts for e in (d.start_us, d.end_us)}
     for w, a in zip(res.words, words, strict=True):
-        assert abs(w.start_us - a.start_us) <= G.MAX_SHIFT_US and abs(w.end_us - a.end_us) <= G.MAX_SHIFT_US
+        # a word the dropout cuts takes the digital edge as its own (sound runs straight into / out of the zeros)
+        assert abs(w.start_us - a.start_us) <= G.MAX_SHIFT_US or (w.truncated and w.start_us in edges)
+        assert abs(w.end_us - a.end_us) <= G.MAX_SHIFT_US or (w.truncated and w.end_us in edges)
+    assert len(feat.dropouts) == 3 and all(d.cut_before for d in feat.dropouts)
+    chopped = [w for w in res.words if w.truncated]
+    assert chopped and all(w.kind == "cutoff" for w in chopped)
+    assert {w.end_us for w in chopped if w.truncated in ("end", "both")} == {d.start_us for d in feat.dropouts}
     long = [g for g in res.gaps if g.duration_us >= 10_000_000]
-    assert len(long) == 3
+    assert len(long) == 3 and all(g.dropouts_us for g in long)
     for g in long:
         assert g.kind == "silence" and g.energy_db is not None and g.energy_db <= -100
         assert g.start_us < g.snap_us < g.end_us
@@ -426,3 +433,49 @@ def test_real_take40_with_asr_words(tmp_path):
     before = sum(gp.snap_us <= br_by_gap[gp.id].start_us for gp in pre if gp.id in br_by_gap)
     assert before >= len(pre) // 2
     assert wmap["w0001"].start_us < 680_000
+
+
+def test_refine_word_never_spans_a_dropout():
+    """Real retake join (qa-editor-var-multitake): the first pass breaks off in "proof" and the recording drops
+    to digital zero for 1.2 s; Scribe stretched "proof..." over the whole dropout (29.18-30.64 s), so the gap
+    before the retake read 0.08 s. The word must end where its sound ends."""
+    ev = [{"type": "word", "text": "that", "t": 0.40, "dur": 0.30, "f0": 120, "db": -20},
+          {"type": "word", "text": "proof", "t": 0.72, "dur": 0.40, "f0": 118, "db": -20},
+          {"type": "word", "text": "They", "t": 2.20, "dur": 0.30, "f0": 125, "db": -20}]
+    tk = build_take(ev, total_s=3.0, floor_db=-70)
+    x = tk.x.copy()
+    x[round(0.84 * SR):round(2.05 * SR)] = 0.0  # the take is broken off inside "proof", then a dropout
+    f = G.compute_features(x, SR)
+    words = [Word(id="w0001", text="that", start_us=_us(0.40), end_us=_us(0.70)),
+             Word(id="w0002", text="proof...", start_us=_us(0.72), end_us=_us(2.12)),  # ASR: over the dropout
+             Word(id="w0003", text="They", start_us=_us(2.20), end_us=_us(2.50))]
+    out = G.refine_word_boundaries(f, words)
+    assert out[1].end_us == pytest.approx(_us(0.84), abs=15_000)
+    assert out[1].start_us == pytest.approx(_us(0.72), abs=15_000)
+    assert out[2].start_us == pytest.approx(_us(2.20), abs=15_000)
+    gap = _gap_between(G.detect_gaps(f, out), "w0002", "w0003")
+    assert gap.end_us - gap.start_us >= 1_300_000 and gap.kind == "silence"
+
+
+def test_recording_that_stops_on_another_syllable():
+    """Real multitake ending: "truth" decays into a dip, then the file ends 30 ms into the next syllable. ASR
+    gives "truth" everything up to the end of the file; the word must end at the dip and the fragment after
+    it must read as sound ('noise'), so no out-point keeps the chopped onset."""
+    ev = [{"type": "word", "text": "different", "t": 0.40, "dur": 0.40, "f0": 120, "db": -18},
+          {"type": "word", "text": "truth", "t": 0.86, "dur": 0.24, "f0": 118, "db": -18},
+          {"type": "word", "text": "next", "t": 1.16, "dur": 0.30, "f0": 125, "db": -16}]
+    tk = build_take(ev, total_s=1.20, floor_db=-80)  # the file ends 40 ms into "next"
+    f = G.compute_features(tk.x, SR)
+    words = [Word(id="w0001", text="different", start_us=_us(0.40), end_us=_us(0.80)),
+             Word(id="w0002", text="truth", start_us=_us(0.86), end_us=f.duration_us)]
+    res = G.analyze_gaps(f, words)
+    assert res.words[1].end_us <= _us(1.14)
+    assert res.words[1].end_us >= _us(1.07)
+    tail = _gap_between(res.gaps, "w0002", None)
+    assert tail.kind == "noise" and tail.snap_us <= _us(1.16)
+    # a take that ends in room tone keeps its word end and a clean trailing silence
+    tk2 = build_take(ev[:2], total_s=1.60, floor_db=-80)
+    f2 = G.compute_features(tk2.x, SR)
+    res2 = G.analyze_gaps(f2, [words[0], words[1].model_copy(update={"end_us": _us(1.10)})])
+    assert abs(res2.words[1].end_us - _us(1.10)) <= 15_000
+    assert _gap_between(res2.gaps, "w0002", None).kind == "silence"

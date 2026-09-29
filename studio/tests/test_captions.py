@@ -126,12 +126,12 @@ def test_long_words_never_make_an_unfittable_page(take_index: TakeIndex, cut_doc
     style = CaptionStyle(size_px=120, max_words_per_page=4)
     doc = auto_doc(cut_doc).model_copy(update={"captions": CaptionPlan(style=style)})
     pages = C.build_caption_pages(take_index, doc, simple_timeline(doc, take_index))
-    params = C.CaptionParams()
     for p in pages:
         text = " ".join(w.text for w in p.words)
-        if len(p.words) > 1:
-            width = C.estimate_text_width(text, 120, style.font, stroke_px=style.stroke_px)
-            assert width * params.min_font_scale <= params.max_line_px + 1e-6
+        if len(p.words) > 1:  # a multi-word page renders at full size, on one line or wrapped to two
+            fit = C.caption_fit(p.style, text, 1080)
+            assert fit.shrink == 1.0 or (fit.lines == 1 and fit.size_px >= 64 - 1e-6)
+            assert fit.lines <= 2 and fit.width <= 690 + 1e-6
 
 
 # ============================================================================================== emphasis
@@ -268,14 +268,15 @@ def test_captions_sit_below_the_chin_inside_the_band(auto_pages):
         top = block_top_px(p)
         assert chin + 40 - 1 <= top <= chin + 120 + 1
         assert top >= 288 and top + (p.y_norm * 1920 - top) * 2 <= 1248 + 1
-    assert len({p.y_norm for p in pages}) == 1  # static face -> captions never move
+    # static face -> captions never move (the anchor is the block's top edge; a page shrunk to fit is shorter)
+    assert len({round(block_top_px(p)) for p in pages}) == 1
 
 
 def test_hysteresis_ignores_face_jitter(take_index: TakeIndex, cut_doc: CutDocument):
     ix = with_face(take_index, 0.5, 0.33, jitter=0.006)  # ±11 px of chin jitter
     doc = auto_doc(cut_doc)
     pages = C.build_caption_pages(ix, doc, simple_timeline(doc, ix), platforms="all")
-    assert len({p.y_norm for p in pages}) == 1
+    assert len({round(block_top_px(p)) for p in pages}) == 1
 
 
 def test_punch_in_moves_captions_only_when_needed(take_index: TakeIndex, cut_doc: CutDocument):
@@ -312,7 +313,9 @@ def test_no_face_uses_default_band(take_index: TakeIndex, cut_doc: CutDocument):
     ix = without_face(take_index)
     doc = auto_doc(cut_doc)
     pages = C.build_caption_pages(ix, doc, simple_timeline(doc, ix), platforms="all")
-    assert all(abs(p.y_norm * 1920 - 1100) < 2 for p in pages)
+    # one anchor (the block top) for the whole video, set by the first page centred on y 1100
+    assert len({round(block_top_px(p)) for p in pages}) == 1
+    assert abs(pages[0].y_norm * 1920 - 1100) < 2
 
 
 def test_captions_clear_a_card_and_pip(take_index: TakeIndex, cut_doc: CutDocument):
@@ -447,10 +450,10 @@ def test_placer_returns_to_an_earlier_position(take_index: TakeIndex, cut_doc: C
     card = TimelineInsert(insert_id="i001", mode="card", out_start=a, out_end=b, asset=CardSpec(template="stat"))
     tl = simple_timeline(doc, take_index, inserts=[card])
     pages = C.build_caption_pages(take_index, doc, tl, platforms="all")
-    ys = [p.y_norm for p in pages]
-    before = [p.y_norm for p in pages if p.out_end <= a]
-    after = [p.y_norm for p in pages if p.out_start >= b]
-    during = [p.y_norm for p in pages if a <= p.out_start and p.out_end <= b]
+    ys = [round(block_top_px(p)) for p in pages]  # the anchor is the block's top edge
+    before = [round(block_top_px(p)) for p in pages if p.out_end <= a]
+    after = [round(block_top_px(p)) for p in pages if p.out_start >= b]
+    during = [round(block_top_px(p)) for p in pages if a <= p.out_start and p.out_end <= b]
     assert before and after and during
     assert set(before) == set(after)  # back to the same height after the card, not a new one
     assert all(y > before[0] for y in during)
@@ -504,3 +507,50 @@ def test_fast_speech_pages_stay_readable(take_index: TakeIndex):
              if len(p.words) > 1 and float(p.out_end - p.out_start) < 0.5 - 1e-6]
     assert len(short) <= 1, short  # the old pager flashed three (e.g. 'The belief' for 0.40 s)
     assert "The belief" not in page_texts(pages) and "But here's" not in page_texts(pages)
+
+
+# ============================================================================================== size / fit
+def test_house_caption_style_is_large_and_heavy():
+    st = CaptionStyle()
+    assert 84 <= st.size_px <= 96 and st.weight >= 800  # doctrine phrase range 64-96, heavy sans
+    assert 0.08 <= st.stroke_px / st.size_px <= 0.12  # outline 8-12 % of the size
+
+
+def test_caption_fit_never_shrinks_below_the_floor_it_wraps():
+    """Regression (d030 r2): a 72 px one-line page 'everyone says you need' was shrunk to ~52 px."""
+    st = CaptionStyle(size_px=72, weight=800, stroke_px=6, lines=1)
+    fit = C.caption_fit(st, "everyone says you need", 1080)
+    assert fit.size_px >= 64 - 1e-6
+    assert fit.lines == 2 and fit.width <= 690 + 1e-6
+    short = C.caption_fit(st, "brand story.", 1080)
+    assert short.lines == 1 and short.size_px == 72 and short.shrink == 1.0
+    # a page that fits once shrunk (not under the floor) stays on one line
+    mid = C.caption_fit(CaptionStyle(size_px=88), "the identity", 1080)
+    assert mid.lines == 1 and 64 <= mid.size_px <= 88
+    # a Director size under the floor is honoured (never shrunk further), wrapping instead
+    tiny = C.caption_fit(CaptionStyle(size_px=56), "and the proof that you can", 1080)
+    assert tiny.size_px == 56 and tiny.lines >= 2
+
+
+def test_overlay_props_carry_the_legibility_floor(take_index: TakeIndex, cut_doc: CutDocument):
+    from studio.compile.overlays import build_overlay_props
+
+    doc = auto_doc(cut_doc)
+    tl = simple_timeline(doc, take_index)
+    tl = tl.model_copy(update={"captions": C.build_caption_pages(take_index, doc, tl, platforms="tiktok")})
+    props = build_overlay_props(tl, index=take_index, platforms="tiktok").to_json_dict()
+    assert props["captionLayout"]["minSizePx"] == pytest.approx(64.0)
+    assert props["captionLayout"]["overflowLines"] == 2
+
+
+def test_auto_pages_fit_at_house_size(auto_pages):
+    """The pager pages for the size it will render at: most pages keep the full size on one line."""
+    _doc, _tl, pages = auto_pages
+    fits = [C.caption_fit(p.style, " ".join(w.text for w in p.words), 1080) for p in pages]
+    assert all(f.size_px >= 64 - 1e-6 for f in fits)
+    assert sum(f.shrink > 0.9 and f.lines == 1 for f in fits) >= 0.75 * len(fits)
+
+
+def test_relaxed_floor_is_never_stricter_than_the_band():
+    for name, z in C.PLATFORM_SAFE_ZONES.items():
+        assert z.relaxed_bottom <= z.bottom, name

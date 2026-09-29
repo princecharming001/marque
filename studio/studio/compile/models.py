@@ -149,6 +149,8 @@ class TimelineCaptionPage(_Model):
     out_end: Rational
     style: CaptionStyle = Field(default_factory=CaptionStyle)
     y_norm: float = Field(default=0.7, ge=0.0, le=1.0)  # vertical centre of the caption block
+    # how the placer chose y_norm ("below_chin", "above_head", "anchor", "fixed", "least_bad", …); diagnostics
+    placement: str | None = None
 
 
 class TimelineText(_Model):

@@ -80,6 +80,7 @@ Everything else (inserts, captions, text overlays, SFX, music) is anchored to wo
 
 from __future__ import annotations
 
+import contextlib
 import math
 import shutil
 import statistics
@@ -103,7 +104,7 @@ from studio.compile.models import (
     TimelineText,
     WordSpan,
 )
-from studio.doc.model import AssetRef, Framing, Point, SeamTreatment, Segment
+from studio.doc.model import AssetRef, CaptionStyle, Framing, Point, SeamTreatment, Segment
 from studio.timebase import normalize_fps, round_fraction, to_fraction
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -147,6 +148,7 @@ class CompileOptions:
     tail_pad_ms: float = 120.0  # after the last word at a cut (doctrine 80–150 ms)
     head_lead_ms: float = 200.0  # before the very first word of the video (first word at 0.1–0.5 s)
     end_tail_ms: float = 300.0  # after the very last word (0.15–0.5 s, target ~0.3 s)
+    end_hold_ms: float = 200.0  # when the recording stops on the last word: hold its last frame this long after it
     breath_lead_max_ms: float = 400.0  # keep a whole inhale before an incoming phrase, up to this
     keep_breath_before: bool = True
     #: margin around a measured breath span (``Gap.breaths_us``): edits and removals stay this far outside
@@ -156,6 +158,7 @@ class CompileOptions:
     #: blink, moving at most this many frames within the existing bounds (doctrine: "come back on a live
     #: face (eyes open, not mid-blink)"; "a blink on frame 0 ships a bad cover")
     blink_guard_frames: int = 4
+    steady_head: bool = True  # frame 0 avoids a soft/moving picture (the camera settling) inside the lead-in window
     punch_lead_ms: float = 33.0  # picture change before the onset at a continuous (framing) join
     seam_punch_scale: float = 1.3  # default punch for a "punch" seam without explicit framing
     min_seam_punch_scale: float = 1.25  # a punch below this does not hide a pose jump
@@ -452,6 +455,23 @@ def _media_end(index: TakeIndex) -> Fraction:
     return end
 
 
+def _sound_lo(g: Gap | None, onset: Fraction) -> Fraction | None:
+    """End of the last non-word sound (a fragment of a lost word, a noise) in ``g`` before ``onset``: a lead pad
+    never reaches back into it."""
+    if g is None:
+        return None
+    ends = [_us(b) for _a, b in g.sound_us if _us(b) <= onset + Fraction(1, 1000)]
+    return min(max(ends), onset) if ends else None
+
+
+def _sound_hi(g: Gap | None, end: Fraction) -> Fraction | None:
+    """Start of the first non-word sound in ``g`` after ``end``: a tail pad never runs into it."""
+    if g is None:
+        return None
+    starts = [_us(a) for a, _b in g.sound_us if _us(a) >= end - Fraction(1, 1000)]
+    return max(min(starts), end) if starts else None
+
+
 def _left_bounds(index: TakeIndex, first: Word) -> tuple[Fraction, Fraction, Gap | None]:
     """(soft_lo, hard_lo, gap) for the region before ``first``: never cross the snap point of an inner
     gap (soft) nor into the previous word (hard)."""
@@ -473,8 +493,12 @@ def _right_bounds(index: TakeIndex, last: Word) -> tuple[Fraction, Fraction, Gap
     nxt = index.next_word(last.id)
     g = index.gap_after(last.id)
     end = _us(last.end_us)
-    if nxt is None:  # last word of the recording: only the media end bounds the tail
+    if nxt is None:  # last word of the recording: only the media end bounds the tail …
         hi = max(_media_end(index), end)
+        if g is not None and g.kind == "noise":
+            # … unless untranscribed sound follows it (the recording stopping on the onset of another syllable):
+            # the out-point stays at the quietest point before that sound
+            hi = max(min(_us(g.snap_us), hi), end)
         return (hi, hi, g)
     hard = max(_us(nxt.start_us), end)
     if g is not None and g.before_word_id is not None:
@@ -495,6 +519,61 @@ def _blinks(index: TakeIndex) -> list[tuple[Fraction, Fraction]]:
     if index.visual is None:
         return []
     return sorted((_us(e.start_us), _us(e.end_us)) for e in index.visual.events if e.kind == "blink")
+
+
+def _steady_head(index: TakeIndex, grid: _Grid, e: Fraction, lo: Fraction, hi: Fraction,
+                 blinks: Sequence[tuple[Fraction, Fraction]], bspans: Sequence[tuple[Fraction, Fraction]]) -> Fraction:
+    """Frame 0 is the feed's default cover and the first look: when the picture at ``e`` is unsteady (blur and
+    face motion well above the take's own — a phone still settling after the record tap), move the start to the
+    steadiest grid point in ``[lo, hi]`` (never into a blink or a breath). Returns ``e`` when it is fine."""
+    vis = index.visual
+    if vis is None or not vis.samples or hi < lo:
+        return e
+    smp = [q for q in vis.samples if q.face_box is not None]
+    if len(smp) < 10:
+        return e
+    blur = [q.blur for q in smp if q.blur is not None]
+    if not blur:
+        return e
+    med_blur = statistics.median(blur) or 1e-6
+    t = [q.t_us for q in smp]
+    motion = [0.0] + [math.hypot(smp[k].face_box.cx - smp[k - 1].face_box.cx,  # type: ignore[union-attr]
+                                 smp[k].face_box.cy - smp[k - 1].face_box.cy)  # type: ignore[union-attr]
+                      / max(1e-3, (t[k] - t[k - 1]) / 1e5) for k in range(1, len(smp))]
+    med_motion = statistics.median(motion[1:]) or 1e-4
+
+    def nearest(c: Fraction) -> int | None:
+        k = bisect_right(t, _to_us(c))
+        near = [j for j in (k - 1, k) if 0 <= j < len(smp)]
+        return min(near, key=lambda q: abs(t[q] - _to_us(c))) if near else None
+
+    def blur_at(c: Fraction) -> float:
+        j = nearest(c)
+        b = smp[j].blur if j is not None else None
+        return b if b is not None else med_blur
+
+    def unsteady(c: Fraction) -> float:
+        j = nearest(c)
+        if j is None:
+            return 0.0
+        m = max(motion[j], motion[j + 1] if j + 1 < len(motion) else 0.0)
+        return blur_at(c) / med_blur + 0.5 * m / med_motion
+
+    here = unsteady(e)
+    if here <= 2.2:
+        return e
+    b_here = blur_at(e)
+    best, best_v = e, here
+    c = grid.ceil(lo)
+    while c <= hi:
+        # only a genuinely sharper picture counts (a held, frozen pre-roll frame is still, but not sharper)
+        if (not _in_blink(blinks, c) and not any(bs < c < be for bs, be in bspans)
+                and blur_at(c) <= 0.85 * b_here):
+            v = unsteady(c) + 0.3 * abs(float(c - e))  # the nearest steady frame keeps the planned lead-in
+            if v < best_v - 1e-9:
+                best, best_v = c, v
+        c += grid.frame
+    return best if best_v <= 0.75 * here else e
 
 
 def _in_blink(blinks: Sequence[tuple[Fraction, Fraction]], src_t: Fraction) -> bool:
@@ -633,6 +712,11 @@ def _removal(gap: Gap, target_ms: int, opts: CompileOptions, grid: _Grid) -> tup
         rs = snap - rem / 2
     rs = min(max(rs, gs + a), ge - b - rem)
     re = rs + rem
+    if gap.sound_us:  # non-word sound (a fragment of a lost word, a noise) is removed whole, never kept in a pad
+        lo_need = min(_us(x) for x, _y in gap.sound_us)
+        hi_need = max(_us(y) for _x, y in gap.sound_us)
+        rs = min(rs, lo_need)
+        re = max(re, hi_need)
     rs_g = grid.nearest_in(rs, gs, ge)
     if rs_g is None:
         return None
@@ -716,6 +800,11 @@ def _build_pieces(doc: CutDocument, index: TakeIndex, opts: CompileOptions, grid
                 # can land 0.1-0.5 s after frame 0 even when the snap point hugs the onset
                 relaxed = min(hard_lo + Fraction(round(opts.tail_pad_ms * 1000), US), onset)
                 soft_lo = min(soft_lo, max(relaxed, hard_lo))
+            s_lo = _sound_lo(gap, onset)
+            if s_lo is not None:  # a fragment of a lost word / a noise just before the word stays out
+                if i == 0:  # ... except the video's lead-in (first word at >= 0.1 s): the audio stage mutes it there
+                    s_lo = min(s_lo, onset - Fraction(round(opts.head_lead_ms * 1000), US))
+                soft_lo = max(soft_lo, s_lo)
             target = onset - Fraction(round(lead_ms * 1000), US)
             if (opts.keep_breath_before and gap is not None and gap.after_word_id is not None
                     and (gap.has_breath or gap.kind == "breath")):
@@ -746,6 +835,10 @@ def _build_pieces(doc: CutDocument, index: TakeIndex, opts: CompileOptions, grid
                         if cand:
                             e = cand[0]
                             break
+            if i == 0 and opts.steady_head:  # ... nor the phone still settling after the record tap (soft, moving)
+                lo_head = max(soft_lo, _ZERO, onset - Fraction(1, 2))
+                hi_head = onset - Fraction(100, 1000)
+                e = _steady_head(index, grid, e, lo_head, hi_head, _blinks(index), _breath_spans(gap, opts))
             left_edge = max(e, _ZERO)
         # ---- right edge
         if i + 1 < n and join[i + 1] == "continuous":
@@ -761,6 +854,9 @@ def _build_pieces(doc: CutDocument, index: TakeIndex, opts: CompileOptions, grid
                 # likewise the ending may run on to the removed next word's lead pad (never into an inhale)
                 relaxed = max(hard_hi - Fraction(round(opts.lead_pad_ms * 1000), US), end)
                 soft_hi = max(soft_hi, min(relaxed, hard_hi))
+            s_hi = _sound_hi(g_after, end)
+            if s_hi is not None:  # untranscribed sound after the word (a fragment, a noise) stays out
+                soft_hi = min(soft_hi, s_hi)
             target = min(end + Fraction(round(tail_ms * 1000), US), soft_hi)
             e = grid.nearest_in(target, end, soft_hi)
             if e is None:
@@ -769,6 +865,9 @@ def _build_pieces(doc: CutDocument, index: TakeIndex, opts: CompileOptions, grid
                     e = grid.floor(hard_hi)
             # never end inside a measured breath: stop before it (or, if it starts right on the word, after it)
             right_edge = _clear_of_breaths(e, _breath_spans(g_after, opts), end, hard_hi, grid, prefer="before")
+            if i == n - 1:  # the last frame is what a loop replays into: not caught with the mouth open
+                right_edge = _closed_mouth_end(index, dense, grid, right_edge, end, min(soft_hi, hard_hi),
+                                               _breath_spans(g_after, opts))
         # ---- inner pause trims → several pieces
         cuts: list[tuple[Fraction, Fraction, int]] = []  # (remove_start, remove_end, split word position)
         for g in index.gaps_between(seg.from_word, seg.to_word):
@@ -798,6 +897,15 @@ def _build_pieces(doc: CutDocument, index: TakeIndex, opts: CompileOptions, grid
                 aout = ain + grid.frame
             pieces.append(_Piece(seg=seg, seg_idx=i, words=list(p_words), speed=speed, a_in=ain, a_out=aout,
                                  p_in=ain, p_out=aout, join_in=kind, seam_in=seam))
+        if i == n - 1 and opts.end_hold_ms > 0 and pieces and index.next_word(last.id) is None:
+            # the recording stops (almost) on the last word: no tail to end on. The picture holds its last frame
+            # past the source end (renderers clamp to the last source frame) while the audio ends where it must
+            # (before any fragment of a next syllable) and room tone carries the hold
+            end_w = _us(last.end_us)
+            want = end_w + Fraction(round(opts.end_hold_ms * 1000), US)
+            p = pieces[-1]
+            if p.p_out < want and _media_end(index) < want:
+                p.p_out = grid.ceil(want)
     _apply_jl(pieces, index, grid, opts, dense)
     _assign_output_times(pieces, grid)
     return pieces
@@ -847,6 +955,31 @@ class _DenseVisual:
 
     def mouth(self, src_t: Fraction) -> float | None:
         return self._at(self._mouth, src_t)
+
+
+def _closed_mouth_end(index: TakeIndex, dense: _DenseVisual | None, grid: _Grid, e: Fraction, end: Fraction,
+                      hi: Fraction, bspans: Sequence[tuple[Fraction, Fraction]]) -> Fraction:
+    """The video's out-point, moved (within ±0.2 s, keeping ≥ 0.15 s after the last word and inside the silence)
+    to a frame whose last picture shows the mouth closed when the planned one catches it open."""
+    def mouth(t: Fraction) -> float | None:
+        last = t - grid.frame  # the last frame shown
+        v = dense.mouth(last) if dense is not None else None
+        return v if v is not None else _mouth_at(index, last)
+
+    here = mouth(e)
+    if here is None or here <= 0.3:
+        return e
+    lo = max(end + Fraction(150, 1000), e - Fraction(1, 5))
+    top = min(hi, e + Fraction(1, 5))
+    best, best_v = e, here
+    c = grid.ceil(lo)
+    while c <= top:
+        if not any(bs < c < be for bs, be in bspans):
+            v = mouth(c)
+            if v is not None and v + 0.2 * abs(float(c - e)) < best_v:
+                best, best_v = c, v + 0.2 * abs(float(c - e))
+        c += grid.frame
+    return best if best_v <= 0.2 else e
 
 
 def _mouth_at(index: TakeIndex, src_t: Fraction) -> float | None:
@@ -1067,6 +1200,12 @@ class _Framer:
         self.last_scale = 1.0
         self.max_scale = min(1.8, max_face_scale(self.src_w, self.src_h, width, height, opts.max_face_upsample))
         self.notes: list[str] = []
+        #: captions sit above the head on this framing (the chin is under the platform band): punch-ins then zoom
+        #: about the top of the head, so the head never rises into the caption band (set by :func:`compile`)
+        self.hold_head_top = False
+        vis = index.visual
+        self.head_ratio = (vis.head_top_ratio if vis is not None and vis.head_top_ratio is not None else 0.55)
+        self.held_segments: list[str] = []
 
     # --------------------------------------------------------------- helpers
     def _out_to_src_us(self, seg_pieces: list[_Piece], t: Fraction) -> int | None:
@@ -1114,6 +1253,29 @@ class _Framer:
 
     def _centre(self, anchor: tuple[float, float], scale: float, layout: _Layout,
                 point: Point | None, face_h: float | None = None) -> tuple[float, float]:
+        """Crop centre (normalized source) that puts the face anchor where the layout wants it; with
+        :attr:`hold_head_top` a punch-in zooms about the top of the head instead (it stays where the section's
+        base framing has it, so captions placed above the head never meet the hair)."""
+        cx, cy = self._centre_plain(anchor, scale, layout, point, face_h)
+        if not self.hold_head_top or point is not None or not face_h or layout.kind != "full":
+            return (cx, cy)
+        s_b = self._bar_scale(layout)
+        if scale <= s_b + 1e-6:
+            return (cx, cy)
+        _bw, bh = base_window(self.src_w, self.src_h, (layout.rect[2] * self.W) / (layout.rect[3] * self.H))
+        ht = anchor[1] - face_h * (0.5 + self.head_ratio)  # top of the head (hair), normalized source
+        _cxb, cyb = self._centre_plain(anchor, s_b, layout, None, face_h)
+        _cxb, cyb = self._clamp_active(s_b, _cxb, cyb, layout)
+        hb = bh / s_b
+        y0b = min(max(cyb - hb / 2, 0.0), 1.0 - hb)
+        frac = (ht - y0b) / hb  # where the head top sits in the base window (0 top .. 1 bottom)
+        if not (0.0 <= frac <= 0.6):
+            return (cx, cy)
+        h = bh / scale
+        return (cx, min(max(ht - frac * h + h / 2, h / 2), 1.0 - h / 2))
+
+    def _centre_plain(self, anchor: tuple[float, float], scale: float, layout: _Layout,
+                      point: Point | None, face_h: float | None = None) -> tuple[float, float]:
         """Crop centre (normalized source) that puts the face anchor where the layout wants it.
 
         With no vertical freedom (the window spans the source height at scale 1) the face keeps its
@@ -1551,9 +1713,14 @@ def compile(doc: CutDocument, index: TakeIndex, *, job: Job | None = None, width
     # ---- framing
     active = opts.active_area
     if active == "auto":
-        active = detect_active_area(job.mezz_path) if (job is not None and job.mezz_path.exists()) else None
+        active = _job_active_area(job)
     framer = _Framer(doc, index, pieces, layouts, opts, grid, width, height, word_map, active)
+    framer.hold_head_top = _captions_above_head(doc, index, width, height)
     framer.run()
+    if framer.hold_head_top and any(p.seg.framing is not None and p.seg.framing.scale > 1.0 for p in pieces):
+        framer.notes.append("captions sit above the head on this framing (the chin is under the platform's caption "
+                            "band), so punch-ins zoom about the top of the head: the head never rises into the "
+                            "captions (the face grows downward instead)")
     if job is not None:
         for msg in framer.notes:
             job.trace("compile_note", doc_version=doc.version, note=msg)
@@ -1582,6 +1749,47 @@ def compile(doc: CutDocument, index: TakeIndex, *, job: Job | None = None, width
     tl.sfx = _sfx(doc, tl, job)
     tl.music = _music(doc, tl, job)
     return Timeline.model_validate(tl.model_dump())
+
+
+def _job_active_area(job: Job | None) -> tuple[float, float, float, float] | None:
+    """The mezzanine's active picture (black bars excluded), cached in ``media/active_area.json`` so a compile gives
+    the same framing after the mezzanine was reclaimed (it is regenerable and rebuilt before any render)."""
+    if job is None:
+        return None
+    import json
+
+    cache = job.media_dir / "active_area.json"
+    if job.mezz_path.exists():
+        area = detect_active_area(job.mezz_path)
+        with contextlib.suppress(OSError):
+            cache.write_text(json.dumps({"active": list(area) if area is not None else None}))
+        return area
+    try:
+        data = json.loads(cache.read_text())
+    except (OSError, ValueError):
+        return None
+    a = data.get("active")
+    return tuple(float(v) for v in a) if a else None  # type: ignore[return-value]
+
+
+def _captions_above_head(doc: CutDocument, index: TakeIndex, width: int, height: int) -> bool:
+    """True when the document's captions will sit above the head (auto placement, and a one-line block does not fit
+    between the chin and the platform's relaxed caption floor at the base framing)."""
+    cap = doc.captions
+    if cap is not None and (not cap.enabled or cap.position not in ("auto", "upper_third")):
+        return False
+    if index.visual is None or not (index.visual.face_track or index.visual.samples):
+        return False
+    try:
+        from studio.compile import captions as C
+
+        platforms = [d.platform for d in doc.deliverables] or ["tiktok"]
+        zone = C.safe_zone_for(platforms, width=width, height=height)
+        style = cap.style if cap is not None else CaptionStyle()
+        info = C.under_chin_reframe(index, style=style, zone=zone, width=width, height=height)
+    except Exception:
+        return False
+    return info is not None and info["scale"] > 1.0 + 1e-6
 
 
 def compile_timeline(doc: CutDocument, index: TakeIndex, media: MediaInfo | None = None, *, job: Job | None = None,

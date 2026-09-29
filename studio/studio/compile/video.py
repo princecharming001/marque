@@ -1000,9 +1000,10 @@ def _log_writer(job: Job | None, name: str) -> Any:
 
 def render_aroll(job: Job, timeline: Timeline, out_dir: str | os.PathLike[str], *, preview: bool = False,
                  color: ColorSpec | None = None, source: str | os.PathLike[str] | None = None,
-                 threads: int | None = None, conform: bool | None = None) -> Path:
-    """Render ``aroll.mov`` (ProRes 422 HQ at ``timeline.width x height``; preview: ``aroll_preview.mp4``,
-    540x960 H.264) into ``out_dir`` and return its path.
+                 threads: int | None = None, conform: bool | None = None, codec: str = "prores_hq") -> Path:
+    """Render ``aroll.mov`` (ProRes 422 HQ at ``timeline.width x height``, or with ``codec="lean"`` the disk-budget
+    HEVC/x264 4:2:2 10-bit intermediate of :mod:`studio.storage`; preview: ``aroll_preview.mp4``, 540x960 H.264)
+    into ``out_dir`` and return its path.
 
     ``out_dir`` may also be the output file path. ``color`` is the document's ColorSpec (the timeline
     does not carry it). ``source`` overrides the mezzanine (default ``timeline.source_path`` or
@@ -1101,6 +1102,10 @@ def render_aroll(job: Job, timeline: Timeline, out_dir: str | os.PathLike[str], 
         cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
                 "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
                 "-movflags", "+faststart+negative_cts_offsets", "-use_editlist", "0"]
+    elif codec == "lean":
+        from studio.storage import lean_video_args
+
+        cmd += lean_video_args()
     else:
         cmd += ["-c:v", "prores_ks", "-profile:v", "3", "-vendor", "apl0", "-pix_fmt", OUTPUT_PIX_FMT]
     cmd += ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",

@@ -70,7 +70,11 @@ in the default path. (Previews may be faster; finals may not.)
   (codec, sample rate, channels), rotation, edit-list/priming notes.
 - `media/mezz.mov` — the **mezzanine**: rotated upright, SDR BT.709 (HLG/PQ tone-mapped exactly once
   with zscale+tonemap, 203-nit reference white, dither), CFR at source fps, full resolution,
-  ProRes 422 HQ (or FFV1) — every later video operation reads this, never the original.
+  ProRes 422 HQ (or FFV1) — every later video operation reads this, never the original. When the disk budget
+  (`studio.storage`: the mezzanine *plus* the edit's renders) does not fit, the codec steps down ProRes 422 →
+  the lean intermediate (HEVC 4:2:2 10-bit VideoToolbox q85, x264 4:2:2 10-bit CRF 4 fallback; ≥ 56 dB PSNR).
+  A delivered (or idle) job's mezzanine is regenerable: it may be reclaimed and is rebuilt frame-identically
+  from `media/original.*` before the next render (`storage.ensure_mezz`).
 - `media/audio.wav` — 48 kHz float32 mono (and stereo if source is stereo) dialogue track.
 - `media/proxy.mp4` — 540x960 H.264 with burned timecode, for fast frame grabs and previews.
 
@@ -82,13 +86,16 @@ in the default path. (Previews may be faster; finals may not.)
 ```
 Word:      id "w0001", text, start_us, end_us, kind: "word"|"filler"|"event"|"cutoff",
            confidence, speaker, sentence_id, cluster_id|None, prosody: {f0_z, int_z, dur_z}|None,
-           emphasis: float 0..1
+           emphasis: float 0..1, truncated: "start"|"end"|"both"|None (a digital-silence dropout
+           in the recording chops the word; also kind "cutoff"; edges snap to the dropout edge)
 Sentence:  id "s001", word_ids[], text, start_us, end_us, complete: bool, cluster_id|None
 Cluster:   id "c01", sentence_ids[] (retakes/rephrasings of the same line, in time order),
            similarity, recommended_sentence_id (last complete take by default), notes
 Gap:       id "g0001", after_word_id, before_word_id, start_us, end_us, kind:
            "pause"|"breath"|"silence"|"noise", snap_us (quietest point, RMS-min), energy_db,
-           has_breath
+           has_breath, breaths_us, dropouts_us (digital-silence runs: the recording lost them;
+           never pause time for sentence segmentation), sound_us (non-word sound — a fragment of a lost
+           word, a noise — that cut pads and pause trims never keep)
 Visual:    per-sample (10 fps from mezz): t_us, face_box (x,y,w,h normalized)|None, face_conf,
            landmarks-derived: eyes_open, gaze_off, mouth_open, head_yaw/pitch; blur, luma
            Events: blink, look_away, face_lost, reading (gaze down) with start/end us
@@ -165,7 +172,8 @@ grid snapping happens once here.
 Render stages (each writes into `renders/r{n}/`):
 1. **A-roll video** — ffmpeg filtergraph from `mezz.mov`: trims, speed (setpts), framing transforms
    (crop+scale with Lanczos from the full-res mezz, face-tracked centers smoothed), b-roll layers
-   (full / split / pip / card-underlay), output 1080x1920 @ source fps, ProRes 422 HQ intermediate.
+   (full / split / pip / card-underlay), output 1080x1920 @ source fps, ProRes 422 HQ intermediate (the lean
+   intermediate when the disk budget says so; recorded as `aroll_codec` in `render.json`).
 2. **Overlays** — Remotion project `studio/overlay/` renders captions, text overlays, designed cards
    and graphics from `overlay_props.json` as ProRes 4444 with alpha (bt709, png intermediates), same
    fps/duration.
@@ -181,7 +189,10 @@ Preview renders use the proxy and a fast preset; the champion and finals always 
 
 ## 7. Invariants (the only hard gates; `studio.qa`)
 
-1. No audible click or clipped phoneme at any seam (click detector ±5 ms + ASR round-trip of the render).
+1. No audible click or clipped phoneme at any seam (click detector ±5 ms + ASR round-trip of the render), nor
+   at a recording-dropout edge inside kept audio; no kept word the recording itself chops (`Word.truncated`).
+   (Untranscribed sound in a cut pad, `Gap.sound_us`, is kept out by the compiler and muted under room tone by
+   the audio stage where the frame grid leaves a sliver of it.)
 2. Rendered audio duration/sample alignment matches the compiled timeline (±1 frame A/V sync).
 3. No model-provided timestamp used as an edit coordinate (enforced by the op schemas).
 4. Pinned payoff/CTA words present unless unpinned.
@@ -212,14 +223,23 @@ json), `logs/`, `trace.jsonl` (every model call: role, provider, model, tokens, 
   `load_skill`; `constants.yaml` available to critics/metrics.
 - Critics (`critics.py`): frame judge (a different model family when available, else a
   fresh-context house model marked `same_family=true`), watcher (Gemini with video when a key
-  exists, else frames + metrics), metrics packet from `studio.qa`. Notes are localized by word ID.
-- Champion loop (`loop.py`): render → critique → Director revision → position-swapped pairwise
-  comparison (≥2 judges; ties = keep champion) → keep/stop after 2 winless rounds (guard 12).
+  exists, else frames + metrics), metrics packet from `studio.qa` plus caption geometry (where
+  every page sits against the face after framing, how big it renders). Notes are localized by word
+  ID and name their claim; a metric confirms only the claim it measures. The rubric is critique.md's
+  questions + the topic files of the layers present + the brief's viewer checks. A failed review
+  (after retries) raises `CritiqueUnavailable`: it is never "nothing to change".
+- Champion loop (`loop.py`): render → critique → Director revision (it sees the champion render and
+  the critics' sheets) → position-swapped pairwise comparison (≥2 judges with equal evidence and a
+  neutral diff; a judge saying "same" both ways abstains; taste changes need every judge, a fix of a
+  confirmed P0/P1 wins when nothing regresses and no judge prefers the champion; ties = keep
+  champion) → keep/stop after 2 winless rounds (guard 12); recorded hook alternates are built,
+  rendered and judged as variants; the closing watch's confirmed P0/P1 opens one more round; a
+  champion the critics could not review ships marked NOT REVIEWED.
 
 ## 10. CLI (`studio.cli`, entry point `studio`)
 
 - `studio edit <video> [--brief TEXT] [--style NAME] [--platform tiktok|reels|shorts]
-  [--director-provider P --director-model M --director-key-env VAR] [--rounds N] [--out DIR]`
+  [--director-provider P --director-model M --director-key-env VAR | --house] [--rounds N] [--out DIR]`
   → runs everything, prints the job dir and final file paths.
 - `studio chat <job_dir> "<instruction>"` → Director applies ops for the instruction, re-renders,
   re-judges, prints what changed.

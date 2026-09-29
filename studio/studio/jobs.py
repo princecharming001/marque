@@ -115,6 +115,22 @@ def read_json(path: Path) -> Any:
         return json.load(fh)
 
 
+#: A delivery folder (``studio edit --out DIR``) names its job here, so ``studio chat DIR`` / ``studio edit DIR``
+#: work on the delivery folder as on the job directory.
+JOB_POINTER = ".studio-job"
+
+
+def resolve_job_dir(p: Path) -> Path:
+    """``p`` itself when it is a job directory, else the job a delivery folder's ``.studio-job`` names."""
+    if (p / "job.json").exists() or not (p / JOB_POINTER).is_file():
+        return p
+    try:
+        target = Path((p / JOB_POINTER).read_text(encoding="utf-8").strip()).expanduser()
+    except OSError:
+        return p
+    return target if (target / "job.json").exists() else p
+
+
 class Job:
     """Handle on one job directory. Create with :meth:`create`, reopen with :meth:`open`."""
 
@@ -165,6 +181,7 @@ class Job:
             cand = base / str(path_or_id)
             if cand.is_dir():
                 p = cand
+        p = resolve_job_dir(p)
         if not p.is_dir() or not (p / "job.json").exists():
             raise JobError(f"not a job directory: {path_or_id}")
         job = cls(p)

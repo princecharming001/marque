@@ -298,3 +298,42 @@ def test_render_ntsc_keeps_exact_rate(tmp_path: Path):
     out = O.render_overlay_props(O.build_overlay_props(tl), tmp_path / "ntsc.mov")
     chk = O.verify_overlay(out, frames=45, fps=fps, content_frame=10)
     assert chk.fps == fps and chk.frames == 45
+
+
+def test_caption_props_carry_the_planned_lines_and_band():
+    """Regression (d030 fl run r1): 'meaningful enough.' was placed as one 66 px line at the band top; the
+    renderer measured it a few % wider, wrapped it to two 76 px lines and drew 44 px above the TikTok band.
+    The renderer now keeps the planned line count and clamps the block into the caption band."""
+    one = CaptionStyle(size_px=76, weight=800, stroke_px=8, lines=1)
+    tl = Timeline(fps=F(30), duration=F(2), captions=[_page("p001", F(0), ["meaningful", "enough."], style=one,
+                                                            y=241 / 1920)])
+    props = O.build_overlay_props(tl, platforms="tiktok")
+    fit = C.caption_fit(one, "meaningful enough.", 1080, max_width=1080 - 60 - 180)
+    assert props.captions[0].lines == fit.lines == 1 and 64 <= fit.size_px < 76  # shrunk to fit, not wrapped
+    # the caption band runs down to TikTok's relaxed caption floor (y 1600); other text keeps the strict band
+    assert props.caption_layout.top_px == 200 and props.caption_layout.bottom_px == 1600
+    wire = props.to_json_dict()
+    assert wire["captions"][0]["lines"] == 1 and wire["captionLayout"]["topPx"] == 200
+    # a two-line style wraps instead of a visible shrink: pages of one video keep one size
+    two = one.model_copy(update={"lines": 2})
+    fit2 = C.caption_fit(two, "meaningful enough.", 1080)
+    assert fit2.lines == 2 and fit2.size_px == 76
+
+
+@pytest.mark.slow
+@needs_project
+@needs_ffmpeg
+def test_render_boundary_page_stays_in_the_band(tmp_path: Path):
+    """A page whose one-line fit sits right at the legibility floor renders on one line, inside the band."""
+    import numpy as np
+
+    st = CaptionStyle(size_px=76, weight=800, stroke_px=8, lines=1)
+    tl = Timeline(fps=F(30), duration=F(1), captions=[_page("p001", F(0), ["meaningful", "enough."], style=st,
+                                                            y=241 / 1920, dur=F(1, 2))])
+    out = O.render_overlay_props(O.build_overlay_props(tl, platforms="tiktok"), tmp_path / "b.mov", verify=False)
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", "0.5", "-i", str(out), "-frames:v", "1", "-vf",
+                          "alphaextract", "-f", "rawvideo", "-pix_fmt", "gray", "-"], capture_output=True,
+                         check=True).stdout
+    a = np.frombuffer(raw, np.uint8).reshape(1920, 1080)
+    ys, _xs = np.nonzero(a > 64)
+    assert ys.min() >= 200 - 2 and ys.max() <= 330  # one line under the band top, not two lines above it

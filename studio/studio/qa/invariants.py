@@ -476,11 +476,24 @@ def check_invariants(job: Job | None, doc: CutDocument, index: TakeIndex, timeli
                         f"{Path(pk.final_path).name} [{c.rule}, +{c.margin_db:.1f} dB]")
             refs += [c.left_word or "", c.right_word or ""]
             click_data.append({"file": Path(pk.final_path).name, **c.model_dump()})
+    for pk in ordered:
+        for c in pk.edge_clicks_found:
+            msgs.append(f"hard stop at a recording dropout at {c.out_t:.2f} s ({c.left_word or '…'}→"
+                        f"{c.right_word or '…'}) clicks in {Path(pk.final_path).name} [+{c.margin_db:.1f} dB]")
+            refs += [c.left_word or "", c.right_word or ""]
     ref_pk = prim or (ordered[0] if ordered else None)
     clipped = ref_pk.integrity.clipped if ref_pk is not None else []
     for d in clipped:
         msgs.append(f"{d['word_id']} “{d['text']}” clipped by {d['missing_ms']} ms at its {d['side']}")
         refs.append(d["word_id"])
+    truncated = ref_pk.integrity.truncated if ref_pk is not None else []
+    for d in truncated:
+        side = {"start": "onset", "end": "end", "both": "onset and end"}.get(d["side"], d["side"])
+        msgs.append(f"{d['word_id']} “{d['text']}” is kept but the recording itself cuts off its {side} (a "
+                    "digital-silence dropout): the listener hears a chopped word; cut it, or end/start the segment "
+                    "on the neighbouring word")
+        refs.append(d["word_id"])
+
     inside = [c for c in (ref_pk.cuts if ref_pk is not None else []) if c.inside_word]
     for c in inside:
         msgs.append(f"seam {c.seam} at {c.out_t:.2f} s falls inside a kept word")
@@ -511,7 +524,7 @@ def check_invariants(job: Job | None, doc: CutDocument, index: TakeIndex, timeli
         results.append(_result(1, not msgs, "; ".join(msgs) if msgs else
                                f"{n_seams} seams clean in {len(ordered)} file(s), no clipped words{asr_note}",
                                refs, clicks=click_data, clipped=clipped, inside_word=[c.seam for c in inside],
-                               asr=asr_data, seams=n_seams))
+                               asr=asr_data, seams=n_seams, truncated=truncated))
 
     # ------------------------------------------------------------------ 2 A/V alignment
     msgs, av_data = [], {}
@@ -674,7 +687,10 @@ def check_invariants(job: Job | None, doc: CutDocument, index: TakeIndex, timeli
                               any(t.get(k) not in (None, "bt709") for k in ("color_transfer", "color_primaries"))):
             msgs.append(f"mezzanine is not SDR BT.709 ({t})")
     elif job is not None and media.hdr:
-        msgs.append("HDR source but no mezzanine")
+        from studio.storage import mezz_pruned
+
+        if mezz_pruned(job) is None:  # a mezzanine reclaimed after delivery was checked when it was rendered from
+            msgs.append("HDR source but no mezzanine")
     if timeline.source_path and job is not None:
         facts6["aroll_source"] = Path(timeline.source_path).name
         if Path(timeline.source_path).resolve() != job.mezz_path.resolve():

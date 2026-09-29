@@ -6,8 +6,9 @@
  *   -webkit-text-stroke uses miter joins, which spike on heavy faces (M, N, V, W) at thick strokes.
  * - Every word is measured with the loaded face and placed explicitly, so the accent word can scale
  *   around its own centre without reflowing the line.
- * - Lines are fitted to the caption width: shrink first (down to minScale), then balanced wrapping when
- *   the style allows more than one line, so a page never leaves the safe band.
+ * - Lines are fitted to the caption width: shrink first (down to minScale and never under the legibility
+ *   floor minSizePx), then balanced wrapping (the style's lines, then overflowLines), so a page never
+ *   leaves the safe band and never turns into small print.
  * - Soft drop shadow via a CSS filter on the whole block (covers fill + stroke, no per-glyph halos).
  * - Motion: at most one entrance per page (100-200 ms, scale from 0.9 or opacity), then hold still.
  *   The accent word turns to the highlight colour on its measured onset (minus highlightLeadFrames) with
@@ -42,14 +43,23 @@ export const CaptionPage: React.FC<Props> = ({page, layout, safe, debug}) => {
   const left = Math.max(layout.leftPx, safe.left);
   const right = Math.min(layout.rightPx, width - safe.right);
   const maxWidth = Math.min(layout.maxWidthPx, right - left);
+  // legibility floor: shrink no further than minSizePx (or minScale); past that, wrap (overflowLines)
+  const floorScale = layout.minSizePx > 0 ? Math.min(1, layout.minSizePx / style.sizePx) : 0;
+  // a planned page keeps the line count it was placed with (Python measured the same estimate); only the
+  // size adapts, so the drawn block matches the placed one and never grows out of the band
+  const planned = page.lines ?? null;
   const fitted = fitWords({
     words,
     spec,
     sizePx: style.sizePx,
     maxWidth,
-    maxLines: style.maxLines,
-    minScale: layout.minScale,
+    maxLines: planned ?? style.maxLines,
+    minScale: Math.max(layout.minScale, floorScale),
     extraPx: 2 * stroke + 2 * padX,
+    overflowLines: planned === null ? layout.overflowLines : 0,
+    preferLines: planned ?? 1,
+    wrapBeforeShrink: 0.95,
+    breaks: page.breaks ?? null,
   });
   const size = fitted.sizePx;
   const lineH = size * style.lineHeight;
@@ -61,8 +71,14 @@ export const CaptionPage: React.FC<Props> = ({page, layout, safe, debug}) => {
   let cx = layout.xCenterPx;
   cx = Math.min(cx, right - blockW / 2);
   cx = Math.max(cx, left + blockW / 2);
-  // vertical: Python placed the block (face-aware, safe band); only keep it inside the frame
+  // vertical: Python placed the block (face-aware, safe band); keep it inside the caption band (a measured
+  // block a few px taller than the estimate must not poke out) and inside the frame
   let cy = page.yNorm * height;
+  const bandTop = layout.topPx > 0 ? layout.topPx : 0;
+  const bandBottom = layout.bottomPx > 0 ? layout.bottomPx : height;
+  if (bandBottom - bandTop >= blockH) {
+    cy = Math.min(Math.max(cy, bandTop + blockH / 2), bandBottom - blockH / 2);
+  }
   cy = Math.min(Math.max(cy, blockH / 2), height - blockH / 2);
 
   // ------------------------------------------------------------------ page entrance

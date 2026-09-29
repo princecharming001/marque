@@ -473,7 +473,10 @@ def test_real_take_render_is_frame_exact_and_face_framed(job, tmp_path):
     # only ProRes HQ's own (near-transparent) re-encode separates them — and the neighbours differ more
     fmap = source_frame_map(tl)
     s1 = tl.segments[0]
-    picks = list(range(1, round(s1.out_end * FPS) - 1, 7))
+    # the ingest pre-roll holds the first frame (identical clones cannot be told apart): check past it
+    pre = int((job.meta["meta"]["ingest"].get("preroll") or {}).get("frames") or 0)
+    first = next((f for f in range(1, round(s1.out_end * FPS)) if fmap[f][1] > pre + 1), 1)
+    picks = list(range(first, round(s1.out_end * FPS) - 1, 7))
     rendered = dict(zip(picks, _decode_frames(out, 1080, 1920, picks), strict=True))
     src_idx = sorted({fmap[f][1] + d for f in picks for d in (-1, 0, 1)})
     mezz = dict(zip(src_idx, _decode_frames(job.mezz_path, 1080, 1920, src_idx), strict=True))
@@ -494,6 +497,7 @@ def test_real_take_render_is_frame_exact_and_face_framed(job, tmp_path):
     assert region_for_time(tl, t)[1] == pytest.approx(0.5)
     box = ix.face_at(tl.segment_at(t).out_to_src_us(t))
     eyes = map_source_point(tl, t, box.cx, box.y + 0.27 * box.h, 1080, 1920)[1]
-    assert 0.5 < eyes <= 0.62 + 1e-6
+    assert 0.5 < eyes <= 1248 / 1920  # doctrine: the eyes stay above y≈1248 under a top split (the framer aims at
+    # its eye line with the segment's median face; this instant's box can sit ~1 % lower)
     shutil.rmtree(job.root / "renders", ignore_errors=True)
     job.mezz_path.unlink(missing_ok=True)

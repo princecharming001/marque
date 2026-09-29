@@ -89,6 +89,7 @@ encoder, tone-map parameters, downmix decision and verification report are recor
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import functools
 import math
 import os
@@ -161,10 +162,14 @@ TONEMAP_OPERATORS: tuple[str, ...] = ("mobius", "hable", "reinhard", "clip", "li
 _DEFAULT_TONEMAP_PARAM: dict[str, float] = {"mobius": 0.6}  # our tuned knee; others use ffmpeg's default
 _DITHERS = ("none", "ordered", "random", "error_diffusion")
 
-MezzCodec = Literal["prores_hq", "prores", "ffv1"]
-MEZZ_CODECS: tuple[str, ...] = ("prores_hq", "prores", "ffv1")
-#: approximate bitrates at 1920x1080 @ 29.97 (Apple ProRes white paper; FFV1 measured-ish), scaled by area × fps
-_MEZZ_MBPS_1080P30: dict[str, float] = {"prores_hq": 220.0, "prores": 147.0, "ffv1": 600.0}
+MezzCodec = Literal["prores_hq", "prores", "ffv1", "lean"]
+MEZZ_CODECS: tuple[str, ...] = ("prores_hq", "prores", "ffv1", "lean")
+#: approximate bitrates at 1920x1080 @ 29.97 (Apple ProRes white paper; FFV1 measured-ish; ``lean`` = HEVC 4:2:2
+#: 10-bit VideoToolbox q85 / x264 4:2:2 10-bit CRF 4, see :mod:`studio.storage`), scaled by area × fps
+_MEZZ_MBPS_1080P30: dict[str, float] = {"prores_hq": 220.0, "prores": 147.0, "ffv1": 600.0, "lean": 72.0}
+#: disk fallback order when a codec (and the renders the job still needs) would not fit
+_MEZZ_LADDER: dict[str, tuple[str, ...]] = {"prores_hq": ("prores_hq", "prores", "lean"), "prores": ("prores", "lean"),
+                                            "ffv1": ("ffv1", "prores_hq", "prores", "lean"), "lean": ("lean",)}
 
 _MEZZ_PIX_FMT = "yuv422p10le"
 _BT709_TAGS = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv"]
@@ -271,8 +276,10 @@ class IngestOptions:
     tonemap: ToneMapConfig = field(default_factory=ToneMapConfig)
     mezz_codec: str = "prores_hq"
     prores_encoder: str = "auto"  # auto | prores_videotoolbox | prores_ks
-    allow_codec_fallback: bool = True  # HQ → ProRes 422 only when HQ would not fit on disk
+    allow_codec_fallback: bool = True  # HQ → ProRes 422 → lean only when the better one would not fit on disk
     min_free_bytes: int = 512 << 20  # disk headroom kept free after all outputs
+    reserve_render: bool = False  # also keep room for the job's renders when choosing the mezzanine codec
+    reclaim_dir: str | None = None  # work dir whose idle jobs may give up regenerable files when disk is short
     resampler_precision: int = 28  # soxr precision bits (28 = VHQ)
     gap_fill_s: float = 0.020  # timestamp gaps ≥ this are filled with silence to keep sync
     proxy: bool = True
@@ -451,6 +458,10 @@ def mezz_codec_args(codec: str, *, encoder: str | None = None) -> list[str]:
     elif codec == "ffv1":
         enc = ["-c:v", "ffv1", "-level", "3", "-coder", "1", "-context", "1", "-g", "1", "-slices", "16",
                "-slicecrc", "1"]
+    elif codec == "lean":
+        from studio.storage import lean_video_args
+
+        return [*lean_video_args(encoder or "auto"), *_BT709_TAGS]
     else:
         raise ValueError(f"unknown mezzanine codec {codec!r}")
     return [*enc, "-pix_fmt", _MEZZ_PIX_FMT, *_BT709_TAGS]
@@ -653,22 +664,10 @@ def _make_mezzanine(job: Job, info: MediaInfo, settings: Settings, options: Inge
                     probe_data: Mapping[str, Any], *, pre_frames: int = 0) -> tuple[Path, list[str], dict[str, Any]]:
     src = _source_path(job, info)
     notes: list[str] = []
-    codec = options.mezz_codec
-    free = shutil.disk_usage(job.media_dir).free
-    if job.mezz_path.exists():  # replaced by this run
-        free += job.mezz_path.stat().st_size
-    audio_bytes = int(float(info.duration_s) * SAMPLE_RATE * 4 * 3) + (8 << 20)
-    need = estimate_mezz_bytes(info, codec) + audio_bytes + options.min_free_bytes
-    if need > free:
-        lighter = "prores" if codec == "prores_hq" else None
-        if options.allow_codec_fallback and lighter and \
-                estimate_mezz_bytes(info, lighter) + audio_bytes + options.min_free_bytes <= free:
-            notes.append(f"{FLAG_MEZZ_FALLBACK} ProRes 422 HQ (~{estimate_mezz_bytes(info, codec) / 1e9:.1f} GB) "
-                         f"would not fit in {free / 1e9:.1f} GB free; mezzanine written as ProRes 422")
-            codec = lighter
-        else:
-            raise IngestError(f"insufficient disk space for the {codec} mezzanine: need ~{need / 1e9:.1f} GB, "
-                              f"{free / 1e9:.1f} GB free in {job.media_dir}")
+    codec, reason = _choose_mezz_codec(job, info, options)
+    if codec != options.mezz_codec:
+        notes.append(f"{FLAG_MEZZ_FALLBACK} {reason}; mezzanine written as "
+                     f"{'the lean HEVC/x264 4:2:2 10-bit intermediate' if codec == 'lean' else codec}")
     peak = _source_peak(info, probe_data)
     field_order = _vstream_field(probe_data, "field_order")
     vf = mezz_video_filter(info, tonemap=options.tonemap, peak_nits=peak,
@@ -682,7 +681,13 @@ def _make_mezzanine(job: Job, info: MediaInfo, settings: Settings, options: Inge
     vmap = f"0:{vidx}" if vidx is not None else "0:v:0"
     out = job.mezz_path
     tmp = _tmp(out)
-    encoders = _prores_encoders(str(settings.ffmpeg), options.prores_encoder) if codec != "ffv1" else ["ffv1"]
+    if codec == "ffv1":
+        encoders = ["ffv1"]
+    elif codec == "lean":
+        encoders = (["hevc_videotoolbox"] if _has_encoder(str(settings.ffmpeg), "hevc_videotoolbox") else []) + \
+            ["libx264"]
+    else:
+        encoders = _prores_encoders(str(settings.ffmpeg), options.prores_encoder)
     t0 = time.monotonic()
     used = None
     for i, enc in enumerate(encoders):
@@ -712,6 +717,80 @@ def _make_mezzanine(job: Job, info: MediaInfo, settings: Settings, options: Inge
     if info.color.hdr:
         meta["tonemap"] = options.tonemap.as_dict()
     return out, notes, meta
+
+
+def _speech_span_s(job: Job, info: MediaInfo) -> float:
+    """The take minus its digital-silence dropouts ≥ 1 s (from ``audio.wav``): the most the edit can keep."""
+    dur = float(info.duration_s)
+    with contextlib.suppress(Exception):
+        import soundfile as sf
+
+        x, sr = sf.read(str(job.audio_path), dtype="float32", always_2d=True)
+        a = np.max(np.abs(x), axis=1)
+        hop = sr // 10
+        n = a.size // hop
+        if n:
+            quiet = (a[: n * hop].reshape(n, hop).max(axis=1) < 1e-6).astype(np.int8)
+            d = np.diff(np.concatenate(([0], quiet, [0])))
+            runs = [(int(b) - int(e0)) for e0, b in zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1), strict=True)]
+            dead = sum(r for r in runs if r >= 10) * hop / sr
+            return max(min(dur, 5.0), dur - dead)
+    return dur
+
+
+def _choose_mezz_codec(job: Job, info: MediaInfo, options: IngestOptions) -> tuple[str, str]:
+    """The best codec on the fallback ladder whose mezzanine (plus, with ``reserve_render``, the job's renders in the
+    lean path) fits the free space after reclaiming idle jobs; raises :class:`IngestError` when none does."""
+    from studio import storage
+
+    codec = options.mezz_codec
+    ladder = _MEZZ_LADDER.get(codec, (codec,)) if options.allow_codec_fallback else (codec,)
+    audio_bytes = int(float(info.duration_s) * SAMPLE_RATE * 4 * 3) + (8 << 20)
+    reserve = 0
+    if options.reserve_render:
+        span = _speech_span_s(job, info)
+        reserve = storage.render_need_bytes(span, fps=float(info.fps), aroll="lean") + \
+            int(storage.RATES["final"] * span * 2)
+
+    def free_now() -> int:
+        free = shutil.disk_usage(job.media_dir).free
+        if job.mezz_path.exists():  # replaced by this run
+            free += job.mezz_path.stat().st_size
+        return free
+
+    def need(c: str) -> int:
+        return estimate_mezz_bytes(info, c) + audio_bytes + options.min_free_bytes + reserve
+
+    free = free_now()
+    if need(ladder[0]) > free and options.reclaim_dir:  # idle jobs' regenerable files go before quality does
+        storage.reclaim_work_dir(options.reclaim_dir, exclude=job.root, need=need(ladder[0]) - free)
+        free = free_now()
+    for c in ladder:
+        if need(c) <= free:
+            reason = "" if c == codec else (f"the {codec} mezzanine (~{estimate_mezz_bytes(info, codec) / 1e9:.1f} GB"
+                                            + (f", plus ~{reserve / 1e9:.1f} GB kept for the renders" if reserve
+                                               else "") + f") would not fit in {free / 1e9:.1f} GB free")
+            return c, reason
+    raise IngestError(f"insufficient disk space for the {ladder[-1]} mezzanine: need ~{need(ladder[-1]) / 1e9:.1f} GB"
+                      + (f" (including ~{reserve / 1e9:.1f} GB for the edit's renders)" if reserve else "")
+                      + f", {free / 1e9:.1f} GB free in {job.media_dir}")
+
+
+def rebuild_mezzanine(job: Job, info: MediaInfo, *, settings: Settings | None = None,
+                      options: IngestOptions | None = None) -> Path:
+    """Re-encode ``media/mezz.mov`` after it was reclaimed: the same filter graph and pre-roll as the first ingest
+    (``info`` is the saved, pre-roll-padded MediaInfo), so every frame lands at the same time."""
+    s = _settings(settings)
+    base = options or IngestOptions.from_env()
+    meta = ((job.meta.get("meta") or {}).get("ingest") or {})
+    pre = meta.get("preroll") or {}
+    pre_frames = int(pre.get("frames") or 0) if pre.get("applied") else 0
+    codec = (meta.get("mezz") or {}).get("codec") or base.mezz_codec
+    opts = dataclasses.replace(base, mezz_codec=codec if codec in MEZZ_CODECS else base.mezz_codec,
+                               reclaim_dir=base.reclaim_dir or str(job.root.parent))
+    data = _probe_data(job, s)
+    out, _notes, _meta = _make_mezzanine(job, info, s, opts, data, pre_frames=pre_frames)
+    return out
 
 
 def make_mezzanine(job: Job, info: MediaInfo, *, settings: Settings | None = None,

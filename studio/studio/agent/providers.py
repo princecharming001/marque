@@ -413,10 +413,14 @@ class ModelSpec(BaseModel):
         return self.provider == "anthropic"
 
     def uses_server_fallbacks(self) -> bool:
+        """Server-side refusal fallback (another model may answer): off for a BYOK spec unless explicitly enabled,
+        since the creator chose this model and pays for it."""
         if self.provider != "anthropic":
             return False
         if self.server_fallbacks is not None:
             return self.server_fallbacks
+        if self.byok:
+            return False
         return self.capabilities.server_fallbacks and self.official_endpoint
 
 

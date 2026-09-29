@@ -91,7 +91,7 @@ def _plan() -> dict[str, list[Any]]:
     plan["revise"] = [[("cut_ops", {"ops": [{"op": "set_gap", "gap_id": "g0009", "ms": 300}]})],
                       [("finish_stage", {"summary": "trimmed g0009 after the note"})], "ok"]
     plan["chat"] = [[("captions_ops", {"ops": [{"op": "set_caption_style", "style": {"size_px": 96}}]})],
-                    [("finish_stage", {"summary": "captions at 96 px"})], "ok"]
+                    [("caption_preview", {})], [("finish_stage", {"summary": "captions at 96 px"})], "ok"]
     return plan
 
 
@@ -177,10 +177,11 @@ def test_chat_rerenders_gates_on_invariants_and_delivers(ready_job: Job) -> None
     fk = LoopFakes(ready_job, qa_seq=[False, True])
     plan = _plan()
     plan["chat"] = [[("captions_ops", {"ops": [{"op": "set_caption_style", "style": {"size_px": 96}}]})],
-                    [("finish_stage", {"summary": "captions at 96 px"})], "ok",
+                    [("caption_preview", {})], [("finish_stage", {"summary": "captions at 96 px"})], "ok",
                     # the fix attempt after the failed invariants (a new prompt restarts the steps)
                     ]
     fix_plan = [[("captions_ops", {"ops": [{"op": "set_caption_style", "style": {"size_px": 90}}]})],
+                [("caption_preview", {})],
                 [("finish_stage", {"summary": "90 px keeps the page inside the safe zone"})], "ok"]
 
     class ChatScript(ScriptedDirector):
@@ -262,7 +263,7 @@ def test_director_spec_for(monkeypatch: pytest.MonkeyPatch) -> None:
     s = Settings.load(env={"ANTHROPIC_API_KEY": "sk-ant-test-0000000000"})
     assert pipeline.director_spec_for(None, None, None, s) is None
     spec = pipeline.director_spec_for("anthropic", None, None, s)
-    assert spec is not None and spec.model == "claude-fable-5-1" and not spec.byok and spec.effort == "high"
+    assert spec is not None and spec.model == "claude-fable-5-1" and not spec.byok and spec.effort == "max"
     with pytest.raises(pipeline.PipelineError, match="needs --director-model"):
         pipeline.director_spec_for("openai", None, "MY_KEY", s)
     monkeypatch.setenv("MY_KEY", "sk-proj-abcdefghijklmnopqrstuvwxyz")
@@ -332,14 +333,15 @@ def test_real_edit_and_chat_on_a_synthetic_take(tmp_path: Path, monkeypatch: pyt
                      [("finish_stage", {"summary": "seams between thoughts"})], "ok"],
         "reframe": [[("finish_stage", {"summary": "none"})], "ok"],
         "broll": [[("finish_stage", {"summary": "none"})], "ok"],
-        "captions": [[("auto_captions", {})], [("finish_stage", {"summary": "auto captions"})], "ok"],
+        "captions": [[("auto_captions", {})], [("caption_preview", {})],
+                     [("finish_stage", {"summary": "auto captions"})], "ok"],
         "sound": [[("finish_stage", {"summary": "default chain, no music"})], "ok"],
         "color": [[("finish_stage", {"summary": "none"})], "ok"],
         "finalize": [[("finish_stage", {"summary": "ready"})], "ok"],
         "revise": [[("captions_ops", {"ops": [{"op": "set_caption_style", "style": {"size_px": 80}}]})],
-                   [("finish_stage", {"summary": "captions slightly larger"})], "ok"],
+                   [("caption_preview", {})], [("finish_stage", {"summary": "captions slightly larger"})], "ok"],
         "chat": [[("captions_ops", {"ops": [{"op": "set_caption_style", "style": {"size_px": 88, "case": "upper"}}]})],
-                 [("finish_stage", {"summary": "captions bigger, upper case"})], "ok"],
+                 [("caption_preview", {})], [("finish_stage", {"summary": "captions bigger, upper case"})], "ok"],
     }
 
     def frame(messages: Any, info: Any) -> dict[str, Any]:
@@ -374,3 +376,49 @@ def test_real_edit_and_chat_on_a_synthetic_take(tmp_path: Path, monkeypatch: pyt
     assert chat.invariants_passed and chat.finals["tiktok"].exists()
     assert any("caption style" in c for c in chat.changes)
     assert job.load_doc(chat.doc_version).captions.style.case == "upper"
+
+
+# ============================================================================================ BYOK + alternates
+def test_byok_flags_persist_and_a_missing_key_refuses(job: Job, monkeypatch: pytest.MonkeyPatch) -> None:
+    job.update_meta(director={"provider": "openai", "model": "gpt-6-astra", "key_env": "CREATOR_OAI_KEY"})
+    # a resume or chat without flags reuses the job's own Director (the key's env var NAME is stored, never the key)
+    assert pipeline._director_flags(job, None, None, None, False) == ("openai", "gpt-6-astra", "CREATOR_OAI_KEY")
+    # --house switches explicitly; flags given now win
+    assert pipeline._director_flags(job, None, None, None, True) == (None, None, None)
+    assert pipeline._director_flags(job, "anthropic", None, None, False)[0] == "anthropic"
+    from studio.config import Settings
+
+    s = Settings.load(env={"ANTHROPIC_API_KEY": "sk-ant-test-0000000000"})
+    monkeypatch.delenv("CREATOR_OAI_KEY", raising=False)
+    with pytest.raises(pipeline.PipelineError, match="--house"):
+        pipeline._spec_or_refuse("openai", "gpt-6-astra", "CREATOR_OAI_KEY", s)
+    assert "CREATOR_OAI_KEY" in json.dumps(job.meta) and "sk-" not in json.dumps(job.meta)
+
+
+def test_byok_specs_never_use_server_fallbacks(monkeypatch: pytest.MonkeyPatch) -> None:
+    from studio.agent.providers import spec_from_cli
+    from studio.config import Settings
+
+    s = Settings.load(env={"ANTHROPIC_API_KEY": "sk-ant-test-0000000000"})
+    monkeypatch.setenv("CREATOR_ANT_KEY", "sk-ant-creator-0000000000")
+    byok = spec_from_cli("anthropic", "claude-fable-5-1", "CREATOR_ANT_KEY", settings=s)
+    house = spec_from_cli("anthropic", "claude-fable-5-1", None, settings=s)
+    assert byok.byok and not byok.uses_server_fallbacks() and house.uses_server_fallbacks()
+    assert byok.model_copy(update={"server_fallbacks": True}).uses_server_fallbacks()  # an explicit opt-in
+
+
+def test_deliver_puts_alternates_beside_the_finals(job: Job, tmp_path: Path) -> None:
+    from studio.doc.model import CutDocument
+
+    champ, alt = job.new_render_dir(), job.new_render_dir()
+    for rd in (champ, alt):
+        for n in ("final_tiktok.mp4", "final_nomusic.mp4", "cover.jpg"):
+            (rd / n).write_bytes(rd.name.encode())
+    out = tmp_path / "out"
+    finals, extras = pipeline.deliver(job, champ, CutDocument(job_id=job.id), out=out, alternates=[("h01", alt)])
+    assert finals["tiktok"].read_bytes() == champ.name.encode()
+    a = extras["alt:h01"]
+    assert a == job.root / "deliver" / "alternates" / "h01" / "final_tiktok.mp4" and a.read_bytes() == alt.name.encode()
+    assert (out / "alternates" / "h01" / "final_tiktok.mp4").exists() and (out / "final_tiktok.mp4").exists()
+    # the delivery folder names its job: chat / resume / report work on it as on the job directory
+    assert Job.open(out) == job

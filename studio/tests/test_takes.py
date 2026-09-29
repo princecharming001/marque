@@ -399,3 +399,49 @@ def test_inputs_are_not_mutated():
     before = [w.model_dump() for w in words]
     analyze_takes(words)
     assert [w.model_dump() for w in words] == before
+
+
+def test_scribe_multitake_trailing_false_start_and_pickup():
+    """Real Scribe v2 transcript of qa-editor-var-multitake.mov: "…true to you, people will buy. So founders
+    spend months... [0.9 s] People will buy. So founders spend months worshiping…". The ellipsis line is a
+    false start and "People will buy." a pickup of the belief line's tail (it was left unclustered, so the
+    duplicate could survive the cut); the repeated paragraph keeps its last complete take."""
+    d = json.loads((HERE / "takes_multitake_scribe_words.json").read_text())
+    toks = [RawToken(text=t, start_us=s, end_us=e, speaker=sp, order=k) for k, (t, s, e, sp) in enumerate(d["words"])]
+    words, _ = build_words(toks)
+    words, sentences, clusters = analyze_takes(words)
+    by = {s.text: s for s in sentences}
+    belief = next(s for s in sentences if s.text.startswith("The belief is"))
+    pickup = by["People will buy."]
+    false_start = by["So founders spend months..."]
+    full = next(s for s in sentences if s.text.startswith("So founders spend months worshiping"))
+    assert not false_start.complete
+    got = {tuple(c.sentence_ids): c.recommended_sentence_id for c in clusters}
+    assert got[(belief.id, pickup.id)] == belief.id  # the pickup is clustered; the full line stays recommended
+    assert got[(false_start.id, full.id)] == full.id
+    outcome = [s for s in sentences if s.text.startswith("They buy the outcome")]
+    assert len(outcome) == 2 and got[(outcome[0].id, outcome[1].id)] == outcome[1].id  # last complete take
+    frame = [s for s in sentences if s.text.startswith("Your story is just the frame")]
+    assert got[(frame[0].id, frame[1].id)] == frame[1].id
+    # the first pass broke off in "proof..." and the whole passage was re-delivered: keep the second pass whole
+    notes = {c.id: c.notes for c in clusters}
+    c_out = next(c for c in clusters if outcome[0].id in c.sentence_ids)
+    assert "first pass abandoned" in c_out.notes and "keep the second pass whole" in c_out.notes
+    assert sum("keep the second pass whole" in n for n in notes.values()) == 2
+    drop = {sid for c in clusters for sid in c.sentence_ids if sid != c.recommended_sentence_id}
+    kept = " ".join(s.text for s in sentences if s.id not in drop)
+    assert kept.count("people will buy") + kept.count("People will buy") == 1
+    assert kept.count("They buy the outcome") == 1 and kept.count("frame you hang") == 1
+
+
+def test_a_phrase_restarted_mid_sentence_after_a_reset_is_a_false_start():
+    # real-take40: the list marker stays, the abandoned phrase clusters with its restart
+    words, sents, clusters = analyze("One, [380] do the two cuisines, [1250] do the two cuisines share a base fat "
+                                     "or a base acid?")
+    assert texts(sents) == ["One,", "do the two cuisines,", "do the two cuisines share a base fat or a base acid?"]
+    assert [s.complete for s in sents] == [True, False, True]
+    assert len(clusters) == 1 and clusters[0].sentence_ids == [sents[1].id, sents[2].id]
+    assert clusters[0].recommended_sentence_id == sents[2].id
+    # anaphora (a short, rhetorical beat between the repeats) is not a restart
+    _w, sents2, cl2 = analyze("we shall fight on the beaches, [250] we shall fight on the landing grounds.")
+    assert len(sents2) == 1 and not cl2

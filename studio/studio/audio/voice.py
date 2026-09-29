@@ -703,11 +703,24 @@ def plan_voice_chain(job: Job | None, index: TakeIndex | None, *, audio: np.ndar
         notes.append(f"breath attenuation up to {breath:.0f} dB: {len(loud)} breath(s) louder than -15 dB re speech "
                      f"(worst {worst:.1f})")
 
-    # --- dynamics
+    # --- dynamics: the leveler and compression each need a measured job (an even, clean take keeps its delivery)
     clean = snr >= 25.0 and denoise == "none"
-    if clean:
+    spread = m.get("word_level_spread_db")
+    drift = m.get("sentence_level_drift_db")
+    if spread is None and audio is not None and index is not None:
+        spread, drift = word_level_spread(index, audio, int(sr or SR))
+    even = spread is not None and spread <= 5.0 and (drift is None or drift <= 3.0)
+    leveler = not (clean and even)
+    if clean and even:
+        comp_db, ratio_c = 2.0, 2.0
+        notes.append(f"clean, even take (word levels p90-p10 {spread:.1f} dB, sentence drift "
+                     f"{(drift or 0.0):.1f} dB): leveler off, only gentle 2:1 compression (~2 dB) so the delivery "
+                     "keeps its dynamics")
+    elif clean:
         comp_db, ratio_c = 3.0, 2.0
-        notes.append("clean recording: gentle compression 2:1, ~3 dB on loud words")
+        notes.append("clean recording: gentle compression 2:1, ~3 dB on loud words"
+                     + (f"; leveler on: word levels spread {spread:.1f} dB / sentences drift {(drift or 0.0):.1f} dB"
+                        if spread is not None else ""))
     else:
         comp_db, ratio_c = 4.0, 2.5
         notes.append("compression 2.5:1, ~4 dB on loud words")
@@ -716,9 +729,38 @@ def plan_voice_chain(job: Job | None, index: TakeIndex | None, *, audio: np.ndar
 
     return VoiceChainSpec(
         enabled=True, denoise=denoise, isolation_provider=provider, hpf_hz=hpf, eq=eq, deess_db=round(deess, 1),
-        compression_db=comp_db, comp_ratio=ratio_c, leveler=True, breath_atten_db=round(breath, 1),
+        compression_db=comp_db, comp_ratio=ratio_c, leveler=leveler, breath_atten_db=round(breath, 1),
         notes="; ".join(notes),
     )
+
+
+def word_level_spread(index: TakeIndex, audio: np.ndarray, sr: int) -> tuple[float | None, float | None]:
+    """``(p90 - p10 of per-word RMS levels, median per-sentence level range)`` in dB over spoken words: how uneven
+    the delivery is (the leveler's job). None when there are too few words."""
+    a2, _ = _as_2d(audio)
+    x = a2.mean(axis=0)
+    levels: dict[str, float] = {}
+    for w in index.words:
+        if w.kind not in ("word", "cutoff") or w.end_us - w.start_us < 60_000:
+            continue
+        i, j = round(w.start_us * sr / 1e6), round(w.end_us * sr / 1e6)
+        seg = x[max(0, i):min(x.size, j)]
+        if seg.size < 16:
+            continue
+        ms = float(np.mean(seg.astype(np.float64) ** 2))
+        if ms > 1e-12:
+            levels[w.id] = 10.0 * math.log10(ms)
+    if len(levels) < 8:
+        return None, None
+    v = np.array(list(levels.values()))
+    spread = float(np.percentile(v, 90) - np.percentile(v, 10))
+    ranges = []
+    for snt in index.sentences:
+        sv = [levels[w] for w in snt.word_ids if w in levels]
+        if len(sv) >= 3:
+            ranges.append(float(np.median(sv)))
+    drift = float(np.percentile(ranges, 90) - np.percentile(ranges, 10)) if len(ranges) >= 3 else None
+    return round(spread, 2), (round(drift, 2) if drift is not None else None)
 
 
 # ============================================================================================== stages

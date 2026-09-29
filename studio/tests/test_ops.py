@@ -432,12 +432,16 @@ def test_set_gap(cut_doc: CutDocument, take_index: TakeIndex):
     doc3, res3 = run(cut_doc, [{"op": "set_gap", "gap_id": "g0010", "ms": 0}], take_index)
     ok(res3)
     assert doc3.segment("seg004").gap_overrides == {"g0010": 0}
+    # a gap at a continuous join (seg003 → seg004 continue the source, e.g. a framing split): the compiler trims it
+    # like an inner pause, so the target is kept on the left segment
+    doc4, res4 = run(cut_doc, [{"op": "set_gap", "gap_id": "g0009", "ms": 100}], take_index)
+    ok(res4)
+    assert doc4.segment("seg003").gap_overrides == {"g0009": 100}
 
 
 @pytest.mark.parametrize("op,needle", [
     ({"op": "set_gap", "gap_id": "g0005", "ms": 400}, "cannot lengthen"),
-    ({"op": "set_gap", "gap_id": "g0003", "ms": 100}, "not inside a kept segment"),  # at the cut after w0008
-    ({"op": "set_gap", "gap_id": "g0009", "ms": 100}, "not inside a kept segment"),  # between seg003/seg004
+    ({"op": "set_gap", "gap_id": "g0003", "ms": 100}, "which is cut: the pause is part of a cut edge"),  # after w0008
     ({"op": "set_gap", "gap_id": "g0001", "ms": 100}, "leading/trailing"),
     ({"op": "set_gap", "gap_id": "g0999", "ms": 100}, "unknown gap"),
     ({"op": "set_gap", "gap_id": "g0005", "ms": -1}, "ms"),

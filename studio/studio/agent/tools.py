@@ -461,6 +461,15 @@ class EditSession:
                      f"events {kinds.get('event', 0)}) · sentences {len(ix.sentences)} "
                      f"(incomplete {sum(1 for s in ix.sentences if not s.complete)}) · retake clusters "
                      f"{len(ix.clusters)} · gaps {len(ix.gaps)} (>=250 ms: {long_gaps})")
+        drops = [g for g in ix.gaps if g.dropouts_us]
+        if drops:
+            chopped = [w for w in ix.words if w.truncated]
+            lines.append(
+                f"RECORDING DROPOUTS: {len(drops)} gap(s) hold digital silence (the take lost those stretches: "
+                + ", ".join(f"{g.id} {sum(b - a for a, b in g.dropouts_us) / 1e6:.1f} s" for g in drops[:8])
+                + "). Words the dropouts chop (keeping one plays a chopped word; an invariant fails): "
+                + (", ".join(f"{w.id} {w.display()}" for w in chopped[:12]) or "none")
+                + ". The sentence runs on across a dropout: the join is mid-clause unless the words say otherwise.")
         e = ix.energy
         lines.append(f"Delivery energy: {e.wpm:.0f} wpm, f0 variability {e.f0_var:.2f}, loudness variability "
                      f"{e.loudness_var:.2f}, overall {e.overall:.2f} (0 calm .. 1 high)")
@@ -555,7 +564,14 @@ class EditSession:
             pros = "" if p is None else f" f0 {_fmt_z(p.f0_z)} int {_fmt_z(p.int_z)} dur {_fmt_z(p.dur_z)}"
             g = ix.gap_after(w.id)
             gtxt = f" · then {g.id} {g.duration_ms:.0f}ms {g.kind}" if g is not None else ""
-            lines.append(f"{w.id} {json.dumps(w.text, ensure_ascii=False)} {w.kind} {_t(w.start_us)} "
+            if g is not None and g.dropouts_us:
+                gtxt += " (a recording DROPOUT: digital silence)"
+            trunc = ""
+            if w.truncated:
+                trunc = (" · CUT OFF BY THE RECORDING at its "
+                         + {"start": "onset", "end": "end", "both": "onset and end"}[w.truncated]
+                         + " (a dropout: the word is chopped; keeping it plays a chopped word)")
+            lines.append(f"{w.id} {json.dumps(w.text, ensure_ascii=False)} {w.kind}{trunc} {_t(w.start_us)} "
                          f"+{w.duration_us / 1000:.0f}ms conf {w.confidence:.2f} emph {w.emphasis:.2f}{pros} · "
                          f"{w.sentence_id or '-'}{' ' + w.cluster_id if w.cluster_id else ''} · "
                          f"{self._word_status(w.id, kept)}{gtxt}")
@@ -642,8 +658,15 @@ class EditSession:
             bw = f"{b} {json.dumps(ix.word(b).text, ensure_ascii=False)}" if b else "end"
             en = "" if g.energy_db is None else f", {g.energy_db:.0f} dB"
             breath = " +breath" if g.has_breath and g.kind != "breath" else ""
+            extra = ""
+            if g.dropouts_us:
+                extra += (f" · DROPOUT: {sum(b - a for a, b in g.dropouts_us) / 1e6:.2f} s of digital silence (the "
+                          "recording lost this stretch; words beside it may be chopped)")
+            for sa, sb in g.sound_us:
+                extra += (f" · untranscribed sound {(sb - sa) / 1000:.0f} ms at {_t(sa)} (a fragment of a lost word "
+                          "or a noise; pads never include it)")
             lines.append(f"{g.id} {g.duration_ms:.0f}ms {g.kind}{breath}"
-                         f" after {aw} before {bw}{en} · {where}")
+                         f" after {aw} before {bw}{en} · {where}{extra}")
         if not lines:
             return f"No gaps >= {min_ms:.0f} ms" + (" inside the current cut." if only_in_cut else ".")
         return "\n".join(lines)
@@ -1364,11 +1387,12 @@ def _make_tools(session: EditSession, *, op_tools: OpToolMode, include: Iterable
 
     # ---------------------------------------------------------------- callback tools
     async def render_preview(scope: str = "full") -> Any:
-        """Render the current document as a preview (proxy quality) so you can check the result, then inspect
-        it with view_frames(..., source='render'). Returns the renderer's report (duration, seams, metrics).
+        """Render the WHOLE current document as a preview (proxy quality; minutes, not seconds) so you can check
+        the result, then inspect it with view_frames(..., source='render'). Returns the renderer's report
+        (duration, seams, metrics). For captions, caption_preview is much faster; for seams, check_seams.
 
         Args:
-            scope: 'full', 'hook' (first seconds), a segment ID like 'seg003', or a word range like 'w0010-w0040'.
+            scope: Accepted for compatibility and ignored: previews always render the whole document.
         """
         return await run("render_preview", {"scope": scope}, lambda: s.call_render_preview(scope), is_async=True)
 

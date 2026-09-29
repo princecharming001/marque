@@ -322,10 +322,12 @@ class Insert(_Model):
 
 # ---------------------------------------------------------------------------------------------- captions/text
 class CaptionStyle(_Model):
+    # House default: a heavy sans in the upper half of the doctrine's phrase range (64-96 px at 1080 wide)
+    # with a ~10 % outline, so a page reads at a glance on a phone held at arm's length.
     font: str = "Montserrat"
-    weight: int = Field(default=800, ge=100, le=1000)
-    size_px: int = Field(default=72, ge=24, le=220, description="At 1080 px frame width")
-    stroke_px: float = Field(default=6.0, ge=0.0, le=30.0)
+    weight: int = Field(default=900, ge=100, le=1000)
+    size_px: int = Field(default=88, ge=24, le=220, description="At 1080 px frame width")
+    stroke_px: float = Field(default=9.0, ge=0.0, le=30.0)
     stroke_color: str = "#000000"
     color: str = "#FFFFFF"
     highlight_color: str = "#FFD400"
@@ -611,12 +613,18 @@ class CutDocument(_Model):
         """Rough output length: word spans + kept inner gaps (with overrides) / speed. The compiler
         (pads, snapping, J/L) is authoritative; use this only for planning."""
         total = 0.0
-        for s in self.segments:
+        for k, s in enumerate(self.segments):
             ws = index.get_words(s.from_word, s.to_word)
             span = ws[-1].end_us - ws[0].start_us
             for g in index.gaps_between(s.from_word, s.to_word):
                 if g.id in s.gap_overrides:
                     span -= g.duration_us - min(g.duration_us, s.gap_overrides[g.id] * 1000)
+            nxt = self.segments[k + 1] if k + 1 < len(self.segments) else None
+            if nxt is not None and index.word_pos(nxt.from_word) == index.word_pos(s.to_word) + 1:
+                g = index.gap_after(s.to_word)  # a continuous join plays the pause between the two segments
+                if g is not None and g.before_word_id == nxt.from_word:
+                    ms = s.gap_overrides.get(g.id, nxt.gap_overrides.get(g.id))
+                    span += g.duration_us if ms is None else min(g.duration_us, ms * 1000)
             total += span / s.speed
         return round(total)
 

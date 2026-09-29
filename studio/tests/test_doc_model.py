@@ -188,7 +188,8 @@ def test_estimated_duration_respects_speed_and_gaps(cut_doc: CutDocument, take_i
     ix = take_index
     base = cut_doc.estimated_duration_us(ix)
     spans = sum(ix.word(s.to_word).end_us - ix.word(s.from_word).start_us for s in cut_doc.segments)
-    assert base == spans
+    # seg003 → seg004 continue the source (w0028 | w0029): the compiler plays g0009 between them
+    assert base == spans + ix.gap("g0009").duration_us
     d2 = cut_doc.model_copy(deep=True)
     d2.segments[1].gap_overrides = {"g0005": 20}  # 120 ms → 20 ms
     assert d2.estimated_duration_us(ix) == base - 100_000

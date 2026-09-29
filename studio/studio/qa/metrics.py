@@ -275,6 +275,11 @@ class CutCheck(_M):
 class Integrity(_M):
     clipped: list[dict[str, Any]] = Field(default_factory=list)  # kept word not fully in its audio window
     leaked: list[dict[str, Any]] = Field(default_factory=list)  # removed word audible inside a window
+    #: kept words the recording itself cuts off (a digital-silence dropout at their start/end): a chopped phoneme
+    truncated: list[dict[str, Any]] = Field(default_factory=list)
+    #: non-word sound (a fragment of a lost word, a noise; ``Gap.sound_us``) inside a kept audio window: in a cut pad
+    #: the audio stage mutes it under room tone (``muted``); between kept words it plays (reported, not a gate)
+    sound_leaks: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Pacing(_M):
@@ -364,6 +369,8 @@ class MetricsPacket(_M):
     duration_s: float = 0.0
     loudness: Loudness | None = None
     clicks: list[SeamClick] = Field(default_factory=list)
+    #: the click detector at every recording-dropout edge (sound ↔ digital zero) inside kept audio
+    edge_clicks: list[SeamClick] = Field(default_factory=list)
     edges: EdgeLevels | None = None
     digital_silence: list[SilenceRun] = Field(default_factory=list)
     video_events: list[VideoEvent] = Field(default_factory=list)
@@ -384,6 +391,10 @@ class MetricsPacket(_M):
     @property
     def clicks_found(self) -> list[SeamClick]:
         return [c for c in self.clicks if c.click]
+
+    @property
+    def edge_clicks_found(self) -> list[SeamClick]:
+        return [c for c in self.edge_clicks if c.click]
 
     @property
     def silence_under_speech(self) -> list[SilenceRun]:
@@ -420,7 +431,11 @@ class MetricsPacket(_M):
             "cuts_inside_words": [c.seam for c in self.cuts if c.inside_word],
             "cuts_inside_clauses": [{"seam": c.seam, "kind": c.kind, "words": [c.left_word, c.right_word]}
                                     for c in self.cuts if c.inside_clause and c.kind != "pause_trim"],
-            "integrity": {"clipped": self.integrity.clipped, "leaked": self.integrity.leaked},
+            "integrity": {"clipped": self.integrity.clipped, "leaked": self.integrity.leaked,
+                          "truncated_by_recording": self.integrity.truncated,
+                          "untranscribed_sound_kept": self.integrity.sound_leaks},
+            "dropout_edge_clicks": [{"t": c.out_t, "words": [c.left_word, c.right_word], "margin_db": c.margin_db}
+                                    for c in self.edge_clicks_found],
             "pacing": None if p is None else p.model_dump(exclude={"long_pauses", "static_stretches"}),
             "asr": None if a is None else {"ran": a.ran, "wer": a.wer, "seam_damage": a.seam_damage, "masked": a.masked,
                                            "missing": [d.word_id for d in a.diffs if d.op == "deleted"],
@@ -1204,21 +1219,14 @@ def _times(a: Fraction, b: Fraction, step_s: float) -> list[Fraction]:
 
 
 def _caption_box(pg: Any, W: int, H: int, zone: Any, params: Any) -> tuple[list[float], bool]:
-    """Estimated caption block (px) — the caption module's width/height estimates, centred and clamped
-    horizontally into the band like the renderer; returns (box, too_wide)."""
-    from studio.compile.captions import caption_block_height, estimate_text_width
+    """Estimated caption block (px) — the caption module's layout estimate (:func:`caption_fit`: shrink to
+    the legibility floor, then wrap), centred and clamped horizontally into the band like the renderer;
+    returns (box, too_wide)."""
+    from studio.compile.captions import caption_fit
 
-    style = pg.style
     text = pg.text or " ".join(w.text for w in pg.words)
-    ws = W / 1080.0
-    size = style.size_px * ws
-    max_w = params.max_line_px * ws
-    bw = estimate_text_width(text, size, style.font, stroke_px=style.stroke_px * ws, case=style.case)
-    lines = 1
-    if bw > max_w:
-        lines = 1 if bw * params.min_font_scale <= max_w or style.lines == 1 else min(style.lines, 2)
-        bw = min(bw, max_w)
-    bh = caption_block_height(style, lines, scale=ws, line_height=params.line_height)
+    fit = caption_fit(pg.style, text, W, params, max_width=W - zone.left - zone.right)
+    bw, bh = fit.width, fit.height
     left, right = zone.left, W - zone.right
     too_wide = bw > right - left + 0.5
     cx = min(max(W / 2, left + bw / 2), right - bw / 2) if not too_wide else W / 2
@@ -1270,7 +1278,7 @@ def planned_text_boxes(timeline: Timeline, index: TakeIndex | None, platform: st
         a, b = to_fraction(pg.out_start), to_fraction(pg.out_end)
         box, too_wide = _caption_box(pg, W, H, zone, params)
         issues: list[str] = []
-        floor = H - zone.caption_floor
+        floor = H - min(zone.bottom, zone.caption_floor)
         outside = max(0.0, zone.top - box[1]) + max(0.0, box[3] - floor) + max(0.0, zone.left - box[0]) + \
             max(0.0, box[2] - (W - zone.right))
         if outside > 0.5:
@@ -1378,7 +1386,7 @@ def rendered_text_boxes(timeline: Timeline, index: TakeIndex | None, overlay_pat
     ys = (yy + 0.5) / sy
     in_band_x = (xs >= zone.left) & (xs <= W - zone.right)
     strict = in_band_x & (ys >= zone.top) & (ys <= H - zone.bottom)
-    relaxed = in_band_x & (ys >= zone.top) & (ys <= H - zone.caption_floor)
+    relaxed = in_band_x & (ys >= zone.top) & (ys <= H - min(zone.bottom, zone.caption_floor))
 
     def box_mask(box: Sequence[float], d: float) -> np.ndarray:
         return (xs >= box[0] - d) & (xs <= box[2] + d) & (ys >= box[1] - d) & (ys <= box[3] + d)
@@ -1518,6 +1526,19 @@ def _kind_of_seam(index: TakeIndex, left: str | None, right: str | None, kept: s
     return "content", ids
 
 
+def _punct_start(index: TakeIndex, wid: str) -> bool:
+    """``wid`` begins a sentence by its punctuation: first word, the source word before it ends a clause, or it is
+    capitalised (not "I")."""
+    prev = index.prev_word(wid)
+    if prev is None:
+        return True
+    if _clause_end(prev.text):
+        return True
+    t = index.word(wid).text.strip().lstrip("\"'“‘(¿¡-")
+    return bool(t[:1].isupper()) and t.rstrip(".,!?;:'’\"”") not in ("I", "I'm", "I’m", "I've", "I’ve", "I'll",
+                                                                        "I’ll", "I'd", "I’d")
+
+
 def _word_level_db(x: np.ndarray, sr: int, a: float, b: float) -> float | None:
     i, j = max(0, round(a * sr)), min(x.size, round(b * sr))
     if j - i < round(0.03 * sr):
@@ -1548,8 +1569,11 @@ def cut_checks(timeline: Timeline, index: TakeIndex, *, audio: np.ndarray | None
         inside_word = [w for w, s, e in spans if s + 0.010 < ta < e - 0.010]
         ltxt = index.word(left).text if left and index.has_word(left) else ""
         rtxt = index.word(right).text if right and index.has_word(right) else ""
-        inside_clause = bool(left and right) and not _clause_end(ltxt) and right not in sentence_starts
-        beat = bool(right and right in sentence_starts) or bool(_SENTENCE_END.search((ltxt or "").strip()))
+        # a sentence start counts only when the words' punctuation agrees (the source word before it ends a clause,
+        # or it is capitalised): a split the segmenter made at a pause or dropout alone is not a beat
+        starts = bool(right and right in sentence_starts and _punct_start(index, right))
+        inside_clause = bool(left and right) and not _clause_end(ltxt) and not starts
+        beat = starts or bool(_SENTENCE_END.search((ltxt or "").strip()))
         removed_s = 0.0
         if removed:
             ws = [index.word(w) for w in removed]
@@ -1578,10 +1602,32 @@ def cut_checks(timeline: Timeline, index: TakeIndex, *, audio: np.ndarray | None
     return out
 
 
+def dropout_edges_in_output(timeline: Timeline, index: TakeIndex | None
+                            ) -> list[tuple[Fraction, str | None, str | None]]:
+    """``(output time, kept word before, kept word after)`` for every recording-dropout edge (``Gap.dropouts_us``)
+    that lies inside a kept audio window (a hard stop or start the listener hears)."""
+    if index is None:
+        return []
+    edges = sorted({int(e) for g in index.gaps for d in g.dropouts_us for e in d})
+    if not edges:
+        return []
+    out: list[tuple[Fraction, str | None, str | None]] = []
+    for seg in timeline.segments:
+        for e in edges:
+            if seg.audio_src_in_us + 2_000 < e < seg.audio_src_out_us - 2_000:
+                t = to_fraction(seg.out_start) + Fraction(e - seg.src_in_us, 1_000_000) / to_fraction(seg.speed)
+                before = [w for w in seg.word_ids if index.has_word(w) and index.word(w).end_us <= e + 1_000]
+                after = [w for w in seg.word_ids if index.has_word(w) and index.word(w).start_us >= e - 1_000]
+                out.append((t, before[-1] if before else None, after[0] if after else None))
+    return sorted(out, key=lambda r: r[0])
+
+
 def word_integrity(timeline: Timeline, index: TakeIndex, *, tol_ms: float = 2.0,
-                   leak_tol_ms: float = 15.0) -> Integrity:
+                   leak_tol_ms: float = 15.0, sound_tol_ms: float = 25.0) -> Integrity:
     """Kept words must lie inside their audio window (continuous joins merged into one run); removed spoken
-    words must not be audible inside any window beyond ``leak_tol_ms`` (a crossfade's reach)."""
+    words must not be audible inside any window beyond ``leak_tol_ms`` (a crossfade's reach); kept words the
+    recording cuts off are listed (``truncated``), and non-word sound the Take Index measured in gaps
+    (``Gap.sound_us``) must not play inside a window beyond ``sound_tol_ms`` (a seam fade's reach)."""
     runs: list[tuple[int, int, list[str], list[str]]] = []  # (audio in, audio out, words, seg ids)
     prev: TimelineSegment | None = None
     for s in timeline.segments:
@@ -1615,6 +1661,21 @@ def word_integrity(timeline: Timeline, index: TakeIndex, *, tol_ms: float = 2.0,
             if ov > leak_tol_ms * 1000:
                 res.leaked.append({"word_id": w.id, "text": w.text, "seg": seg_ref,
                                    "overlap_ms": round(ov / 1000, 1)})
+        spoken = [index.word(w) for w in ws if index.has_word(w)]
+        k0 = min((w.start_us for w in spoken), default=a)
+        k1 = max((w.end_us for w in spoken), default=b)
+        for g in index.gaps:
+            for sa, sb in g.sound_us:
+                ov = min(b, sb) - max(a, sa)
+                if ov > sound_tol_ms * 1000:
+                    inner = min(k1, sb) - max(k0, sa)
+                    res.sound_leaks.append({"gap_id": g.id, "seg": seg_ref, "overlap_ms": round(ov / 1000, 1),
+                                            "before_word": g.before_word_id, "after_word": g.after_word_id,
+                                            "muted": inner <= sound_tol_ms * 1000})
+    for wid in sorted(kept, key=lambda w: index.word_pos(w) if index.has_word(w) else 0):
+        if index.has_word(wid) and index.word(wid).truncated:
+            w = index.word(wid)
+            res.truncated.append({"word_id": wid, "text": w.text, "side": w.truncated})
     return res
 
 
@@ -2184,6 +2245,16 @@ def measure(job: Job | None, timeline: Timeline, final_path: str | os.PathLike[s
                                       source_samples=src_pos)
 
         pk.clicks = attempt("clicks", _clicks) or []
+
+        # ---- clicks at recording-dropout edges inside kept audio (a hard stop is not a seam, but it clicks)
+        def _edge_clicks() -> list[SeamClick]:
+            edges = dropout_edges_in_output(timeline, index)
+            if not edges:
+                return []
+            return detect_seam_clicks(audio, SR, [t for t, _l, _r in edges], params=click_params,
+                                      labels=[(lw, rw) for _t, lw, rw in edges])
+
+        pk.edge_clicks = attempt("dropout edges", _edge_clicks) or []
         # ---- digital silence
         def _silence() -> list[SilenceRun]:
             runs = digital_silence_runs(audio[:, : timeline.sample_count], SR)  # past the end: AAC padding

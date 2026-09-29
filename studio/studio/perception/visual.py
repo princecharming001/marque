@@ -45,6 +45,9 @@ Choices (quality first)
 * **Blur** = variance of the Laplacian of the face region rescaled to 256 px wide (whole frame when no
   face), mapped to 0..1 blurriness as ``150 / (150 + var)``: ≈0.1–0.2 sharp, ≈0.3 slightly soft (σ≈2 px
   at 1080p), ≥0.6 clearly blurred. **Luma** = mean BT.709 Y' of the frame, 0..1.
+* **Head top** (hair included) is measured every 0.5 s (≤ 90 per take) by a GrabCut segmentation seeded
+  by the landmark box (:func:`measure_head_top`), and summarized as one per-take ratio above the landmark
+  box (:func:`head_top_ratio`), so text placed above the head clears the hair, not just the forehead.
 * **Multiple faces.** Up to two faces are tracked; the primary is the largest, with continuity (IoU with
   the previous primary) winning ties, so a face in the background never steals the track.
 * **Sample fields.** ``face_box`` is the visible landmark box; ``face_conf`` (the task API exposes no
@@ -83,7 +86,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import numpy as np
 
 from studio.perception.frames import VideoProbe, iter_frames, probe_video, resolve_source
-from studio.perception.index import FaceBox, FaceTrack, FaceTrackPoint, Visual, VisualEvent, VisualSample
+from studio.perception.index import FaceBox, FaceTrack, FaceTrackPoint, HeadTop, Visual, VisualEvent, VisualSample
 from studio.timebase import US_PER_S, normalize_fps
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -114,6 +117,8 @@ __all__ = [
     "smooth_face_track",
     "blur_score",
     "mean_luma",
+    "measure_head_top",
+    "head_top_ratio",
     "select_primary",
 ]
 
@@ -340,6 +345,9 @@ class VisualParams:
     # blur
     blur_face_w: int = 256
     blur_var_ref: float = 150.0
+    # head top (hair included), for text placed above the head
+    head_top_interval_s: float = 0.5
+    head_top_max_count: int = 90
 
 
 # ---------------------------------------------------------------------------------------------- per-frame measures
@@ -550,6 +558,96 @@ def blur_score(rgb: np.ndarray, box: tuple[float, float, float, float] | None, *
     g = cv2.resize(gray, (face_w, nh), interpolation=interp).astype(np.float32)
     var = float(cv2.Laplacian(g, cv2.CV_32F, ksize=3).var())
     return var_ref / (var_ref + var), var
+
+
+def measure_head_top(rgb: np.ndarray, box: tuple[float, float, float, float], *, work_w: int = 144,
+                     iters: int = 3) -> tuple[float, bool] | None:
+    """Top of the head, hair included, above a landmark ``box`` (normalized x0, y0, x1, y1).
+
+    The landmark box stops at the upper forehead, and hair can add half a face height or more. The head
+    is segmented with GrabCut, a colour-model graph cut that needs no learned weights. It works on a crop
+    from the frame top to the chin, about 144 px wide (≈0.1 s). Seeds: the face below the brows and a
+    thin band at the hairline are head; strips far to the side above the face and rows more than 1.25 box
+    heights above it are background; a column over the face is probably head. The head top is the highest
+    row where the component holding the face covers at least 15 % of the central columns. Returns
+    ``(y, touches_top)`` in normalized frame coordinates, or None when the segmentation fails.
+    """
+    import cv2
+
+    H, W = rgb.shape[:2]
+    x0, y0, x1, y1 = box
+    fw, fh = (x1 - x0) * W, (y1 - y0) * H
+    if fw < 8 or fh < 8 or y1 <= 0:
+        return None
+    ca, cb = int(max(0, x0 * W - 0.7 * fw)), int(min(W, x1 * W + 0.7 * fw))
+    cd = int(min(H, round(y1 * H)))
+    if cd < 8 or cb - ca < 8:
+        return None
+    crop = rgb[0:cd, ca:cb]
+    s = min(1.0, work_w / crop.shape[1])
+    cw, ch = max(8, round(crop.shape[1] * s)), max(8, round(crop.shape[0] * s))
+    img = cv2.cvtColor(cv2.resize(np.ascontiguousarray(crop), (cw, ch), interpolation=cv2.INTER_AREA),
+                       cv2.COLOR_RGB2BGR)
+    bx0, bx1 = (x0 * W - ca) * s, (x1 * W - ca) * s
+    by0, by1 = y0 * H * s, y1 * H * s
+    bw, bh = bx1 - bx0, by1 - by0
+    m = np.full((ch, cw), cv2.GC_PR_BGD, np.uint8)
+
+    def rect(xa: float, ya: float, xb: float, yb: float, v: int) -> None:
+        ia, ib = int(max(0, round(xa))), int(min(cw, round(xb)))
+        ja, jb = int(max(0, round(ya))), int(min(ch, round(yb)))
+        if ib > ia and jb > ja:
+            m[ja:jb, ia:ib] = v
+
+    rect(bx0 - 0.2 * bw, by0 - 1.1 * bh, bx1 + 0.2 * bw, by1, cv2.GC_PR_FGD)
+    rect(0, 0, bx0 - 0.55 * bw, by0 - 0.05 * bh, cv2.GC_BGD)
+    rect(bx1 + 0.55 * bw, 0, cw, by0 - 0.05 * bh, cv2.GC_BGD)
+    rect(0, 0, cw, by0 - 1.25 * bh, cv2.GC_BGD)
+    rect(bx0 + 0.2 * bw, by0 + 0.12 * bh, bx1 - 0.2 * bw, by1 - 0.08 * bh, cv2.GC_FGD)
+    rect(bx0 + 0.35 * bw, by0 - 0.04 * bh, bx1 - 0.35 * bw, by0 + 0.12 * bh, cv2.GC_FGD)
+    if not (m == cv2.GC_FGD).any():
+        return None
+    bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
+    try:
+        cv2.grabCut(img, m, None, bgd, fgd, iters, cv2.GC_INIT_WITH_MASK)
+    except cv2.error:
+        return None
+    fg = ((m == cv2.GC_FGD) | (m == cv2.GC_PR_FGD)).astype(np.uint8)
+    _n, lab = cv2.connectedComponents(fg, connectivity=4)
+    fx, fy = int(min(cw - 1, max(0, (bx0 + bx1) / 2))), int(min(ch - 1, max(0, by0 + 0.5 * bh)))
+    face_lab = lab[fy, fx]
+    if face_lab == 0:
+        return None
+    head = lab == face_lab
+    a, b = int(max(0, bx0 + 0.15 * bw)), int(min(cw, bx1 - 0.15 * bw))
+    if b <= a:
+        return None
+    rows = np.nonzero(head[:, a:b].mean(axis=1) >= 0.15)[0]
+    if rows.size == 0:
+        return None
+    top = int(rows.min())
+    return (top / s) / H, top <= 1
+
+
+def head_top_ratio(tops: Sequence[HeadTop], *, q: float = 80.0, margin: float = 0.02,
+                   min_count: int = 5) -> float | None:
+    """How far the head top sits above the landmark box top, in box heights, for the whole take.
+
+    Single measurements are noisy: motion blur loses hair, and a dark background can merge with it. So
+    the take gets one robust ratio, the ``q``-th percentile of the plausible measurements (0.15–1.3) plus
+    a small margin, which leans towards more hair. Placement applies it to every frame's landmark box.
+    When the head often runs off the top of the frame, those measurements are lower bounds and the ratio
+    is at least their ``q``-th percentile. Returns None with fewer than ``min_count`` usable measurements
+    (callers then use a prior)."""
+    ok = [t.k for t in tops if not t.touches_top and 0.15 <= t.k <= 1.3]
+    touching = [t.k for t in tops if t.touches_top and t.k > 0]
+    r: float | None = None
+    if len(ok) >= min_count:
+        r = float(np.percentile(ok, q)) + margin
+    if touching and len(touching) >= max(2, 0.3 * len(tops)):
+        lb = float(np.percentile(touching, q))
+        r = lb if r is None else max(r, lb)
+    return None if r is None else round(min(max(r, 0.2), 1.5), 4)
 
 
 # ---------------------------------------------------------------------------------------------- signal helpers
@@ -942,6 +1040,7 @@ class _Dense:
     blur: np.ndarray
     blur_var: np.ndarray
     luma: np.ndarray
+    head_tops: list[HeadTop] | None = None
 
 
 def _analysis_rate(fps: float, cap: float) -> tuple[Any, int]:
@@ -966,6 +1065,10 @@ def _measure(path: Path, vp: VideoProbe, analyzer: FaceAnalyzer, p: VisualParams
     w, h = _decode_dims(vp, p.decode_short_side_max)
     rows: list[tuple] = []
     prev_box: tuple[float, float, float, float] | None = None
+    # head tops: sparse (every head_top_interval_s, at most head_top_max_count per take)
+    ht_step = max(p.head_top_interval_s * US_PER_S, duration_us / max(1, p.head_top_max_count))
+    ht_next = 0.0
+    head_tops: list[HeadTop] = []
     for _k, t_us, rgb in iter_frames(path, fps=rate, width=w, height=h, end_us=duration_us):
         faces = analyzer.analyze(rgb, t_us // 1000)
         f = select_primary(faces, prev_box)
@@ -978,6 +1081,14 @@ def _measure(path: Path, vp: VideoProbe, analyzer: FaceAnalyzer, p: VisualParams
         prev_box = f.box
         cb = tuple(min(1.0, max(0.0, v)) for v in f.box)
         bl, bv = blur_score(rgb, cb, face_w=p.blur_face_w, var_ref=p.blur_var_ref)  # type: ignore[arg-type]
+        if t_us >= ht_next and cb[3] - cb[1] > 0.02:
+            ht_next = t_us + ht_step
+            with contextlib.suppress(Exception):  # a failed segmentation only loses one measurement
+                m = measure_head_top(rgb, cb)  # type: ignore[arg-type]
+                if m is not None:
+                    k = (cb[1] - m[0]) / (cb[3] - cb[1])
+                    head_tops.append(HeadTop(t_us=int(t_us), y=round(m[0], 5), k=round(float(k), 4),
+                                             touches_top=m[1]))
         rows.append((t_us, True, cb, np.nan if f.ear is None else f.ear, f.blink, f.jaw, f.eye_h, f.eye_v, f.yaw,
                      f.pitch, f.in_frame, len(faces), bl, bv, lum))
     n = len(rows)
@@ -990,6 +1101,7 @@ def _measure(path: Path, vp: VideoProbe, analyzer: FaceAnalyzer, p: VisualParams
         boxes=np.array([r[2] for r in rows], dtype=np.float64).reshape(n, 4),
         ear=col(3), blink=col(4), jaw=col(5), eye_h=col(6), eye_v=col(7), yaw=col(8), pitch=col(9),
         in_frame=col(10), n_faces=col(11, np.int16), blur=col(12), blur_var=col(13), luma=col(14),
+        head_tops=head_tops,
     )
     return dense, rate
 
@@ -1096,7 +1208,9 @@ def analyze_visual(
             blur=_r(d.blur[i]), luma=_r(d.luma[i]),
         ))
     track = smooth_face_track(d.t_us, d.boxes, d.valid, [s.t_us for s in samples], p) if samples else None
-    visual = Visual(sample_fps=float(sample_fps), samples=samples, events=events, face_track=track)
+    tops = list(d.head_tops or [])
+    visual = Visual(sample_fps=float(sample_fps), samples=samples, events=events, face_track=track,
+                    head_top_ratio=head_top_ratio(tops) if track is not None else None, head_tops=tops)
 
     if save:
         _save_side_files(job, d, eyes, gaze, jaw, rate, vp, path, p, model_path, visual, time.monotonic() - t0)
@@ -1146,6 +1260,8 @@ def _save_side_files(job: Job, d: _Dense, eyes: np.ndarray, gaze: GazeSignals, j
             "blur_var_median": _r(float(np.nanmedian(d.blur_var)) if n else float("nan"), 1),
             "luma_median": _r(float(np.nanmedian(d.luma)) if n else float("nan")),
             "events": kinds,
+            "head_top": {"ratio": visual.head_top_ratio, "measured": len(visual.head_tops),
+                         "touches_top": sum(1 for t in visual.head_tops if t.touches_top), "method": "grabcut"},
             "model": {"file": MODEL_FILENAME, "sha256": MODEL_SHA256, "mediapipe": mp_version} if model_path else
                      {"analyzer": "injected"},
             "params": asdict(p),

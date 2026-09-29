@@ -72,8 +72,9 @@ const balancedSplit = (words: string[], k: number, width: (a: number, b: number)
 /**
  * Fit words into at most `maxLines` lines no wider than `maxWidth` (plus `extraPx`, e.g. the outer
  * stroke on both sides). Preference order: one line at full size, one line shrunk down to `minScale`,
- * more lines at full size (balanced), more lines shrunk, and finally shrink whatever is needed so text
- * never leaves the safe zone.
+ * more lines at full size (balanced), more lines shrunk, then up to `overflowLines` lines rather than
+ * shrinking under `minScale` (captions: the legibility floor), and finally shrink whatever is needed so
+ * text never leaves the safe zone. Mirrored in Python by studio.compile.captions.caption_fit.
  */
 export const fitWords = ({
   words,
@@ -85,6 +86,9 @@ export const fitWords = ({
   extraPx = 0,
   preferLines = 1,
   wrapFirst = false,
+  overflowLines = 0,
+  wrapBeforeShrink = 0,
+  breaks = null,
 }: {
   words: string[];
   spec: FontSpec;
@@ -96,9 +100,24 @@ export const fitWords = ({
   preferLines?: number;
   /** Cards/quotes: use more lines at full size before shrinking (captions shrink before wrapping). */
   wrapFirst?: boolean;
+  /** Lines allowed beyond `maxLines` when even `minScale` would not fit (0 = none). */
+  overflowLines?: number;
+  /** Captions: while fewer than `maxLines` lines are used, shrink no further than this before wrapping
+   * (0 = shrink down to minScale first). Mirrors WRAP_BEFORE_SHRINK in studio.compile.captions. */
+  wrapBeforeShrink?: number;
+  /** Planned line breaks (word index starting each line after the first): the lines are fixed and only the
+   * size is fitted (Python chose them with its syntax-aware splitter, and placed that block). */
+  breaks?: number[] | null;
 }): Fitted => {
   const n = words.length;
   const avail = Math.max(1, maxWidth - extraPx);
+  if (breaks && breaks.length > 0 && breaks.every((b, i) => b > 0 && b < n && (i === 0 || b > breaks[i - 1]))) {
+    const bounds = [0, ...breaks, n];
+    const lines = bounds.slice(0, -1).map((a, i) => Array.from({length: bounds[i + 1] - a}, (_, t) => a + t));
+    const widths = lines.map((l) => measure(lineText(words, l), spec, sizePx));
+    const scale = Math.min(1, avail / Math.max(...widths));
+    return {lines, sizePx: sizePx * scale, widths: widths.map((w) => w * scale)};
+  }
   const width = (a: number, b: number) => measure(words.slice(a, b).join(' '), spec, sizePx);
   const layout = (k: number) => {
     const lines = balancedSplit(words, k, width);
@@ -111,7 +130,7 @@ export const fitWords = ({
     widths: l.widths.map((w) => w * scale),
   });
 
-  const maxK = Math.max(1, Math.min(maxLines, n));
+  const maxK = Math.max(1, Math.min(Math.max(maxLines, overflowLines), n));
   const startK = Math.max(1, Math.min(preferLines, maxK));
   // Fewest lines (from the preferred count) whose fit needs no more shrinking than `stepScale`:
   // captions accept down to minScale before wrapping (one line reads in one glance); cards and
@@ -122,7 +141,8 @@ export const fitWords = ({
     const l = k === maxK ? last : layout(k);
     if (l.widest <= avail) return scaled(l, 1);
     const need = avail / l.widest;
-    if (need >= stepScale) return scaled(l, need);
+    const step = !wrapFirst && k < maxLines ? Math.max(stepScale, wrapBeforeShrink) : stepScale;
+    if (need >= step) return scaled(l, need);
   }
   // every allowed line count is too wide: shrink the most-lines layout as much as needed
   return scaled(last, Math.min(1, avail / last.widest));

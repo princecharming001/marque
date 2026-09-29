@@ -681,3 +681,22 @@ def test_job_sets_source_and_asset_paths(job, take_index, cut_doc):
     assert tl.source_path == str(job.mezz_path)
     assert tl.inserts[0].asset_path == str((job.assets_dir / "broll" / "clip.mov").resolve())
     assert tl.inserts[0].asset_in_us == 1_500_000
+
+
+def test_end_of_recording_fragment_stays_out(take_index, cut_doc):
+    """Real multitake: the file stops 60 ms after the last word, on the onset of another syllable (a trailing
+    'noise' gap). The ending used to run to the end of the file and keep the chopped onset."""
+    last = take_index.words[-1]
+    g = take_index.gap_after(last.id)
+    assert g is not None and g.before_word_id is None
+    frag = g.model_copy(update={"kind": "noise", "snap_us": last.end_us + 15_000})
+    ix = take_index.model_copy(update={"gaps": [frag if x.id == g.id else x for x in take_index.gaps]})
+    segs = [Segment(id="seg001", from_word="w0020", to_word=last.id)]
+    doc = _with_segments(cut_doc, segs, inserts=[], texts=[], captions=None)
+    doc.audio.sfx = []
+    tl = compile(doc, ix)
+    assert tl.segments[-1].src_out_us <= frag.snap_us
+    assert tl.segments[-1].src_out_us >= last.end_us
+    # a clean trailing silence still gives the ending its tail
+    tl2 = compile(doc, take_index)
+    assert tl2.segments[-1].src_out_us > last.end_us + 100_000

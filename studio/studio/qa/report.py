@@ -280,7 +280,47 @@ def _section_header(job: Job, doc: CutDocument | None, rd: Path | None, manifest
         verdict = ("**all ten invariants pass**" if not bad else
                    "**FAILS " + ", ".join(f"#{r.number} {r.id}" for r in bad) + "**")
         L.append(f"- **QA verdict:** {verdict}")
+    L += _review_lines(job, rd)
     L.append("")
+    return L
+
+
+def _review_lines(job: Job, rd: Path | None) -> list[str]:
+    """Whether critics actually reviewed the shipped render (a failed review is NOT REVIEWED, never "no notes"),
+    whether the review was same-family only, the closing watch, and delivered alternates."""
+    p = job.logs_dir / "loop_state.json"
+    try:
+        st = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if rd is not None and st.get("champion_render") not in (None, rd.name):
+        return []
+    L: list[str] = []
+    if st.get("reviewed") is False:
+        L.append("- **Review:** **NOT REVIEWED** — the critics could not review the shipped version"
+                 + (f" ({_esc(st.get('review_note'))})" if st.get("review_note") else "") + ".")
+    else:
+        rec: dict[str, Any] = {}
+        with contextlib.suppress(OSError, ValueError):
+            rec = json.loads((job.critique_dir / str(st.get("champion_render")) / "notes.json").read_text("utf-8"))
+        panel = rec.get("panel") or {}
+        who = ", ".join(str(v) for k, v in panel.items() if k in ("frame_judge", "second_judge", "watcher") and v)
+        L.append("- **Review:** reviewed" + (f" by {who}" if who else "")
+                 + (f"; frame judge's verdict **{rec.get('verdict')}**" if rec.get("verdict") else ""))
+        if rec.get("same_family_only"):
+            L.append("- **Same-family review only:** every judge shares the Director's model family (no other family's "
+                     "key): weigh critic verdicts lower; wins rest on metric evidence where it exists.")
+    fw = st.get("final_watch") or {}
+    if fw:
+        conf = fw.get("confirmed") or []
+        L.append("- **Closing watch:** " + (f"{len(conf)} confirmed P0/P1 note(s)" if conf else
+                                             "no confirmed problem" if fw.get("ran", True) else
+                                             _esc(fw.get("verdict", "did not run")))
+                 + (f", {len(fw.get('refuted') or [])} refuted" if fw.get("refuted") else ""))
+    for v in st.get("variants") or []:
+        L.append(f"- **Variant {v.get('hook')}:** {v.get('outcome')}"
+                 + (f" (delivered alternate: `deliver/alternates/{v['alternate']['label']}/`)" if v.get("alternate")
+                    else "") + (f" — {_esc(v.get('note'))}" if v.get("note") else ""))
     return L
 
 

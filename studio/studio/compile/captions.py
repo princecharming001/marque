@@ -30,10 +30,19 @@ Pipeline (:func:`build_caption_pages`)
    hysteresis (the anchor only moves on a collision with the brows-to-lips region, another overlay or
    the safe band, or when the chin gap leaves the 40-120 px window); when it must move it first returns
    to an earlier height, so a video uses as few caption heights as possible. Fallbacks in doctrine
-   order: a larger gap below the chin, smaller text, the relaxed lower floor (y 1436), the band above
-   the head (close-up selfies whose chin sits below the band), then the least-bad position. Everything
-   is clamped to the platform safe zone (the strictest zone over all deliverable platforms). Full-frame
-   and split inserts are page boundaries, so a page never straddles two layouts.
+   order: a larger gap below the chin, smaller text (never under the 64 px legibility floor), the relaxed
+   lower floor (y 1436); the matte step (text behind the subject) is not available, so next comes the
+   band above the head, clear of the *measured* hair (``Visual.head_top_ratio``; the landmark box stops
+   at the upper forehead), at one height per framing section; then the least-bad position. Close-up
+   selfies whose chin sits under the platform band (the first real TikTok edit) land above the head. An
+   anchored block keeps its place and size while the head rises into it (``on_hair``: never onto the
+   forehead, eyes or mouth). Everything is clamped to the platform safe zone (the strictest zone over all
+   deliverable platforms). Full-frame and split inserts are page boundaries, so a page never straddles
+   two layouts.
+6. **Size.** :func:`caption_fit` mirrors the renderer's fitter: one line at full size, a shrink down to the
+   floor (a multi-line style only shrinks ~5 % before wrapping, so pages keep one size), then a wrap.
+   The pager uses it, the placer places the block it describes, and the renderer is told the planned
+   line count, so the drawn block is the placed block.
 
 Geometry: face boxes are mapped to the output frame with the compiler's shared
 ``studio.compile.timeline.map_source_point`` (framing keys, punch-ins and split-screen re-layouts, the same
@@ -47,7 +56,7 @@ from __future__ import annotations
 import math
 import os
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
 from fractions import Fraction
 from functools import lru_cache
@@ -73,7 +82,8 @@ __all__ = [
     "SafeZone", "PLATFORM_SAFE_ZONES", "CaptionParams", "load_caption_params", "load_constants",
     "safe_zone_for", "estimate_text_width", "auto_caption_plan", "build_caption_pages", "place_captions",
     "write_srt", "srt_text", "caption_placement_issues", "crop_rect", "source_to_output",
-    "caption_block_height", "FONT_WIDTH_EM",
+    "caption_block_height", "FONT_WIDTH_EM", "CaptionFit", "caption_fit", "line_break_cost", "under_chin_reframe",
+    "caption_geometry", "caption_geometry_text", "placement_options", "cap_height_px", "CAP_HEIGHT_EM",
 ]
 
 REF_W = 1080
@@ -106,12 +116,21 @@ class SafeZone:
         """``(x0, y0, x1, y1)`` of the strict text band in px."""
         return self.left, self.top, width - self.right, height - self.bottom
 
+    @property
+    def relaxed_bottom(self) -> float:
+        """Bottom margin for captions on the relaxed floor (never stricter than the strict band)."""
+        return min(self.bottom, self.caption_floor)
+
 
 #: Published/third-party safe zones at 1080x1920 (platforms.md). TikTok uses the conservative end of the
 #: third-party readings; Reels the official Meta 14/35/6 % ad spec; Shorts Google's vertical overlay.
 #: "all" is the cross-platform house band x 65-888, y 288-1248 (the union of the three).
 PLATFORM_SAFE_ZONES: dict[str, SafeZone] = {
-    "tiktok": SafeZone(top=200, bottom=480, left=60, right=180, caption_floor=484),
+    # TikTok (platforms.md, third-party maps): the bottom UI runs ~250-480 px "with format and caption length". The
+    # strict band takes the conservative end (a long description). Captions may drop to y 1600 (bottom 320, inside
+    # that range [X]): the username line of an organic post with a short description starts about there on current
+    # phones. It is the TikTok counterpart of the house band's relaxed organic floor (y 1436).
+    "tiktok": SafeZone(top=200, bottom=480, left=60, right=180, caption_floor=320),
     "reels": SafeZone(top=269, bottom=672, left=65, right=65, caption_floor=484),
     "shorts": SafeZone(top=288, bottom=672, left=48, right=192, caption_floor=484),
     "all": SafeZone(top=288, bottom=672, left=65, right=192, caption_floor=484),
@@ -149,15 +168,23 @@ class CaptionParams:
     default_center_y_px: float = 1100.0  # no face on screen
     max_line_px: float = 690.0  # widest caption line
     min_font_scale: float = 0.72  # the renderer may shrink a page this far before wrapping
+    # legibility floor: a phrase page never renders smaller than this (px at 1080 wide; doctrine 64-96)
+    min_size_px: float = 64.0
+    overflow_lines: int = 2  # a page too wide for one line at the floor wraps to this many lines
     line_height: float = 1.12
     face_sample_s: float = 0.1
     card_reserve_px: float = 230.0  # caption band kept free at the bottom of card content
-    # eyes-to-mouth region as fractions of the face box (MediaPipe landmark box: mid-forehead to chin):
-    # brows at ~0.16, eyes ~0.3, mouth ~0.85 of the height
-    protect_top_frac: float = 0.12
+    # eyes-to-mouth region as fractions of the face box (MediaPipe landmark box: upper forehead to chin).
+    # Measured on real takes: brows 0.10-0.15, eyes 0.24-0.30, lower lip 0.71-0.77, mouth bottom 0.79-0.84.
+    protect_top_frac: float = 0.08
     protect_bottom_frac: float = 0.95
     protect_side_frac: float = 0.08
     obstacle_margin_px: float = 24.0  # breathing room around other overlays
+    # above the head: the head top (hair included) is the landmark box top minus a per-take ratio of its
+    # height (measured by perception; this prior when unmeasured), and captions keep this gap above it
+    head_top_prior: float = 0.55
+    crown_gap_px: float = 24.0
+    head_overlap_tol_frac: float = 0.05  # a block may graze the top of the hair by this share of the face
 
     def with_overrides(self, **kw: Any) -> CaptionParams:
         known = {f.name for f in fields(self)}
@@ -233,10 +260,27 @@ _PARAM_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _find_range(flat: dict[str, Any], *names: str) -> tuple[float, float] | None:
+    """A ``[min, max]`` pair (constants.yaml writes ranges as two-item lists)."""
+    for n in names:
+        for k, v in flat.items():
+            if (k == n or k.endswith("." + n)) and isinstance(v, (list, tuple)) and len(v) == 2 \
+                    and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in v):
+                return float(v[0]), float(v[1])
+    return None
+
+
 def load_caption_params(settings: Settings | None = None, constants: dict[str, Any] | None = None) -> CaptionParams:
     """Defaults overridden by whatever matching keys ``constants.yaml`` provides."""
     flat = _flatten(constants if constants is not None else load_constants(settings))
     over: dict[str, Any] = {}
+    # geometry priors written as ranges in constants.yaml (captions-and-text.md)
+    if (r := _find_range(flat, "captions.below_chin_px")) is not None:
+        over.update(chin_gap_min_px=r[0], chin_gap_max_px=r[1], chin_gap_px=(r[0] + r[1]) / 2)
+    if (r := _find_range(flat, "captions.size_px_phrase")) is not None:
+        over["min_size_px"] = r[0]
+    if (v := _find(flat, "captions.line_width_max_px")) is not None:
+        over["max_line_px"] = float(v)
     for name, keys in _PARAM_KEYS.items():
         for k in keys:
             v = _find(flat, k)
@@ -288,7 +332,9 @@ def safe_zone_for(platforms: str | Iterable[str] | None = None, *, width: int = 
 
 # ============================================================================================== text metrics
 #: Average advance (em) per character class at weight ~800: (lowercase, uppercase, digit, space).
-#: Only used to *plan* pages; the renderer measures the real glyphs and fits exactly.
+#: Only used to *plan* pages; the renderer measures the real glyphs and fits exactly. Calibrated against
+#: Remotion renders of the vendored Montserrat: measured ink runs ~1.5 % wider at 800 and ~4 % at 900,
+#: hence the weight factor in :func:`estimate_text_width`.
 FONT_WIDTH_EM: dict[str, tuple[float, float, float, float]] = {
     "montserrat": (0.64, 0.78, 0.68, 0.28),
     "inter": (0.57, 0.71, 0.62, 0.26),
@@ -300,7 +346,7 @@ FONT_WIDTH_EM: dict[str, tuple[float, float, float, float]] = {
 
 
 def estimate_text_width(text: str, size_px: float, font: str = "Montserrat", *, stroke_px: float = 0.0,
-                        case: str = "as_is") -> float:
+                        case: str = "as_is", weight: int = 800) -> float:
     """Rough rendered width in px (heavy weights), including an outer stroke on both sides."""
     lo, up, dg, sp = FONT_WIDTH_EM.get(font.strip().lower(), FONT_WIDTH_EM["montserrat"])
     t = _apply_case(text, case)
@@ -316,7 +362,8 @@ def estimate_text_width(text: str, size_px: float, font: str = "Montserrat", *, 
             em += lo * (0.45 if ch in "iljtf" else 1.35 if ch in "mw" else 1.0)
         else:
             em += 0.34
-    return em * size_px + 2 * stroke_px
+    wf = 1.015 + 0.023 * (min(max(weight, 400), 1000) - 800) / 100.0
+    return em * size_px * wf + 2 * stroke_px
 
 
 def _apply_case(text: str, case: str) -> str:
@@ -336,6 +383,171 @@ def caption_block_height(style: CaptionStyle, lines: int = 1, *, scale: float = 
     stroke = 0.0 if style.background else style.stroke_px * scale
     pad = size * 0.14 if style.background else 0.0
     return lines * size * line_height + 2 * pad + stroke
+
+
+#: A style that allows more lines wraps rather than shrinking a page more than this (a size jump between
+#: consecutive pages reads as a mistake); mirrored in overlay/src/components/CaptionPage.tsx.
+WRAP_BEFORE_SHRINK = 0.95
+
+
+@dataclass(frozen=True)
+class CaptionFit:
+    """Estimated rendered layout of one caption page. The line breaks are chosen here (syntax-aware) and handed
+    to the renderer (``breaks`` in the overlay props), so the drawn lines are the planned ones."""
+
+    width: float  # block width incl. stroke/box padding, output px
+    height: float  # block height, output px
+    size_px: float  # rendered font size, output px
+    lines: int
+    shrink: float  # rendered size / requested size (1.0 = no shrink)
+    breaks: tuple[int, ...] = ()  # word index where each line after the first starts
+    line_texts: tuple[str, ...] = ()  # the lines as displayed (case applied)
+
+    @property
+    def display(self) -> str:
+        """``"survive / the marriage?"`` — the page as it will be drawn."""
+        return " / ".join(self.line_texts)
+
+
+#: joins a line break should not split, from the doctrine's anti-patterns ("the / budget"): cost of starting a new
+#: line at ``words[i]``. Page breaks use :func:`_break_cost` (which also knows the timing).
+def line_break_cost(words: Sequence[str], i: int) -> float:
+    """Cost of a line break before ``words[i]`` (0 = natural: after a comma or a sentence end)."""
+    if i <= 0 or i >= len(words):
+        return 0.0
+    a, b = words[i - 1], words[i]
+    if _SENT_END.search(a) or _STRONG_PUNCT.search(a):
+        return 0.0
+    pa, pb = _norm(a), _norm(b)
+    prev = _norm(words[i - 2]) if i >= 2 else ""
+    if pa in _DETERMINERS:
+        return 3.0  # "the | budget", "three | questions": never inside a noun phrase
+    if pa in _PREPOSITIONS:
+        return 2.8  # "through | three questions" is bad, but better than splitting the noun phrase itself
+    if _is_number(a) and (pb in _UNITS or _is_number(b)):
+        return 2.5  # "sixty | dollars"
+    if _is_name_part(a) and _is_name_part(b) and i >= 2:
+        return 2.5  # "Maya | Chen" (a capitalised first word is just the sentence start)
+    if pa in _AUX:
+        return 1.0 if (pb in _DETERMINERS or pb in _PREPOSITIONS) else 2.5  # "is | an addition" ok, "is | going"
+    if pa in _SUBJECTS and pb not in _CONJ and pb not in _PREPOSITIONS:
+        return 2.5  # "then you | need"
+    if pa in _CONJ:
+        return 2.0  # "and | the third"
+    content_a = pa not in _STOP and not _is_number(a)
+    content_b = pb not in _STOP
+    if content_a and content_b:
+        if prev in _SUBJECTS or prev in _AUX:
+            return 0.6  # after a verb, before its object: "If I put | butter chicken"
+        closes = (i == len(words) - 1 or bool(_SENT_END.search(b) or _STRONG_PUNCT.search(b))
+                  or _norm(words[i + 1]) in _STOP)
+        return 1.8 if closes else 1.2  # a modifier + noun closing its phrase: "fusion | experiment."
+    if pb in _CONJ or pb in _PREPOSITIONS:
+        return 0.4  # before the function word that opens the next phrase
+    return 0.9
+
+
+def _balanced_lines(words: Sequence[str], k: int, width: Any, avail: float | None = None) -> list[list[str]]:
+    """Split ``words`` into ``k`` lines. With ``avail`` (the line width that fits at the planned size): among
+    splits that fit, the syntactically cleanest (:func:`line_break_cost`) and then the most balanced; when none
+    fits, the narrowest widest line with a syntax penalty. Without ``avail``: minimize the widest line."""
+    n = len(words)
+    if k <= 1 or n <= 1:
+        return [list(words)]
+    k = min(k, n)
+    if avail is not None and n <= 14:
+        from itertools import combinations
+
+        best_key: tuple[float, ...] | None = None
+        best_split: tuple[int, ...] = ()
+        for cut in combinations(range(1, n), k - 1):
+            bounds = (0, *cut, n)
+            ws_ = [width(words[bounds[j]:bounds[j + 1]]) for j in range(k)]
+            widest, narrowest = max(ws_), min(ws_)
+            syn = sum(line_break_cost(words, c) for c in cut)
+            if widest <= avail:
+                key = (0.0, syn + 0.8 * (widest - narrowest) / max(avail, 1.0), widest)
+            else:
+                key = (1.0, widest + syn * 0.08 * avail, syn)  # a mid-phrase break costs as much as ~25 % size
+            if best_key is None or key < best_key:
+                best_key, best_split = key, cut
+        bounds = (0, *best_split, n)
+        return [list(words[bounds[j]:bounds[j + 1]]) for j in range(k)]
+    inf = math.inf
+    best = [[inf] * (n + 1) for _ in range(k + 1)]
+    prev = [[-1] * (n + 1) for _ in range(k + 1)]
+    best[0][0] = 0.0
+    for j in range(1, k + 1):
+        for i in range(1, n + 1):
+            for s_ in range(j - 1, i):
+                if best[j - 1][s_] == inf:
+                    continue
+                c = max(best[j - 1][s_], width(words[s_:i]))
+                if c < best[j][i]:
+                    best[j][i], prev[j][i] = c, s_
+    lines: list[list[str]] = []
+    i = n
+    for j in range(k, 0, -1):
+        s_ = prev[j][i]
+        lines.insert(0, list(words[s_:i]))
+        i = s_
+    return lines
+
+
+def caption_fit(style: CaptionStyle, text: str, width: int = REF_W, params: CaptionParams | None = None, *,
+                scale: float = 1.0, max_width: float | None = None) -> CaptionFit:
+    """How the renderer lays out ``text`` in ``style`` on a ``width``-wide frame (estimate).
+
+    Order, as in ``fitWords``: one line at full size; one line shrunk down to the legibility floor
+    (``min_size_px``, and never below ``min_font_scale``); the style's extra lines; then up to
+    ``overflow_lines`` lines rather than shrinking under the floor; finally whatever shrink fits.
+    ``scale`` is a placer-chosen size step (the page is re-styled at ``size_px * scale``)."""
+    p = params or _DEFAULT_PARAMS
+    ws = width / REF_W
+    size0 = style.size_px * ws * scale
+    stroke = 0.0 if style.background else style.stroke_px * ws * scale
+    pad_x = size0 * 0.32 if style.background else 0.0
+    pad_y = size0 * 0.14 if style.background else 0.0
+    extra = 2 * stroke + 2 * pad_x
+    max_w = p.max_line_px * ws if max_width is None else min(max_width, p.max_line_px * ws)
+    avail = max(1.0, max_w - extra)
+    floor = min(size0, p.min_size_px * ws)
+    min_scale = min(1.0, max(p.min_font_scale, floor / size0)) if size0 > 0 else 1.0
+    words = _apply_case(text, style.case).split() or [text]
+
+    def w_at(ws_: Sequence[str]) -> float:
+        return estimate_text_width(" ".join(ws_), size0, style.font, weight=style.weight)
+
+    max_lines = max(1, min(3, style.lines))
+    most = min(len(words), max(max_lines, min(3, p.overflow_lines)))
+    chosen: tuple[int, float, float, list[list[str]]] | None = None
+    last: tuple[int, float, list[list[str]]] = (1, w_at(words), [list(words)])
+    for k in range(1, most + 1):
+        split = _balanced_lines(words, k, w_at, avail)
+        widest = max(w_at(line) for line in split)
+        last = (k, widest, split)
+        if widest <= avail:
+            chosen = (k, 1.0, widest, split)
+            break
+        # while the style still allows another line, only a slight shrink beats wrapping (pages of one
+        # video keep one size); on the style's last line count, shrink down to the floor before overflowing
+        step = min_scale if k >= max_lines else max(min_scale, WRAP_BEFORE_SHRINK)
+        if avail / widest >= step:
+            chosen = (k, avail / widest, widest, split)
+            break
+    if chosen is None:
+        k, widest, split = last
+        chosen = (k, min(1.0, avail / widest), widest, split)
+    k, sc, widest, split = chosen
+    size = size0 * sc
+    breaks: list[int] = []
+    pos = 0
+    for line in split[:-1]:
+        pos += len(line)
+        breaks.append(pos)
+    return CaptionFit(width=widest * sc + extra, height=k * size * p.line_height + 2 * pad_y + stroke,
+                      size_px=size, lines=k, shrink=sc, breaks=tuple(breaks),
+                      line_texts=tuple(" ".join(line) for line in split))
 
 
 # ============================================================================================== lexicon
@@ -526,7 +738,7 @@ def _break_cost(a: _Tok, b: _Tok, params: CaptionParams) -> float:
     pa, pb = _norm(a.text), _norm(b.text)
     gap_ms = float(a.gap_after or 0) * 1000.0
     if pa in _DETERMINERS or pa in _PREPOSITIONS:
-        return 3.0  # "the | budget", "of | the"
+        return 3.5  # "the | budget", "of | the", "before your | next"
     if pa in _AUX or (pa in _SUBJECTS and pb not in _CONJ and pb not in _PREPOSITIONS):
         return 2.5  # "is | going", "I | spent"
     if pa in _CONJ:
@@ -547,23 +759,29 @@ def _is_punch(t: _Tok) -> bool:
 
 
 def _page_cost(toks: Sequence[_Tok], j: int, i: int, *, style: CaptionStyle, params: CaptionParams,
-               max_words: int, run_len: int, width_scale: float) -> float:
+               max_words: int, run_len: int, width_scale: float, overflow: bool = False) -> float:
     n = i - j
     if n > max_words:
         return math.inf
     page = toks[j:i]
     text = " ".join(t.text for t in page)
-    width = estimate_text_width(text, style.size_px * width_scale, style.font, stroke_px=style.stroke_px,
-                                case=style.case)
-    limit = params.max_line_px * width_scale * style.lines
+    # the renderer's layout (caption_fit): shrink down to the legibility floor, then wrap
+    fit = caption_fit(style, text, round(REF_W * width_scale), params)
     cost = 0.0
-    if n > 1 and width * params.min_font_scale > limit:
-        return math.inf
-    if width > limit:
-        cost += 1.2 * (width / limit - 1.0) * 4
+    if n > 1 and fit.lines > style.lines:
+        # too wide for the style's lines even at the floor: a wrapped page (only when the wrap holds it at full
+        # size) is the doctrine's answer to flicker ("larger two-line pages rather than faster flicker"), so it
+        # competes with the short pages it would merge; cheaper in a fast run. A short phrase (≤ 3 words) is
+        # split instead: wrapping it grows the block (onto the hair above a head) for no reading gain.
+        if fit.shrink < 0.999 or n <= 3:
+            return math.inf
+        cost += (0.8 if overflow else 1.6) * (fit.lines - style.lines)
+    elif fit.shrink < 0.999:
+        cost += 10.0 * (1.0 / max(fit.shrink, 1e-3) - 1.0)  # shrinking costs legibility: split, don't squeeze
     chars = len(text)
-    if chars > style.max_chars_per_line * style.lines:
-        cost += 0.35 * (chars - style.max_chars_per_line * style.lines)
+    line_chars = style.max_chars_per_line * max(style.lines, fit.lines)
+    if chars > line_chars:
+        cost += 0.35 * (chars - line_chars)
     size_cost = {1: 2.6, 2: 0.3, 3: 0.0, 4: 0.35, 5: 1.4, 6: 2.4}.get(n, 3.0 + n)
     if n == 1 and (run_len == 1 or _is_punch(page[0])):
         size_cost = 0.0 if run_len == 1 else 0.8
@@ -584,8 +802,9 @@ def _page_cost(toks: Sequence[_Tok], j: int, i: int, *, style: CaptionStyle, par
         cost += 6.0 * (params.min_page_s - d) / params.min_page_s
     cps = chars / d
     if cps > params.max_cps:
-        # doctrine: <= 20 CPS; a fast page is a reason to re-page (never to delete words)
-        cost += 0.3 * (cps - params.max_cps)
+        # doctrine: <= 20 CPS; a fast page is a reason to re-page (never to delete words): a longer page (two lines
+        # when the style allows) beats a flash that cannot be read
+        cost += 0.45 * (cps - params.max_cps)
     return cost
 
 
@@ -606,7 +825,7 @@ def _page_run(toks: Sequence[_Tok], *, style: CaptionStyle, params: CaptionParam
             if best[j] == math.inf:
                 continue
             c = _page_cost(toks, j, i, style=style, params=params, max_words=max_words, run_len=n,
-                           width_scale=width_scale)
+                           width_scale=width_scale, overflow=fast)
             if c == math.inf:
                 continue
             if i < n:
@@ -656,10 +875,23 @@ def _device_words(doc: CutDocument) -> set[str]:
     return out
 
 
+#: common verbs that carry little meaning on their own: an accent belongs on the word the line is about (the
+#: noun, the negation, the number), not on "start" or "build"
+_LIGHT_VERBS = {"start", "starts", "started", "build", "builds", "built", "make", "makes", "made", "get", "gets",
+                "got", "go", "goes", "went", "put", "puts", "take", "takes", "took", "give", "gives", "gave", "use",
+                "uses", "used", "know", "knows", "knew", "think", "thinks", "thought", "see", "sees", "saw", "want",
+                "wants", "wanted", "need", "needs", "needed", "keep", "keeps", "kept", "let", "lets", "come",
+                "comes", "came", "tell", "tells", "told", "say", "says", "said", "try", "tries", "tried", "look",
+                "looks", "looked", "feel", "feels", "felt", "find", "finds", "found", "run", "runs", "ran", "work",
+                "works", "worked", "call", "calls", "called", "show", "shows", "showed", "turn", "turns", "turned"}
+
+
 def _accent_score(t: _Tok, params: CaptionParams) -> float:
     n = _norm(t.text)
     number = _is_number(t.text)
     if not number and (n in _STOP or len(n) <= 2):
+        return 0.0
+    if n in _LIGHT_VERBS and n not in _KEYWORDS and not t.payoff:
         return 0.0
     p = t.word.prosody
     zs = [z for z in ((p.f0_z, p.int_z, p.dur_z) if p is not None else ()) if z is not None]
@@ -715,7 +947,19 @@ def auto_caption_plan(doc: CutDocument, index: TakeIndex, *, style: CaptionStyle
     kept = doc.kept_word_ids(index)
     toks = _build_tokens(kept, spans, index, params, _payoff_ids(doc), _insert_breaks(doc))
     width_scale = (timeline.width / REF_W) if timeline is not None else 1.0
-    pages = _page_tokens(toks, style=st, params=params, width_scale=width_scale)
+    page_style = st
+    if st.lines > 1:
+        # above the head (the chin sits under the platform band) a two-line block grows down onto the hair:
+        # page for one line there, the style's extra lines only catch a word too long for one
+        from studio.compile.timeline import _captions_above_head
+
+        W = timeline.width if timeline is not None else REF_W
+        H = timeline.height if timeline is not None else REF_H
+        with_style = doc.model_copy(update={"captions": (doc.captions or CaptionPlan()).model_copy(
+            update={"style": st})})
+        if _captions_above_head(with_style, index, W, H):
+            page_style = st.model_copy(update={"lines": 1})
+    pages = _page_tokens(toks, style=page_style, params=params, width_scale=width_scale)
     emph = _choose_emphasis(pages, params, _device_words(doc))
     out = [CaptionPage(id=format_id("p", k), word_ids=[t.wid for t in page],
                        emphasis_word_ids=[t.wid for t in page if t.wid in emph])
@@ -859,12 +1103,14 @@ def source_to_output(pt: tuple[float, float], rect: tuple[float, float, float, f
 
 @dataclass
 class _FaceOut:
-    """Face in output px at one sample: box, chin line and the eye-to-mouth protected box."""
+    """Face in output px at one sample: landmark box (upper forehead to chin), the top of the head (hair
+    included) and the eye-to-mouth protected box."""
 
     x0: float
     y0: float
     x1: float
     y1: float
+    crown: float | None = None  # top of the head, hair included (None: estimate from the prior)
 
     @property
     def chin(self) -> float:
@@ -874,6 +1120,19 @@ class _FaceOut:
     def forehead(self) -> float:
         return self.y0
 
+    @property
+    def h(self) -> float:
+        return self.y1 - self.y0
+
+    def head_top(self, params: CaptionParams | None = None) -> float:
+        p = params or _DEFAULT_PARAMS
+        return self.crown if self.crown is not None else self.y0 - p.head_top_prior * self.h
+
+    def head_x(self) -> tuple[float, float]:
+        """Horizontal extent of the head: hair runs wider than the landmark box."""
+        w = self.x1 - self.x0
+        return self.x0 - 0.25 * w, self.x1 + 0.25 * w
+
     def protected(self, params: CaptionParams | None = None) -> tuple[float, float, float, float]:
         """Brows-to-lips region that text may never cover (fractions from :class:`CaptionParams`)."""
         p = params or _DEFAULT_PARAMS
@@ -881,6 +1140,16 @@ class _FaceOut:
         return (self.x0 + p.protect_side_frac * w, self.y0 + p.protect_top_frac * h,
                 self.x1 - p.protect_side_frac * w, self.y0 + p.protect_bottom_frac * h)
 
+    def hair(self, params: CaptionParams | None = None) -> tuple[float, float, float, float]:
+        """Hair and forehead: from the head top down to the protected region."""
+        p = params or _DEFAULT_PARAMS
+        hx0, hx1 = self.head_x()
+        return hx0, self.head_top(p), hx1, self.y0 + p.protect_top_frac * self.h
+
+    def lower_face(self, params: CaptionParams | None = None) -> tuple[float, float, float, float]:
+        """Below the mouth down to the chin (covering it is a blemish, not a violation)."""
+        p = params or _DEFAULT_PARAMS
+        return self.x0, self.y0 + p.protect_bottom_frac * self.h, self.x1, self.y1
 
 def _face_at(index: TakeIndex, t_us: int) -> FaceBox | None:
     """Face at a source time, or None when the face is not visible (outside the track, face_lost)."""
@@ -929,9 +1198,11 @@ def _map_point(timeline: Timeline, t: Fraction, x: float, y: float, src_w: int, 
 
 
 def _faces_during(timeline: Timeline, index: TakeIndex, a: Fraction, b: Fraction,
-                  step_s: float) -> list[_FaceOut]:
+                  step_s: float, params: CaptionParams | None = None) -> list[_FaceOut]:
     """Face boxes in output px sampled across ``[a, b)`` (after framing and split re-layouts); samples
-    under full-frame inserts/cards are skipped (the face is not on screen)."""
+    under full-frame inserts/cards are skipped (the face is not on screen). Each face carries the top of
+    the head: the take's measured head-top ratio (``Visual.head_top_ratio``) or the prior."""
+    p = params or _DEFAULT_PARAMS
     src_w, src_h = index.media.width, index.media.height
     W, H = timeline.width, timeline.height
     out: list[_FaceOut] = []
@@ -959,9 +1230,12 @@ def _faces_during(timeline: Timeline, index: TakeIndex, a: Fraction, b: Fraction
         x0, y0, x1, y1 = p0[0] * W, p0[1] * H, p1[0] * W, p1[1] * H
         if x1 <= 0 or y1 <= 0 or x0 >= W or y0 >= H:
             continue
-        out.append(_FaceOut(x0, y0, x1, y1))
+        crown = None
+        pc = _map_point(timeline, t, fb.x + fb.w / 2, index.visual.head_top_y(fb, p.head_top_prior), src_w, src_h)
+        if pc is not None:
+            crown = pc[1] * H
+        out.append(_FaceOut(x0, y0, x1, y1, crown))
     return out
-
 
 def _overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
     w = min(a[2], b[2]) - max(a[0], b[0])
@@ -1023,25 +1297,31 @@ class _Placement:
     top: float
     scale: float = 1.0
     relaxed: bool = False
-    fallback: str = ""
+    fallback: str = ""  # below_chin | below_chin_relaxed | above_head | no_face | fixed | split | least_bad
+    held: bool = False  # kept by hysteresis (an earlier anchor)
 
 
 def _page_block(style: CaptionStyle, text: str, width: int, params: CaptionParams, scale: float = 1.0) -> tuple[
         float, float]:
-    """Estimated (width, height) of a caption block in px at ``scale``."""
-    ws = width / REF_W
-    size = style.size_px * ws * scale
-    max_w = params.max_line_px * ws
-    w = estimate_text_width(text, size, style.font, stroke_px=style.stroke_px * ws * scale, case=style.case)
-    lines = 1
-    if w > max_w:
-        lines = 1 if w * params.min_font_scale <= max_w or style.lines == 1 else min(style.lines, 2)
-        w = min(w, max_w)
-    return w, caption_block_height(style, lines, scale=scale * ws, line_height=params.line_height)
+    """Estimated (width, height) of a caption block in px at ``scale`` (see :func:`caption_fit`)."""
+    f = caption_fit(style, text, width, params, scale=scale)
+    return f.width, f.height
+
+
+def _robust_min(values: Sequence[float], q: float = 0.03) -> float:
+    v = sorted(values)
+    return v[min(len(v) - 1, int(q * len(v)))]
 
 
 class _Placer:
-    """Stateful per-video placement with hysteresis."""
+    """Stateful per-video placement with hysteresis.
+
+    Doctrine order (captions-and-text.md, "Place"): just below the chin (top edge 40-120 px under it);
+    when nothing fits, smaller text (down to the legibility floor), then the lower band (relaxed floor);
+    the matte step (text behind the subject) is not available, so the next step is the band above the
+    head, clear of the hair (close-up selfies whose chin sits below the band); then the least-bad spot.
+    Eyes and mouth are never covered by choice. Anchors hold while they still work, one per framing
+    section when the video allows it."""
 
     def __init__(self, timeline: Timeline, index: TakeIndex, zone: SafeZone, params: CaptionParams):
         self.tl = timeline
@@ -1053,19 +1333,54 @@ class _Placer:
         self.hs = self.H / REF_H
         self.anchor: float | None = None  # current block top (px)
         self.anchor_scale = 1.0
-        self.history: list[tuple[float, float]] = []  # earlier good anchors (top, scale), oldest first
+        self.anchor_kind = ""
+        self.history: list[tuple[float, float, str]] = []  # earlier good anchors (top, scale, kind), oldest first
 
     # geometry ---------------------------------------------------------------
+    def _fit(self, style: CaptionStyle, text: str, scale: float) -> CaptionFit:
+        return caption_fit(style, text, self.W, self.p, scale=scale,
+                           max_width=self.W - self.zone.left - self.zone.right)
+
+    def _scales(self, style: CaptionStyle) -> list[float]:
+        """Size steps from full size down to the legibility floor (never below it)."""
+        floor = min(1.0, self.p.min_size_px / style.size_px) if style.size_px > 0 else 1.0
+        out = [1.0] + [s for s in (0.9, 0.8) if s > floor + 1e-6]
+        if floor < out[-1] - 1e-6:
+            out.append(round(floor, 4))
+        return out
+
     def _x_range(self, bw: float) -> tuple[float, float]:
         left, right = self.zone.left, self.W - self.zone.right
         cx = min(max(self.W / 2, left + bw / 2), right - bw / 2)
         return cx - bw / 2, cx + bw / 2
 
     def _bottom(self, relaxed: bool) -> float:
-        return self.H - (self.zone.caption_floor if relaxed else self.zone.bottom)
+        return self.H - (self.zone.relaxed_bottom if relaxed else self.zone.bottom)
+
+    def _above_limit(self, f: _FaceOut, hair_ok: bool) -> float:
+        """Lowest bottom edge for a block above the head: clear of the hair (grazing its top allowed), or with
+        ``hair_ok`` anywhere on the hair but never on the forehead (the landmark box top)."""
+        if hair_ok:
+            return f.forehead
+        return f.head_top(self.p) + self.p.head_overlap_tol_frac * f.h
+
+    def _head_clear(self, top: float, bh: float, x0: float, x1: float, faces: list[_FaceOut], *,
+                    hair_ok: bool = False) -> bool:
+        """The block keeps off the head: above it (see :meth:`_above_limit`) or under the chin by the minimum
+        gap."""
+        gap = self.p.chin_gap_min_px * self.hs
+        for f in faces:
+            hx0, hx1 = f.head_x()
+            if not (x0 < hx1 and hx0 < x1):
+                continue
+            above = top + bh <= self._above_limit(f, hair_ok)
+            below = top >= f.chin + gap
+            if not (above or below):
+                return False
+        return True
 
     def _valid(self, top: float, bw: float, bh: float, faces: list[_FaceOut], obs: list, relaxed: bool,
-               *, need_gap: bool = True) -> bool:
+               *, need_gap: bool = True, hair_ok: bool = False) -> bool:
         if top < self.zone.top - 0.5 or top + bh > self._bottom(relaxed) + 0.5:
             return False
         x0, x1 = self._x_range(bw)
@@ -1073,29 +1388,45 @@ class _Placer:
         for f in faces:
             if _overlap(block, f.protected(self.p)) > 0:
                 return False
-            if need_gap and x0 < f.x1 and f.x0 < x1 and top < f.chin + self.p.chin_gap_min_px * self.hs \
-                    and top + bh > f.forehead:
-                return False  # a block over the face must clear the chin by the minimum gap
+        if need_gap and not self._head_clear(top, bh, x0, x1, faces, hair_ok=hair_ok):
+            return False
         m = self.p.obstacle_margin_px * self.hs
         return all(_overlap(block, (o[0] - m, o[1] - m, o[2] + m, o[3] + m)) <= 0 for o in obs)
 
-    def _hysteresis_ok(self, top: float, faces: list[_FaceOut]) -> bool:
+    def _kind_at(self, top: float, bh: float, faces: list[_FaceOut], relaxed: bool) -> str | None:
+        """What a (valid) held position is on this page: above the head (``on_hair`` while the head has risen
+        into it) or below the chin."""
         if not faces:
+            return None
+        if all(top + bh <= self._above_limit(f, False) for f in faces):
+            return "above_head"
+        if all(top + bh <= self._above_limit(f, True) for f in faces):
+            return "on_hair"
+        if all(top >= f.chin for f in faces):
+            return "below_chin_relaxed" if relaxed else "below_chin"
+        return None
+
+    def _hysteresis_ok(self, top: float, bh: float, faces: list[_FaceOut]) -> bool:
+        if not faces:
+            return True
+        if all(top + bh <= self._above_limit(f, True) for f in faces):
+            # above the head: an anchored caption holds its place and size while the head rises into it
+            # (doctrine: move only on a collision with eyes, mouth, UI or another overlay; hair is none)
             return True
         lo = self.p.chin_gap_min_px * self.hs
         hi = self.p.chin_gap_max_px * self.hs
-        above = all(top < f.forehead for f in faces)
-        if above:
-            return True
         return all(lo <= top - f.chin for f in faces) and all(top - f.chin <= hi for f in faces)
 
     # main -------------------------------------------------------------------
     def place(self, style: CaptionStyle, text: str, a: Fraction, b: Fraction, *, position: str | None,
-              y_norm: float | None) -> _Placement:
+              y_norm: float | None, faces: list[_FaceOut] | None = None,
+              section_faces: list[_FaceOut] | None = None) -> _Placement:
         p = self.p
-        faces = _faces_during(self.tl, self.ix, a, b, p.face_sample_s)
+        if faces is None:
+            faces = _faces_during(self.tl, self.ix, a, b, p.face_sample_s, p)
         obs = _obstacles(self.tl, a, b, self.zone, p)
-        bw, bh = _page_block(style, text, self.W, p)
+        f1 = self._fit(style, text, 1.0)
+        bw, bh = f1.width, f1.height
 
         # explicit placements (Director): honoured unless they cover eyes/mouth or leave the band
         fixed: float | None = None
@@ -1115,54 +1446,89 @@ class _Placer:
             top = min(max(split * self.H - bh / 2, self.zone.top), self._bottom(False) - bh)
             return _Placement(top, 1.0, False, "split")
 
-        # hysteresis: keep the anchor while it still works
+        scales = self._scales(style)
+        # ``below_chin`` (the Director's explicit choice): only positions under the chin, strict band then the
+        # relaxed floor, never above the head; when nothing fits there the least-bad spot (it pulls toward the
+        # chin and never covers eyes or mouth)
+        forced_below = position == "below_chin"
+
+        def below_ok(top: float, bh_: float, relaxed_: bool) -> bool:
+            kind_ = self._kind_at(top, bh_, faces, relaxed_)
+            return not forced_below or kind_ in (None, "below_chin", "below_chin_relaxed")
+
+        # hysteresis: keep the anchor (its top edge) while it still works, at the largest size that fits there
         if self.anchor is not None:
-            s = self.anchor_scale
-            bw_s, bh_s = _page_block(style, text, self.W, p, s)
-            relaxed = self.anchor + bh_s > self._bottom(False)
-            if self._valid(self.anchor, bw_s, bh_s, faces, obs, relaxed) and self._hysteresis_ok(self.anchor, faces):
-                return _Placement(self.anchor, s, relaxed, "anchor")
+            for s in scales:
+                fs = self._fit(style, text, s)
+                relaxed = self.anchor + fs.height > self._bottom(False)
+                if self._valid(self.anchor, fs.width, fs.height, faces, obs, relaxed, hair_ok=True) \
+                        and self._hysteresis_ok(self.anchor, fs.height, faces) \
+                        and below_ok(self.anchor, fs.height, relaxed):
+                    self.anchor_scale = s
+                    self.anchor_kind = self._kind_at(self.anchor, fs.height, faces, relaxed) or self.anchor_kind
+                    return _Placement(self.anchor, s, relaxed, self.anchor_kind, held=True)
 
         # return to an earlier position rather than inventing a new one (fewer distinct caption heights)
-        for top, s in reversed(self.history):
-            bw_s, bh_s = _page_block(style, text, self.W, p, s)
-            relaxed = top + bh_s > self._bottom(False)
-            if self._valid(top, bw_s, bh_s, faces, obs, relaxed) and self._hysteresis_ok(top, faces):
-                return self._commit(_Placement(top, s, relaxed, "history"))
+        for top, _s, kind in reversed(self.history):
+            for s in scales:
+                fs = self._fit(style, text, s)
+                relaxed = top + fs.height > self._bottom(False)
+                if self._valid(top, fs.width, fs.height, faces, obs, relaxed, hair_ok=True) \
+                        and self._hysteresis_ok(top, fs.height, faces) and below_ok(top, fs.height, relaxed):
+                    kind = self._kind_at(top, fs.height, faces, relaxed) or kind
+                    return self._commit(_Placement(top, s, relaxed, kind, held=True))
 
         if not faces:
             base = self.anchor if self.anchor is not None else p.default_center_y_px * self.hs - bh / 2
-            for top in self._scan_from(base, bh):
-                if self._valid(top, bw, bh, [], obs, False):
-                    return self._commit(_Placement(top, 1.0, False, "no_face"))
-            for top in self._scan_from(base, bh):
-                if self._valid(top, bw, bh, [], obs, True):
-                    return self._commit(_Placement(top, 1.0, True, "no_face_relaxed"))
-            return self._commit(self._least_bad(style, text, faces, obs))
+            for relaxed in (False, True):
+                for top in self._scan_from(base, bh):
+                    if self._valid(top, bw, bh, [], obs, relaxed):
+                        return self._commit(_Placement(top, 1.0, relaxed, "no_face_relaxed" if relaxed else "no_face"))
+            return self._commit(self._least_bad(style, text, faces, obs, scales))
 
         chin = max(f.chin for f in faces)
-        forehead = min(f.forehead for f in faces)
+        # 1. just below the chin: strict band, then the relaxed floor; full size first, then smaller text
         for relaxed in (False, True):
-            for s in (1.0, 0.88, 0.76):
-                bw_s, bh_s = _page_block(style, text, self.W, p, s)
+            if relaxed and self._bottom(True) <= self._bottom(False) + 0.5:
+                continue
+            for s in scales:
+                fs = self._fit(style, text, s)
                 # the 40-120 px window first (preferred gap, then the rest of the window), then further
                 # down (an obstacle such as a card pushed it) before any shrinking
                 prefs = [chin + p.chin_gap_px * self.hs, chin + p.chin_gap_min_px * self.hs]
                 prefs += [chin + g * self.hs for g in range(int(p.chin_gap_min_px), int(p.chin_gap_max_px) + 1, 8)]
                 y = chin + (p.chin_gap_max_px + 8) * self.hs
-                while y + bh_s <= self._bottom(relaxed):
+                while y + fs.height <= self._bottom(relaxed):
                     prefs.append(y)
                     y += 8 * self.hs
                 for top in prefs:
-                    if self._valid(top, bw_s, bh_s, faces, obs, relaxed):
-                        return self._commit(_Placement(top, s, relaxed, "below_chin"))
-        # above the head (between the safe top and the forehead)
-        for s in (1.0, 0.88, 0.76):
-            bw_s, bh_s = _page_block(style, text, self.W, p, s)
-            top = forehead - p.chin_gap_px * self.hs - bh_s
-            if top >= self.zone.top and self._valid(top, bw_s, bh_s, faces, obs, False, need_gap=False):
-                return self._commit(_Placement(top, s, False, "above_head"))
-        return self._commit(self._least_bad(style, text, faces, obs))
+                    if self._valid(top, fs.width, fs.height, faces, obs, relaxed):
+                        return self._commit(_Placement(top, s, relaxed,
+                                                       "below_chin_relaxed" if relaxed else "below_chin"))
+        if forced_below:
+            # nothing clears the chin by the minimum gap: sit on the relaxed floor (the chin may graze the block's
+            # top), largest size first, never over the eyes-to-mouth region; only then the least-bad spot
+            for s in scales:
+                fs = self._fit(style, text, s)
+                top = self._bottom(True) - fs.height
+                if self._valid(top, fs.width, fs.height, faces, obs, True, need_gap=False) and all(
+                        top >= f.y0 + p.protect_bottom_frac * f.h for f in faces):
+                    return self._commit(_Placement(top, s, True, "below_chin_relaxed"))
+            return self._commit(self._least_bad(style, text, faces, obs, scales))
+        # 2. the chin sits too low for the band: above the head, clear of the hair. One height for the whole
+        #    framing section when it fits (captions stay put while the head bobs), else this page's.
+        refs = [section_faces] if section_faces else []
+        refs.append(faces)
+        for s in scales:
+            fs = self._fit(style, text, s)
+            for ref in refs:
+                crown = _robust_min([f.head_top(p) for f in ref])
+                # the gap above the hair is a preference; the band top and the hair (grazing allowed) are limits
+                top = max(crown - p.crown_gap_px * self.hs - fs.height, self.zone.top)
+                if self._valid(top, fs.width, fs.height, faces, obs, False):
+                    return self._commit(_Placement(top, s, False, "above_head"))
+        # 3. nothing fits cleanly
+        return self._commit(self._least_bad(style, text, faces, obs, scales))
 
     def _scan_from(self, base: float, bh: float) -> Iterable[float]:
         lo, hi = self.zone.top, self._bottom(True) - bh
@@ -1175,32 +1541,321 @@ class _Placer:
                     yield cand
             k += 1
 
-    def _least_bad(self, style: CaptionStyle, text: str, faces: list[_FaceOut], obs: list) -> _Placement:
-        s = 0.76
-        bw, bh = _page_block(style, text, self.W, self.p, s)
-        x0, x1 = self._x_range(bw)
-        lo, hi = self.zone.top, self._bottom(True) - bh
-        best, best_cost = hi, math.inf
-        y = lo
-        while y <= hi:
-            block = (x0, y, x1, y + bh)
-            cost = sum(3.0 * _overlap(block, f.protected(self.p)) for f in faces)
-            cost += sum(_overlap(block, o) for o in obs)
-            cost += 0.01 * abs(y - (max((f.chin for f in faces), default=y)))  # prefer near the chin
-            if cost < best_cost:
-                best, best_cost = y, cost
-            y += 4 * self.hs
-        return _Placement(best, s, best + bh > self._bottom(False), "least_bad")
+    def _least_bad(self, style: CaptionStyle, text: str, faces: list[_FaceOut], obs: list,
+                   scales: Sequence[float]) -> _Placement:
+        """Lowest-cost spot: eyes/mouth cost the most, hair/forehead and other overlays less, the chin
+        least; bigger text wins ties."""
+        p = self.p
+        n = max(1, len(faces))
+        pull = max((f.chin for f in faces), default=p.default_center_y_px * self.hs)
+        best: tuple[float, float, float, bool] | None = None
+        for s in scales:
+            fs = self._fit(style, text, s)
+            x0, x1 = self._x_range(fs.width)
+            lo, hi = self.zone.top, self._bottom(True) - fs.height
+            y = lo
+            while y <= hi + 1e-6:
+                block = (x0, y, x1, y + fs.height)
+                cost = sum(10.0 * _overlap(block, f.protected(p)) + 1.0 * _overlap(block, f.hair(p))
+                           + 0.3 * _overlap(block, f.lower_face(p)) for f in faces) / n
+                cost += 2.0 * sum(_overlap(block, o) for o in obs)
+                cost += 0.02 * fs.width * fs.height * (1.0 - s) + 0.01 * abs(y - pull)
+                if best is None or cost < best[0]:
+                    best = (cost, y, s, y + fs.height > self._bottom(False))
+                y += 4 * self.hs
+        if best is None:
+            fs = self._fit(style, text, scales[-1])
+            return _Placement(max(self.zone.top, self._bottom(True) - fs.height), scales[-1], True, "least_bad")
+        return _Placement(best[1], best[2], best[3], "least_bad")
 
     def _commit(self, pl: _Placement) -> _Placement:
         self.anchor = pl.top
         self.anchor_scale = pl.scale
-        if pl.fallback not in ("least_bad", "history") and (pl.top, pl.scale) not in self.history:
-            self.history.append((pl.top, pl.scale))
+        self.anchor_kind = pl.fallback
+        if pl.fallback != "least_bad" and not pl.held and all(
+                (t, s) != (pl.top, pl.scale) for t, s, _k in self.history):
+            self.history.append((pl.top, pl.scale, pl.fallback))
         return pl
 
-
 # ============================================================================================== public API
+def under_chin_reframe(index: TakeIndex, *, style: CaptionStyle, zone: SafeZone, width: int = REF_W,
+                       height: int = REF_H, params: CaptionParams | None = None) -> dict[str, float] | None:
+    """Can captions sit under the chin on this take? From the median face: the chin's output height at the base
+    framing, the highest chin line a one-line block still fits under (``target_px``), and the base-reframe scale
+    that would lift the chin there with the crop pushed to the bottom of the source (``scale``, 1.0 when it already
+    fits; inf when no scale can). None without a face track."""
+    import statistics
+
+    from studio.compile.timeline import base_window
+
+    p = params or _DEFAULT_PARAMS
+    vis = index.visual
+    pts = [(q.cy, q.h) for q in (vis.face_track.points if vis is not None and vis.face_track is not None else [])
+           if q.conf >= 0.3 and q.h > 0]
+    if not pts and vis is not None:
+        pts = [(q.face_box.cy, q.face_box.h) for q in vis.samples if q.face_box is not None and q.face_conf >= 0.3]
+    if not pts:
+        return None
+    cy, fh = statistics.median(a for a, _ in pts), statistics.median(b for _, b in pts)
+    src_w, src_h = index.media.width, index.media.height
+    _bw, bh = base_window(src_w, src_h, width / height)
+    win_h = bh * src_h
+    chin_px = (cy + fh / 2) * src_h
+    y0 = min(max(cy * src_h - win_h / 2, 0.0), src_h - win_h)
+    chin_out = (chin_px - y0) / win_h * height
+    band_bottom = height - zone.relaxed_bottom
+    target = band_bottom - caption_block_height(style, 1, scale=width / REF_W) - p.chin_gap_min_px * height / REF_H
+    if chin_out <= target:
+        scale = 1.0
+    elif src_h - chin_px <= 1.0:
+        scale = math.inf
+    else:
+        scale = max(1.0, (1.0 - target / height) * win_h / (src_h - chin_px))
+    centre_y = (src_h - win_h / (2 * scale)) / src_h if math.isfinite(scale) else 0.5
+    return {"chin_px": chin_out, "target_px": target, "scale": scale, "centre_y": centre_y,
+            "band_bottom_px": band_bottom}
+
+
+#: Cap height as a share of the font size (from each font's OS/2 table; Montserrat 700/1000). Used only to report
+#: how big the letters are on screen (rendered cap height), never to lay out.
+CAP_HEIGHT_EM: dict[str, float] = {"montserrat": 0.70, "inter": 0.727, "anton": 0.73, "tiktok sans": 0.70,
+                                   "tiktoksans": 0.70, "archivo": 0.70}
+#: Eye line inside the landmark face box (upper forehead to chin), measured on real takes: 0.24-0.30.
+_EYE_FRAC = 0.27
+
+
+def cap_height_px(style: CaptionStyle, size_px: float | None = None) -> float:
+    """Rendered cap height (px) of a caption at ``size_px`` (default: the style's size)."""
+    em = CAP_HEIGHT_EM.get(style.font.strip().lower(), 0.70)
+    return em * float(size_px if size_px is not None else style.size_px)
+
+
+def caption_geometry(timeline: Timeline, index: TakeIndex, *, platform: str | Iterable[str] | None = None,
+                     settings: Settings | None = None, params: CaptionParams | None = None,
+                     style_px: float | None = None) -> dict[str, Any]:
+    """Where and how big every caption page renders, measured against the face *after framing transforms* and
+    the platform bands (advisory: critics and the Director read it; nothing gates on it).
+
+    Per page: the block's top/bottom (px), rendered font size and cap height (px and % of the frame height), the
+    face relation (``below_chin`` with the gap to the chin, ``above_head``, ``on_hair`` = over the hair or
+    forehead, ``over_face`` = over the eyes-to-mouth region, ``over_lower_face``, ``no_face``), whether the block
+    sits above the eye line, and how far it reaches into the strict platform band (``into_ui_px``: UI when the post
+    description runs long) or past the relaxed caption floor. ``summary`` aggregates them (shares, size spread,
+    distinct heights) and quotes the doctrine priors (chin gap window, phrase-page size range)."""
+    import statistics
+
+    constants = load_constants(settings)
+    params = params or load_caption_params(settings, constants)
+    W, H = timeline.width, timeline.height
+    zone = safe_zone_for(platform, width=W, height=H, constants=constants)
+    strict_bottom = H - zone.bottom
+    floor = H - zone.relaxed_bottom
+    hs = H / REF_H
+    lo_gap, hi_gap = params.chin_gap_min_px * hs, params.chin_gap_max_px * hs
+    rows: list[dict[str, Any]] = []
+    for k, pg in enumerate(timeline.captions):
+        text = pg.text or " ".join(w.text for w in pg.words)
+        fit = caption_fit(pg.style, text, W, params, max_width=W - zone.left - zone.right)
+        top = pg.y_norm * H - fit.height / 2
+        bottom = top + fit.height
+        cap = cap_height_px(pg.style, fit.size_px)
+        a, b = to_fraction(pg.out_start), to_fraction(pg.out_end)
+        faces = _faces_during(timeline, index, a, b, params.face_sample_s, params) if index.visual is not None else []
+        row: dict[str, Any] = {
+            "page": pg.page_id or f"p{k + 1:03d}", "text": text, "top_px": round(top, 1), "bottom_px": round(bottom, 1),
+            "size_px": round(fit.size_px * REF_W / W, 1), "lines": fit.lines, "cap_height_px": round(cap, 1),
+            "cap_height_pct": round(cap / H * 100, 2), "placement": pg.placement or "",
+            "into_ui_px": round(max(0.0, bottom - strict_bottom), 1),
+            "past_floor_px": round(max(0.0, bottom - floor), 1)}
+        if not faces:
+            row["relation"] = "no_face"
+        else:
+            chin = max(f.chin for f in faces)
+            eyes = statistics.median(f.y0 + _EYE_FRAC * f.h for f in faces)
+            crown = min(f.head_top(params) for f in faces)
+            x0, x1 = W / 2 - fit.width / 2, W / 2 + fit.width / 2
+            block = (x0, top, x1, bottom)
+            row["chin_px"] = round(chin, 1)
+            row["eye_line_px"] = round(eyes, 1)
+            row["above_eyes"] = bottom <= eyes
+            if top >= chin - 0.5:
+                row["relation"] = "below_chin"
+                row["chin_gap_px"] = round(top - chin, 1)
+            elif any(_overlap(block, f.protected(params)) > 0 for f in faces):
+                row["relation"] = "over_face"
+            elif bottom <= crown + params.head_overlap_tol_frac * max(f.h for f in faces):
+                row["relation"] = "above_head"
+            elif bottom <= eyes:
+                row["relation"] = "on_hair"
+            else:
+                row["relation"] = "over_lower_face"
+        rows.append(row)
+    summary: dict[str, Any] = {"pages": len(rows)}
+    if rows:
+        n = len(rows)
+        rel: dict[str, int] = {}
+        for r in rows:
+            rel[r["relation"]] = rel.get(r["relation"], 0) + 1
+        sizes = [r["size_px"] for r in rows]
+        caps = [r["cap_height_px"] for r in rows]
+        gaps = [r["chin_gap_px"] for r in rows if "chin_gap_px" in r]
+        summary.update({
+            "relation": rel,
+            "share_above_eyes": round(sum(1 for r in rows if r.get("above_eyes")) / n, 3),
+            "share_below_chin_in_window": round(sum(1 for g in gaps if lo_gap - 0.5 <= g <= hi_gap + 0.5) / n, 3),
+            "median_chin_gap_px": round(statistics.median(gaps), 1) if gaps else None,
+            "size_px": {"min": min(sizes), "median": statistics.median(sizes), "max": max(sizes),
+                        # the document's style size (pages shrunk to fit carry a smaller copy of the style)
+                        "style": float(style_px) if style_px else
+                        float(max(pg.style.size_px for pg in timeline.captions))},
+            "cap_height_px": {"min": min(caps), "median": round(statistics.median(caps), 1), "max": max(caps)},
+            "cap_height_pct_median": round(statistics.median(r["cap_height_pct"] for r in rows), 2),
+            "size_spread": round(max(sizes) / max(min(sizes), 1e-6), 3),
+            "distinct_tops": len({round(r["top_px"] / 8) for r in rows}),
+            "pages_into_ui": sum(1 for r in rows if r["into_ui_px"] > 0.5),
+            "max_into_ui_px": max(r["into_ui_px"] for r in rows),
+            "pages_past_floor": sum(1 for r in rows if r["past_floor_px"] > 0.5),
+            "two_line_pages": sum(1 for r in rows if r["lines"] > 1),
+        })
+    size_rng = None
+    with_c = _flatten(constants)
+    rng = _find_range(with_c, "captions.size_px_phrase")
+    if rng is not None:
+        size_rng = [rng[0], rng[1]]
+    return {"platform": platform if isinstance(platform, str) or platform is None else list(platform),
+            "frame": [W, H], "strict_band_bottom_px": round(strict_bottom, 1), "relaxed_floor_px": round(floor, 1),
+            "band_top_px": round(zone.top, 1),
+            "priors": {"chin_gap_px": [params.chin_gap_min_px, params.chin_gap_max_px],
+                       "phrase_size_px": size_rng or [params.min_size_px, 96.0], "lines": 1},
+            "summary": summary, "pages": rows}
+
+
+def caption_geometry_text(geo: Mapping[str, Any], *, max_pages: int = 12) -> str:
+    """A few lines a model reads: the summary, the priors and the pages that sit outside them."""
+    s = geo.get("summary") or {}
+    if not s.get("pages"):
+        return "Caption geometry: no caption pages."
+    H = (geo.get("frame") or [1080, 1920])[1]
+    pri = geo.get("priors") or {}
+    sz = s.get("size_px") or {}
+    cap = s.get("cap_height_px") or {}
+    rel = ", ".join(f"{k} {v}" for k, v in sorted((s.get("relation") or {}).items()))
+    glo, ghi = (pri.get("chin_gap_px") or [40, 120])[:2]
+    lines = [
+        f"Caption geometry (measured by code on the {H}-px-tall frame, after framing transforms): {s['pages']} pages; "
+        f"relation to the face: {rel}; share of pages above the eye line {s.get('share_above_eyes', 0):.0%}; "
+        f"below the chin inside the {glo:.0f}-{ghi:.0f} px window {s.get('share_below_chin_in_window', 0):.0%}"
+        + (f" (median gap {s['median_chin_gap_px']:.0f} px)" if s.get("median_chin_gap_px") is not None else "") + ".",
+        f"  size on screen: {sz.get('min')}-{sz.get('max')} px font at 1080 wide (style {sz.get('style')} px; doctrine "
+        f"phrase pages {pri.get('phrase_size_px', [64, 96])[0]:.0f}-{pri.get('phrase_size_px', [64, 96])[1]:.0f} px), "
+        f"cap height {cap.get('min')}-{cap.get('max')} px (median {s.get('cap_height_pct_median')}% of the frame "
+        f"height); size spread x{s.get('size_spread')}; {s.get('distinct_tops')} distinct caption heights; "
+        f"{s.get('two_line_pages', 0)} two-line pages.",
+        f"  platform bands: strict text band ends at y {geo.get('strict_band_bottom_px')}, relaxed caption floor "
+        f"y {geo.get('relaxed_floor_px')} (between them: platform UI only when the post description runs long); "
+        f"{s.get('pages_into_ui', 0)} pages reach into the strict band (max {s.get('max_into_ui_px', 0)} px), "
+        f"{s.get('pages_past_floor', 0)} past the floor.",
+    ]
+    lo, hi = (pri.get("chin_gap_px") or [40, 120])[:2]
+    odd = [r for r in geo.get("pages") or []
+           if r.get("relation") not in ("below_chin", "no_face")
+           or (r.get("relation") == "below_chin" and not (lo - 0.5 <= r.get("chin_gap_px", lo) <= hi + 0.5))
+           or r.get("into_ui_px", 0) > 0.5 or r.get("size_px", 0) < (sz.get("style") or 0) * 0.9 - 0.5]
+    if odd:
+        lines.append("  pages outside the priors: " + "; ".join(
+            f"{r['page']} \"{str(r['text'])[:24]}\" {r['relation']}"
+            + (f" gap {r['chin_gap_px']:.0f}px" if "chin_gap_px" in r else "")
+            + f", {r['size_px']:.0f}px, top y{r['top_px']:.0f}"
+            + (f", {r['into_ui_px']:.0f}px into the strict band" if r.get("into_ui_px", 0) > 0.5 else "")
+            for r in odd[:max_pages]) + (f" (+{len(odd) - max_pages} more)" if len(odd) > max_pages else ""))
+    return "\n".join(lines)
+
+
+def placement_options(index: TakeIndex, *, style: CaptionStyle, zone: SafeZone, width: int = REF_W,
+                      height: int = REF_H, params: CaptionParams | None = None) -> dict[str, Any] | None:
+    """Measured costs of the caption positions available on this take at the base framing (median face), for the
+    Director to choose between (none is imposed): just under the chin (strict band, relaxed floor), the largest
+    text that fits under the chin in the strict band, a base reframe that lifts the chin, and the band above the
+    head. None without a face track."""
+    import statistics
+
+    from studio.compile.timeline import _ok_scale, base_window
+
+    p = params or _DEFAULT_PARAMS
+    vis = index.visual
+    pts = [(q.cy, q.h) for q in (vis.face_track.points if vis is not None and vis.face_track is not None else [])
+           if q.conf >= 0.3 and q.h > 0]
+    if not pts and vis is not None:
+        pts = [(q.face_box.cy, q.face_box.h) for q in vis.samples if q.face_box is not None and q.face_conf >= 0.3]
+    if not pts:
+        return None
+    cy, fh = statistics.median(a for a, _ in pts), statistics.median(b for _, b in pts)
+    src_w, src_h = index.media.width, index.media.height
+    _bw, bh = base_window(src_w, src_h, width / height)
+    win_h = bh * src_h
+    y0 = min(max(cy * src_h - win_h / 2, 0.0), src_h - win_h)
+
+    def out_y(v_src_px: float) -> float:
+        return (v_src_px - y0) / win_h * height
+
+    chin = out_y((cy + fh / 2) * src_h)
+    face_top = out_y((cy - fh / 2) * src_h)
+    eyes = face_top + _EYE_FRAC * (chin - face_top)
+    head_ratio = vis.head_top_ratio if vis is not None and getattr(vis, "head_top_ratio", None) else p.head_top_prior
+    crown = face_top - head_ratio * (chin - face_top)
+    hs = height / REF_H
+    block = caption_block_height(style, 1, scale=width / REF_W)
+    strict_bottom = height - zone.bottom
+    floor = height - zone.relaxed_bottom
+    top = chin + p.chin_gap_px * hs
+    top_min = chin + p.chin_gap_min_px * hs
+    out: dict[str, Any] = {"chin_px": round(chin, 1), "eye_line_px": round(eyes, 1), "head_top_px": round(crown, 1),
+                           "block_h_px": round(block, 1), "strict_band_bottom_px": round(strict_bottom, 1),
+                           "relaxed_floor_px": round(floor, 1), "band_top_px": round(zone.top, 1),
+                           "size_px": style.size_px}
+    # (a) just under the chin at the preferred gap, else the minimum gap
+    best_top = top if top + block <= floor else top_min
+    out["below_chin"] = {"top_px": round(best_top, 1), "bottom_px": round(best_top + block, 1),
+                         "fits_strict": best_top + block <= strict_bottom + 0.5,
+                         "fits_relaxed": best_top + block <= floor + 0.5,
+                         "into_ui_px": round(max(0.0, best_top + block - strict_bottom), 1)}
+    # (b) the largest size (not under the legibility floor) that fits under the chin, strict band / relaxed floor
+    def largest(bottom_limit: float) -> int | None:
+        for sz in range(int(style.size_px), int(p.min_size_px) - 1, -2):
+            bk = caption_block_height(style.model_copy(update={"size_px": sz}), 1, scale=width / REF_W)
+            if top_min + bk <= bottom_limit + 0.5:
+                return sz
+        return None
+
+    out["smaller_text_px"] = largest(strict_bottom)
+    out["smaller_text_relaxed_px"] = largest(floor) if not out["below_chin"]["fits_relaxed"] else None
+    # (c) a base reframe lifting the chin (crop pushed to the bottom of the source) so a full-size one-line block sits
+    #     at the preferred gap under it; x1.2 upsampling is clean on a 1080p source
+    chin_src = (cy + fh / 2) * src_h
+
+    def lift(bottom_limit: float) -> float:
+        target = bottom_limit - block - p.chin_gap_px * hs
+        if chin <= target:
+            return 1.0
+        if src_h - chin_src <= 1.0:
+            return math.inf
+        return max(1.0, (1.0 - target / height) * win_h / (src_h - chin_src))
+
+    ok = _ok_scale(index, height)
+    relaxed_scale, strict_scale = lift(floor), lift(strict_bottom)
+    out["reframe"] = {"relaxed_scale": relaxed_scale, "strict_scale": strict_scale, "clean_scale": round(ok, 3),
+                      "centre_y": (src_h - win_h / (2 * relaxed_scale)) / src_h if math.isfinite(relaxed_scale)
+                      else None,
+                      "head_top_after_px": round(height - (height - crown) * relaxed_scale, 1)
+                      if math.isfinite(relaxed_scale) else None}
+    # (d) the band above the head, clear of the hair
+    ab_top = max(crown - p.crown_gap_px * hs - block, zone.top)
+    out["above_head"] = {"top_px": round(ab_top, 1), "bottom_px": round(ab_top + block, 1),
+                         "clear_of_hair": ab_top + block <= crown + p.head_overlap_tol_frac * (chin - face_top) + 0.5,
+                         "above_eyes": True}
+    return out
+
+
 def _page_text(toks: Sequence[_Tok]) -> str:
     return " ".join(t.text for t in toks)
 
@@ -1283,24 +1938,47 @@ def build_caption_pages(index: TakeIndex, doc: CutDocument, timeline: Timeline, 
     return _place_pages(pages_out, timeline, index, zone, params, positions)
 
 
+def _section_key(timeline: Timeline, a: Fraction, b: Fraction) -> tuple:
+    """Pages with the same key share one framing section (same crop, same split/PiP layout)."""
+    t = (a + b) / 2
+    seg = timeline.segment_at(t)
+    sc, cx, cy = _framing_at(seg.framing, t) if seg is not None else (1.0, 0.5, 0.5)
+    lay = tuple(sorted(x.insert_id for x in _covering_inserts(timeline, t)))
+    return (round(sc, 2), round(cx, 2), round(cy, 2), lay)
+
+
 def _place_pages(pages: list[TimelineCaptionPage], timeline: Timeline, index: TakeIndex, zone: SafeZone,
                  params: CaptionParams, positions: Sequence[tuple[str | None, float | None]] | None = None
                  ) -> list[TimelineCaptionPage]:
     placer = _Placer(timeline, index, zone, params)
+    spans = [(to_fraction(pg.out_start), to_fraction(pg.out_end)) for pg in pages]
+    faces = [_faces_during(timeline, index, a, b, params.face_sample_s, params) for a, b in spans]
+    keys = [_section_key(timeline, a, b) for a, b in spans]
+    section: dict[int, list[_FaceOut]] = {}
+    k = 0
+    while k < len(pages):
+        j = k
+        while j + 1 < len(pages) and keys[j + 1] == keys[k]:
+            j += 1
+        merged = [f for i in range(k, j + 1) for f in faces[i]]
+        for i in range(k, j + 1):
+            section[i] = merged
+        k = j + 1
     out: list[TimelineCaptionPage] = []
     for k, pg in enumerate(pages):
         pos, yn = positions[k] if positions is not None else (None, None)
         text = pg.text or " ".join(w.text for w in pg.words)
-        pl = placer.place(pg.style, text, to_fraction(pg.out_start), to_fraction(pg.out_end), position=pos, y_norm=yn)
-        _, bh = _page_block(pg.style, text, timeline.width, params, pl.scale)
+        a, b = spans[k]
+        pl = placer.place(pg.style, text, a, b, position=pos, y_norm=yn, faces=faces[k],
+                          section_faces=section.get(k) or None)
+        bh = placer._fit(pg.style, text, pl.scale).height
         y_norm = min(max((pl.top + bh / 2) / timeline.height, 0.0), 1.0)
         style = pg.style
         if pl.scale < 0.999:
             style = style.model_copy(update={"size_px": max(24, round(style.size_px * pl.scale)),
                                              "stroke_px": round(style.stroke_px * pl.scale, 2)})
-        out.append(pg.model_copy(update={"y_norm": round(y_norm, 5), "style": style}))
+        out.append(pg.model_copy(update={"y_norm": round(y_norm, 5), "style": style, "placement": pl.fallback}))
     return out
-
 
 def place_captions(timeline: Timeline, index: TakeIndex, *, platform: str | Iterable[str] | None = "tiktok",
                    settings: Settings | None = None, params: CaptionParams | None = None) -> Timeline:
@@ -1317,16 +1995,19 @@ def caption_placement_issues(timeline: Timeline, index: TakeIndex, *, platform: 
                              settings: Settings | None = None, params: CaptionParams | None = None,
                              relaxed_floor: bool = True) -> list[dict[str, Any]]:
     """QA helper for invariant 7: pages whose estimated block leaves the safe zone or covers the eyes/mouth
-    (face track after framing transforms). Empty list = pass."""
+    (face track after framing transforms). Empty list = pass. Advisory kinds that do not fail invariant 7:
+    ``covers_hair`` (the block sits on the hair or forehead) and ``below_size_floor`` (the page renders
+    under the legibility floor)."""
     constants = load_constants(settings)
     params = params or load_caption_params(settings, constants)
     zone = safe_zone_for(platform, width=timeline.width, height=timeline.height, constants=constants)
     W, H = timeline.width, timeline.height
-    bottom = H - (zone.caption_floor if relaxed_floor else zone.bottom)
+    bottom = H - (zone.relaxed_bottom if relaxed_floor else zone.bottom)
     issues: list[dict[str, Any]] = []
     for pg in timeline.captions:
         text = pg.text or " ".join(w.text for w in pg.words)
-        bw, bh = _page_block(pg.style, text, W, params)
+        fit = caption_fit(pg.style, text, W, params, max_width=W - zone.left - zone.right)
+        bw, bh = fit.width, fit.height
         cy = pg.y_norm * H
         left, right = zone.left, W - zone.right
         cx = min(max(W / 2, left + bw / 2), right - bw / 2)
@@ -1338,10 +2019,18 @@ def caption_placement_issues(timeline: Timeline, index: TakeIndex, *, platform: 
         if bw > right - left + 0.5:
             issues.append({"page": pg.page_id, "kind": "too_wide", "refs": refs, "width": round(bw, 1)})
         faces = _faces_during(timeline, index, to_fraction(pg.out_start), to_fraction(pg.out_end),
-                              params.face_sample_s)
+                              params.face_sample_s, params)
         if any(_overlap(block, f.protected(params)) > 0 for f in faces):
             issues.append({"page": pg.page_id, "kind": "covers_face", "refs": refs,
                            "block": [round(v, 1) for v in block]})
+        elif any(_overlap(block, f.hair(params)) > 0 and block[1] < f.chin
+                 and block[3] > f.head_top(params) + params.head_overlap_tol_frac * f.h + 0.5 for f in faces):
+            issues.append({"page": pg.page_id, "kind": "covers_hair", "refs": refs,
+                           "block": [round(v, 1) for v in block]})
+        floor = min(pg.style.size_px, params.min_size_px) * W / REF_W
+        if fit.size_px < floor - 0.5:
+            issues.append({"page": pg.page_id, "kind": "below_size_floor", "refs": refs,
+                           "size_px": round(fit.size_px, 1)})
     return issues
 
 

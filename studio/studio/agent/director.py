@@ -29,12 +29,12 @@ scale after the face-safe clamp, seams, inserts, text dwell, caption pages over 
 media, captures, generated stills when the account allows), ``auto_captions``, ``voice_plan``,
 ``music_options`` (ElevenLabs beds fitted to this cut), ``sfx_guidance`` and ``measure_color``.
 
-Models: the house Director is ``Settings.director_model`` (``claude-fable-5-1``) at ``high`` effort unless
-``STUDIO_DIRECTOR_EFFORT`` says otherwise; unavailable models (404/403/retention) fall back inside the
-request (:func:`studio.agent.providers.build_model`), and a refusal or a persistent overload switches the
-rest of the edit to ``Settings.director_fallback_model`` in a fresh context (a model's thinking cannot move
-to another model). A BYOK spec (``ModelSpec(byok=True)``) never falls back to a house model: billing never
-switches silently.
+Models: the house Director is ``Settings.director_model`` (``claude-fable-5-1``) at ``Settings.director_effort``
+(``max``: quality is the only goal) unless ``STUDIO_DIRECTOR_EFFORT`` says otherwise; unavailable models
+(404/403/retention) fall back inside the request (:func:`studio.agent.providers.build_model`), and a refusal or a
+persistent overload switches the rest of the edit to ``Settings.director_fallback_model`` in a fresh context (a
+model's thinking cannot move to another model). A BYOK spec (``ModelSpec(byok=True)``) never falls back to a house
+model and never enables server-side model fallbacks: billing and the model never switch silently.
 
 State for resuming after a crash lives in ``logs/director_state.json`` (finished stages with summaries
 and document versions) and ``logs/director_messages.json`` (the conversation).
@@ -49,7 +49,7 @@ import math
 import os
 import re
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -115,7 +115,8 @@ REQUEST_LIMITS: dict[str, int] = {
 
 DIRECTOR_TOOL_NAMES: tuple[str, ...] = (
     "finish_stage", "radio_test", "compile_check", "check_seams", "broll_search", "broll_use", "broll_screenshot",
-    "broll_generate", "auto_captions", "voice_plan", "music_options", "sfx_guidance", "measure_color",
+    "broll_generate", "auto_captions", "caption_preview", "voice_plan", "music_options", "sfx_guidance",
+    "measure_color",
 )
 
 _TRANSIENT = ("overloaded", "server", "timeout", "connection", "rate_limit")
@@ -134,7 +135,7 @@ class DirectorError(RuntimeError):
 class DirectorOptions:
     """Knobs for a Director run (the defaults are the quality path)."""
 
-    effort: str | None = None  # None: STUDIO_DIRECTOR_EFFORT or "high"
+    effort: str | None = None  # None: Settings.director_effort (STUDIO_DIRECTOR_EFFORT, default "max")
     request_limits: dict[str, int] = field(default_factory=lambda: dict(REQUEST_LIMITS))
     transient_retries: int = 2
     backoff_s: tuple[float, ...] = (20.0, 60.0)
@@ -144,11 +145,11 @@ class DirectorOptions:
 
 
 def director_spec(settings: Settings | None = None, *, effort: str | None = None) -> ModelSpec:
-    """The house Director spec (``Settings.director_*``) at ``effort`` (default: env
-    ``STUDIO_DIRECTOR_EFFORT`` or ``high``)."""
+    """The house Director spec (``Settings.director_*``) at ``effort`` (default: ``Settings.director_effort``, which
+    ``STUDIO_DIRECTOR_EFFORT`` sets; ``max`` when unset)."""
     s = settings or get_settings()
     spec = house_spec("director", settings=s)
-    eff = effort or os.environ.get("STUDIO_DIRECTOR_EFFORT") or "high"
+    eff = effort or os.environ.get("STUDIO_DIRECTOR_EFFORT") or s.director_effort or "max"
     return spec.model_copy(update={"effort": eff})
 
 
@@ -172,6 +173,12 @@ class DirectorSession(EditSession):
         self.compile_sig: Any = None
         self.seams_sig: Any = None
         self.seams_unavailable = False
+        self.caption_preview_sig: Any = None
+        self.caption_preview_unavailable = False
+        #: questions for the critics from the last finish_stage (answered when the next render is critiqued)
+        self.critic_questions: list[str] = []
+        #: the document a revise/chat round started from (its exit test compares against it)
+        self.base_doc: Any = None
         super().__init__(*args, **kwargs)
 
     def set_stage(self, stage: str | None) -> None:
@@ -181,6 +188,7 @@ class DirectorSession(EditSession):
         self.stage_done = False
         self.stage_summary = None
         self.finished_version = None
+        self.critic_questions = []
 
     def allowed_families(self) -> tuple[str, ...]:
         if self.stage is None:
@@ -206,6 +214,22 @@ def _cut_sig(doc: CutDocument) -> tuple[Any, ...]:
                   s.seam_in.lead_ms) for s in doc.segments)
 
 
+def _seam_set(doc: CutDocument) -> set[tuple[str, str]]:
+    return {(a.to_word, b.from_word) for a, b in zip(doc.segments, doc.segments[1:], strict=False)}
+
+
+def _caption_sig(doc: CutDocument) -> str:
+    """Everything that decides where and how the captions render: the plan and style, the story, framing and
+    punch-ins, inserts and texts."""
+    return json.dumps({
+        "c": doc.captions.model_dump(mode="json") if doc.captions is not None else None,
+        "s": [(s.from_word, s.to_word, s.speed, s.seam_in.kind,
+               s.framing.model_dump(mode="json") if s.framing is not None else None) for s in doc.segments],
+        "i": [(i.id, i.mode, i.anchor_from_word, i.anchor_to_word) for i in doc.inserts],
+        "t": [(t.id, t.kind, t.anchor_from_word, t.anchor_to_word, str(t.position)) for t in doc.texts],
+        "d": [d.platform for d in doc.deliverables]}, sort_keys=True, default=str)
+
+
 # ============================================================================================ state
 @dataclass
 class StageRecord:
@@ -218,6 +242,7 @@ class StageRecord:
     ended_at: float = 0.0
     requests: int = 0
     note: str = ""
+    questions: list[str] = field(default_factory=list)  # for the critics (finish_stage questions_for_critics)
 
 
 @dataclass
@@ -315,7 +340,12 @@ def _stage_prompt(stage: str, ctx: dict[str, Any]) -> str:
             "set_brief (goal = the one idea in 25 words or fewer; audience; hook = the promise of the first 3 s; "
             "beats; target_length_s; cta = only a CTA the creator actually says; vibe; visual_plan and sound_plan, "
             "writing 'none' where that is the call; donts; deviations from doctrine priors with one-line reasons; "
-            "rubric = 6-10 binary yes/no questions a critic can check on the render) and set_style (primary, at most "
+            "rubric = 6-10 binary yes/no questions about what a viewer experiences, each checkable on the rendered "
+            "video by someone who never saw your plan, e.g. 'Muted, does the first caption page state the topic by "
+            "2 s?', 'Is every caption readable at phone size without covering the face?', 'Does the payoff land "
+            "before any swipe-worthy stretch?'. Never restate your own add/skip decisions as a check (not 'Is there "
+            "no music?', not 'Is there at most one punch-in?'): critics grade the viewer's experience, not conformance "
+            "to your plan) and set_style (primary, at most "
             "one blend, dials from the measured energy). Name the payoff and spoken-CTA word IDs in the brief (beats / "
             "cta): pins can only hold words that are in the story, so you pin them right after building the story.\n"
             f"{caps}\n"
@@ -344,8 +374,10 @@ def _stage_prompt(stage: str, ctx: dict[str, Any]) -> str:
             "the human ones; give every seam a treatment (set_seam: cut, jcut/lcut with lead_ms, punch) — each seam "
             "must remove a named problem. Speed stays 1.0 unless doctrine says otherwise.\n"
             "Then call compile_check (every pause you set comes back as asked → kept: a kept breath can leave a pause "
-            "longer than asked) and check_seams (frames either side of every cut: face jump, blink, mouth), and fix "
-            "visible jumps mid-thought (move the seam to a thought boundary, J/L it into a shared silence, or punch).\n"
+            "longer than asked) and check_seams (frames either side of every cut: face jump, blink, mouth; and what "
+            "the ear gets: the pause the compile keeps, clause edge or MID-CLAUSE, words a recording dropout CHOPS, "
+            "untranscribed sound in a pad, the click detector), and fix visible jumps mid-thought (move the seam to a "
+            "thought boundary, J/L it into a shared silence, or punch) and every audible problem it names.\n"
             "Exit: no seam without a named problem; nothing clipped; rhythm fits the measured energy. The picture "
             "locks when you call finish_stage."
         )
@@ -354,8 +386,9 @@ def _stage_prompt(stage: str, ctx: dict[str, Any]) -> str:
             "FINISHING PASS 1/5 — REFRAME AND PUNCH-INS (stage 4/9).\n"
             "Load framing-and-zooms. Decide base framing and any punch-ins (framing_ops set_framing on a segment or a "
             "word range, anchored on stressed words). A 1080p source cannot punch past the face-safe ceiling: "
-            "compile_check reports asked → rendered scale; when you need more than it allows, prefer a cutaway or "
-            "nothing. Zero punch-ins is a valid answer, especially for a calm speaker. Then finish_stage."
+            "compile_check reports asked → rendered scale and how much of the video it softens (upsampling above "
+            "x1.2); when you need more than it allows, prefer a cutaway or nothing, and return to the base framing "
+            "after the beat. Zero punch-ins is a valid answer, especially for a calm speaker. Then finish_stage."
         )
     if stage == "broll":
         return (
@@ -374,9 +407,16 @@ def _stage_prompt(stage: str, ctx: dict[str, Any]) -> str:
         return (
             "FINISHING PASS 3/5 — CAPTIONS AND ON-SCREEN TEXT (stage 6/9).\n"
             "Load captions-and-text. Captions are on by default: call auto_captions to page the kept words (it applies "
-            "a plan and reports each page's time on screen and reading speed); fix bad breaks, accents or display "
-            "text with captions_ops edit_caption_page / set_caption_style; never delete words to fix reading speed. "
-            "Add a hook title, callout or list only when it has a job (add_text). Then finish_stage."
+            "a plan and reports each page's time on screen, reading speed, size and where it lands, plus the "
+            "placement options on this take with their measured costs: under the chin in the strict band or the "
+            "relaxed floor, smaller text, a base reframe that lifts the chin, above the head). None of them is "
+            "imposed: choose position (auto_captions position=...), size and framing for this creator, and record "
+            "why with a meta_ops note. Fix bad breaks, accents or display text with captions_ops edit_caption_page / "
+            "set_caption_style; never delete words to fix reading speed. Add a hook title, callout or list only when "
+            "it has a job (add_text). Then call caption_preview and look at the rendered pages on the framed picture "
+            "under the platform UI mask at phone scale: size, place, and whether the eye stays on the face. The "
+            "stage cannot finish until you have looked at the captions after your last caption or framing change. "
+            "Then finish_stage."
         )
     if stage == "sound":
         return (
@@ -398,14 +438,139 @@ def _stage_prompt(stage: str, ctx: dict[str, Any]) -> str:
     if stage == "finalize":
         return (
             "STAGE 9/9 — FINALIZE.\n"
-            "Read get_transcript(view='cut') and run compile_check once more. Resolve validation warnings that matter, "
-            "record hook alternates only when the footage supports a real alternative (meta_ops set_hook_alternates), "
-            "and leave a closing note. Add nothing new. Then finish_stage; the document goes to render and critique."
+            "Read get_transcript(view='cut') and run compile_check once more. Resolve validation warnings that matter "
+            "and leave a closing note. Add nothing new. Hook alternates (meta_ops set_hook_alternates) are real "
+            "variants: after the champion settles you build each one from it, it is rendered at full quality and "
+            "judged pairwise against the champion with positions swapped; the winner ships and the other is "
+            "delivered as an alternate. Record one only when two openings are both defensible and the footage "
+            "supports both (at most two). Then finish_stage(summary, questions_for_critics=[...]): the document goes "
+            "to render and critique, and the critics answer your questions (ID-anchored, about what you are unsure "
+            "of) in the first review."
         )
     raise ValueError(f"no default prompt for stage {stage!r}")
 
 
 # ============================================================================================ small helpers
+def _caption_layout_lines(tl: Any, doc: Any, index: Any = None) -> list[str]:
+    """How the caption pages will render: size on screen, wraps, and where the placer put them (and why)."""
+    from studio.compile import captions as cap
+
+    W, H = tl.width, tl.height
+    ws = W / 1080.0
+    style = doc.captions.style if doc.captions is not None else None
+    req = style.size_px if style is not None else tl.captions[0].style.size_px
+    base_lines = style.lines if style is not None else 1
+    sizes: list[float] = []
+    small: list[str] = []
+    wrapped: list[str] = []
+    two_line: list[str] = []
+    kinds: dict[str, int] = {}
+    tops: set[int] = set()
+    one_line = 0
+    for p in tl.captions:
+        text = p.text or " ".join(w.text for w in p.words)
+        fit = cap.caption_fit(p.style, text, W)
+        px = fit.size_px / ws
+        sizes.append(px)
+        if px < req * 0.9 - 0.5:
+            small.append(f"{p.page_id} \"{_clip(text, 28)}\" {px:.0f}px")
+        if fit.lines > base_lines:
+            wrapped.append(f"{p.page_id} \"{fit.display}\"")
+        elif fit.lines > 1:
+            two_line.append(f"{p.page_id} \"{fit.display}\"")
+        else:
+            one_line += 1
+        kinds[p.placement or "?"] = kinds.get(p.placement or "?", 0) + 1
+        tops.add(round((p.y_norm * H - fit.height / 2) / H * 1920))
+    # how much one line holds at the chosen size (the doctrine's "≈20 chars per 690 px" depends on the font)
+    st0 = style or tl.captions[0].style
+    probe = "the quick brown fox jumps over lazy dogs"
+    per_char = cap.estimate_text_width(probe, st0.size_px, st0.font, weight=st0.weight) / len(probe)
+    cap_chars = int(690 / max(per_char, 1e-6))
+    out = [f"  on screen: {min(sizes):.0f}-{max(sizes):.0f} px (style {req} px; floor 64 px), "
+           f"{len(tops)} caption height(s), placement " + ", ".join(f"{k} {v}" for k, v in sorted(kinds.items())),
+           f"  one line holds ~{cap_chars} characters at {st0.size_px} px {st0.font} {st0.weight}: {one_line}/"
+           f"{len(tl.captions)} pages are one line"]
+    first = tl.captions[0]
+    f0 = cap.caption_fit(first.style, first.text or " ".join(w.text for w in first.words), W)
+    if f0.size_px / ws < req * 0.97 - 0.5 or f0.lines > 1 or first.placement in ("least_bad", "on_hair"):
+        out.append(f"  HOOK PAGE {first.page_id} \"{f0.display}\" renders at {f0.size_px / ws:.0f} px, "
+                   f"{f0.lines} line(s), placement {first.placement}: frame 0 is the cover and the first read, give it "
+                   "a short one-line page at full size (edit_caption_page / re-page)")
+    out.extend(_placement_option_lines(tl, doc, index, st0, kinds))
+    if kinds.get("on_hair"):
+        out.append("  on_hair pages: the block sits over the hair or forehead (between the head top and the eyes)")
+    if kinds.get("least_bad"):
+        out.append("  least_bad pages: no clean spot (they may graze the hair or chin, never eyes or mouth)")
+    if small:
+        out.append("  shrunk to fit one line: " + "; ".join(small[:10]) + " - split the page, or use fewer words")
+    if wrapped:
+        out.append("  wrapped past the style's lines (too wide even at the floor): " + "; ".join(wrapped[:10])
+                   + " - split the page")
+    if two_line:
+        out.append("  two-line pages (line break shown as /): " + "; ".join(two_line[:12]))
+    return out
+
+
+def _placement_option_lines(tl: Any, doc: Any, index: Any, style: Any, kinds: dict[str, int]) -> list[str]:
+    """The caption positions this take allows, with their measured costs (median face, base framing); the Director
+    chooses. Nothing here is an instruction."""
+    from studio.compile import captions as cap
+
+    if index is None:
+        return []
+    W, H = tl.width, tl.height
+    try:
+        zone = cap.safe_zone_for([d.platform for d in doc.deliverables] or ["tiktok"], width=W, height=H)
+        o = cap.placement_options(index, style=style, zone=zone, width=W, height=H)
+    except Exception:
+        return []
+    if o is None:
+        return []
+    now = ", ".join(f"{k} {v}" for k, v in sorted(kinds.items()))
+    bc, rf, ab = o["below_chin"], o["reframe"], o["above_head"]
+    lines = [f"  placement options on this take (median face, base framing: chin y{o['chin_px']:.0f}, eye line "
+             f"y{o['eye_line_px']:.0f}, head top y{o['head_top_px']:.0f}; strict text band ends "
+             f"y{o['strict_band_bottom_px']:.0f}, relaxed caption floor y{o['relaxed_floor_px']:.0f}; a one-line "
+             f"block at {o['size_px']} px is {o['block_h_px']:.0f} px tall). Now: {now}. The doctrine's prior is the "
+             "top edge 40-120 px under the chin; when nothing fits it lists smaller text, then the lower band, then a "
+             "matte, then folding a title into the captions. Pages follow the head, so a bobbing chin pushes some "
+             "pages lower than these medians:"]
+    if bc["fits_strict"]:
+        cost = "fits inside the strict band"
+    elif bc["fits_relaxed"]:
+        cost = (f"{bc['into_ui_px']:.0f} px into the strict band (platform UI only when a post description runs "
+                "long), inside the relaxed floor")
+    else:
+        cost = "does not fit above the relaxed floor at this size"
+    lines.append(f"   (a) just under the chin: top y{bc['top_px']:.0f}, bottom y{bc['bottom_px']:.0f}: {cost} "
+                 "[auto_captions position='below_chin']")
+    rel_small = o.get("smaller_text_relaxed_px")
+    lines.append("   (b) smaller text under the chin: inside the strict band "
+                 + (f"at {o['smaller_text_px']} px" if o["smaller_text_px"] else
+                    "nothing fits down to the 64 px legibility floor")
+                 + (f"; above the relaxed floor at {rel_small} px" if rel_small else ""))
+    rs, ss, ok = rf.get("relaxed_scale"), rf.get("strict_scale"), rf.get("clean_scale") or 1.0
+
+    def scale_txt(v: Any) -> str:
+        if v is None:
+            return "n/a"
+        if v == float("inf"):
+            return "impossible (the face sits at the bottom of the source)"
+        return f"x{v:.2f}" + (" (soft: past this source's clean upsampling)" if v > ok + 1e-6 else "")
+
+    how = (f" (set_framing scale {rs:.2f}, center {{x: 0.5, y: {rf['centre_y']:.2f}}})"
+           if rs not in (None, float("inf")) and rf.get("centre_y") is not None and rs > 1.0 + 1e-6 else "")
+    lines.append(f"   (c) a base reframe that lifts the chin (framing_ops set_framing on every segment, crop low): "
+                 f"{scale_txt(rs)} fits the relaxed floor{how}, {scale_txt(ss)} the strict band; this source stays "
+                 f"clean to x{ok:.2f}; it also crops the top of the frame and enlarges the face")
+    lines.append(f"   (d) above the head: top y{ab['top_px']:.0f}, bottom y{ab['bottom_px']:.0f}, "
+                 + ("clear of the hair" if ab["clear_of_hair"] else "on the hair") + "; not in the doctrine's fallback "
+                 "list: the eye leaves the face to find the text [auto_captions position='auto' falls back to it]")
+    lines.append("  Choose for this creator and footage, record why (meta_ops note), then look with caption_preview.")
+    return lines
+
+
 def _fmt_s(t: float | Fraction | None) -> str:
     return "-" if t is None else f"{float(t):.2f}s"
 
@@ -602,8 +767,10 @@ class Director:
                 + summarize_doc(self.session.doc, self.index, job=self.job)
                 + "\n\nRe-read what you need with the query tools, then continue.\n\n" + prompt)
 
-    def run_stage(self, stage: str, prompt: str | None = None, *, record: bool = True) -> StageRecord:
-        """Run one stage to its exit (or the request guard) and return its record."""
+    def run_stage(self, stage: str, prompt: str | None = None, *, record: bool = True,
+                  attachments: Sequence[tuple[str, Path]] = ()) -> StageRecord:
+        """Run one stage to its exit (or the request guard) and return its record. ``attachments`` (label, image)
+        are shown with the stage's prompt."""
         from pydantic_ai import UsageLimits, capture_run_messages
         from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
         from pydantic_ai.messages import ModelRequest
@@ -617,8 +784,15 @@ class Director:
                     model=self.model_label)
         limit = self.options.request_limits.get(stage, 60)
         history: list[ModelMessage] = list(self.history)
-        user_prompt: str | None = prompt if history or not self.state.completed else \
-            self._fresh_context_prompt(stage, prompt)
+
+        def with_images(text: str) -> Any:
+            if not attachments:
+                return text
+            imgs = self._images([(label, Path(p)) for label, p in attachments if Path(p).exists()])
+            return [text, *imgs] if imgs else text
+
+        user_prompt: Any = with_images(prompt) if history or not self.state.completed else \
+            with_images(self._fresh_context_prompt(stage, prompt))
         transient = 0
         fresh_retry = False
         while True:
@@ -635,7 +809,7 @@ class Director:
                         _is_provider_error(e):
                     kind = map_provider_error(e, self.spec).kind
                     if self._switch_to_fallback(kind, e):
-                        history, user_prompt = [], self._fresh_context_prompt(stage, prompt)
+                        history, user_prompt = [], with_images(self._fresh_context_prompt(stage, prompt))
                         continue
                     raise DirectorError(map_provider_error(e, self.spec).message) from None
                 # the guard or a model that will not finish: keep what was done, end the stage explicitly
@@ -655,7 +829,7 @@ class Director:
                         history, user_prompt = list(captured), None  # resume the exact conversation
                     continue
                 if self._switch_to_fallback(err.kind, e):
-                    history, user_prompt = [], self._fresh_context_prompt(stage, prompt)
+                    history, user_prompt = [], with_images(self._fresh_context_prompt(stage, prompt))
                     continue
                 if err.kind == "bad_request" and history and not fresh_retry:
                     # an old conversation the API no longer accepts (expired image files, thinking blocks bound to
@@ -664,13 +838,14 @@ class Director:
                     self.history = []
                     self.session.new_conversation()
                     trace_event(self.job, "director_note", note="conversation rejected; continuing in a fresh context")
-                    history, user_prompt = [], self._fresh_context_prompt(stage, prompt)
+                    history, user_prompt = [], with_images(self._fresh_context_prompt(stage, prompt))
                     continue
                 raise DirectorError(err.message) from None
         rec.ended_at = time.time()
         rec.doc_version = self.session.doc.version
         if self.session.stage_done:
             rec.summary = self.session.stage_summary or ""
+            rec.questions = list(self.session.critic_questions)
         else:
             rec.forced = True
             rec.summary = rec.summary or "(stage ended without finish_stage)"
@@ -718,35 +893,71 @@ class Director:
             self.run_stage(stage)
         return self.session.doc
 
-    def revise(self, notes_text: str, *, base_version: int, round_no: int = 1) -> RevisionResult:
+    def revise(self, notes_text: str, *, base_version: int, round_no: int = 1, champion_render: Path | None = None,
+               attachments: Sequence[tuple[str, Path]] = (), raw_prompt: bool = False) -> RevisionResult:
         """One champion-loop revision: branch from ``base_version`` (the champion), let the Director act on the
-        critics' notes, and report whether anything that renders changed."""
+        critics' notes, and report whether anything that renders changed. ``champion_render`` (the render the critics
+        judged) becomes ``view_frames(source='render')``'s source; ``attachments`` are the critics' sheets, shown with
+        the notes. ``raw_prompt`` sends ``notes_text`` as the whole instruction (variant rounds)."""
         base = self.session.reload_doc(base_version)
-        prompt = (
-            f"RENDER REVIEW — round {round_no}. The champion render (document v{base_version}) was encoded, measured "
-            "and critiqued. The document is back at the champion version.\n\n" + notes_text + "\n\n"
-            "Load critique. Decide every note: fix, or decline with a one-line reason. Defects (confirmed P0/P1) "
-            "should be fixed; taste notes are options, never requirements. Prefer removing over adding, and fix at the "
-            "right layer (a sagging middle is a trim, not an insert). Every op family is open, including the story. "
-            "Run compile_check after touching the cut. Then finish_stage with one line per note (fixed / declined and "
-            "why). If nothing is worth changing, finish_stage without ops: that is a valid verdict."
-        )
-        rec = self.run_stage("revise", prompt, record=False)
+        self._point_at_render(champion_render)
+        self.session.base_doc = base
+        self.session.critic_questions = []
+        if raw_prompt:
+            prompt = notes_text
+        else:
+            prompt = (
+                f"RENDER REVIEW — round {round_no}. The champion render (document v{base_version}) was encoded, "
+                "measured and critiqued. The document is back at the champion version"
+                + (" and view_frames(..., source='render') shows that render (by word ID)" if champion_render
+                   is not None else "")
+                + (". The critics' own sheets are attached below" if attachments else "") + ".\n\n" + notes_text
+                + "\n\nLoad critique. Decide every note: fix, or decline with a one-line reason. Defects (confirmed "
+                "P0/P1) should be fixed; taste notes are options, never requirements. Prefer removing over adding, and "
+                "fix at the right layer (a sagging middle is a trim, not an insert; an engine artefact is reported, "
+                "never paid for with the creator's words). Every op family is open, including the story. The exit "
+                "test follows what you touch: radio_test after a story change, compile_check after a cut change, "
+                "check_seams when new seams appear, caption_preview after a caption or framing change. Then "
+                "finish_stage with one line per note (fixed / declined and why), and questions_for_critics for "
+                "anything you want the critics to check on the new render. If nothing is worth changing, finish_stage "
+                "without ops: that is a valid verdict."
+            )
+        rec = self.run_stage("revise", prompt, record=False, attachments=attachments)
         doc = self.session.doc
         changed = render_relevant(doc) != render_relevant(base)
         return RevisionResult(doc=doc, changed=changed, summary=rec.summary, base_version=base_version)
 
-    def chat(self, instruction: str, *, base_version: int | None = None) -> dict[str, Any]:
+    def _point_at_render(self, render_dir: Path | None) -> None:
+        """Make ``render_dir`` (a full-quality render: its primary final and timeline survive pruning) the render
+        view_frames(source='render') inspects."""
+        if render_dir is None:
+            return
+        rd = Path(render_dir)
+        finals = sorted(rd.glob("final_*.mp4"))
+        primary = next((f for f in finals if f.stem != "final_nomusic"), finals[0] if finals else None)
+        if primary is not None:
+            self.session.last_render = primary
+            tl = rd / "timeline.json"
+            self.session.last_timeline = tl if tl.exists() else None
+
+    def chat(self, instruction: str, *, base_version: int | None = None,
+             champion_render: Path | None = None) -> dict[str, Any]:
         """Apply a creator instruction (the instruction is the brief for this change)."""
         base = self.session.reload_doc(base_version) if base_version is not None else self.session.doc
         before = base.version
+        self._point_at_render(champion_render)
+        self.session.base_doc = base
         prompt = (
             f"CREATOR REQUEST (chat): \"{instruction}\"\n\n"
             "The creator's instruction is the brief for this change: carry it out cleanly and completely. Re-enter at "
             "the earliest stage it touches and repair anything that hangs off changed word IDs (captions, inserts, "
             "texts, SFX, music anchors). State a cost once in your summary if there is one; push back only when it "
-            "would break a hard invariant. Every op family is open. Then finish_stage summarizing exactly what "
-            "changed."
+            "would break a hard invariant. Every op family is open"
+            + (" and view_frames(..., source='render') shows the current delivered render" if champion_render
+               is not None else "")
+            + ". The exit test follows what you touch: radio_test after a story change, compile_check after a cut "
+            "change, check_seams when new seams appear, caption_preview after a caption or framing change. Then "
+            "finish_stage summarizing exactly what changed."
         )
         rec = self.run_stage("chat", prompt, record=False)
         doc = self.session.doc
@@ -841,7 +1052,7 @@ class Director:
         return compile_timeline(doc or self.session.doc, self.index, job=self.job)
 
     # ------------------------------------------------------------------ tool implementations
-    def t_finish_stage(self, summary: str) -> str:
+    def t_finish_stage(self, summary: str, questions_for_critics: Sequence[str] | None = None) -> str:
         s = self.session
         stage = s.stage or "?"
         summary = " ".join(str(summary or "").split())
@@ -853,6 +1064,7 @@ class Director:
         s.stage_done = True
         s.stage_summary = summary
         s.finished_version = s.doc.version
+        s.critic_questions = [" ".join(str(q).split()) for q in (questions_for_critics or []) if str(q).strip()][:6]
         return (f"Stage {stage} finished at document v{s.doc.version}. Reply with one short line and stop; the next "
                 "step follows.")
 
@@ -883,6 +1095,18 @@ class Director:
                 out.append("run compile_check on the current cut (pause targets asked → kept, seams)")
             if not s.seams_unavailable and s.seams_sig != _cut_sig(doc) and len(doc.segments) > 1:
                 out.append("run check_seams on the current cut and look at the frames either side of every seam")
+        if stage == "captions":
+            out.extend(self._caption_look_needed(doc))
+        if stage in ("revise", "chat") and s.base_doc is not None:
+            base = s.base_doc
+            if _story_sig(doc) != _story_sig(base) and s.radio_sig != _story_sig(doc):
+                out.append("the story changed: run radio_test on it and judge it as a listener")
+            if _cut_sig(doc) != _cut_sig(base) and s.compile_sig != _cut_sig(doc):
+                out.append("the cut changed: run compile_check on it (pause targets asked → kept, seams)")
+            if (_seam_set(doc) - _seam_set(base)) and not s.seams_unavailable and s.seams_sig != _cut_sig(doc):
+                out.append("new seams: run check_seams and look at the frames either side of them")
+            if _caption_sig(doc) != _caption_sig(base):
+                out.extend(self._caption_look_needed(doc))
         try:
             errs = [f for f in validate_document(doc, self.index, self.job) if f.level == "error"]
         except Exception:
@@ -890,6 +1114,15 @@ class Director:
         for f in errs[:8]:
             out.append(f"validation error {f.code}: {f.message}")
         return out
+
+    def _caption_look_needed(self, doc: CutDocument) -> list[str]:
+        s = self.session
+        if s.caption_preview_unavailable or (doc.captions is not None and not doc.captions.enabled):
+            return []
+        if s.caption_preview_sig == _caption_sig(doc):
+            return []
+        return ["look at the rendered captions: call caption_preview (after your last caption or framing change) and "
+                "judge size, place and the eye's path at phone scale"]
 
     # ---------------------------------------------------------------- radio test
     def _radio_blockers(self) -> list[str]:
@@ -902,6 +1135,12 @@ class Director:
         spoken = [w for w in kept if ix.word(w).kind not in ("event",)]
         if spoken and ix.word(spoken[-1]).kind == "cutoff":
             out.append(f"the story ends on a cut-off word ({spoken[-1]} {ix.word(spoken[-1]).text!r})")
+        chopped = [w for w in kept if ix.word(w).truncated]
+        if chopped:
+            out.append("words the recording itself chops (a digital-silence dropout) are kept: "
+                       + ", ".join(f"{w} {ix.word(w).display()!r}" for w in chopped[:8])
+                       + " — the listener hears a chopped word (invariant 1 fails): cut them, and move the seam to a "
+                         "clean clause edge nearby")
         return out
 
     def t_radio_test(self) -> str:
@@ -1067,20 +1306,35 @@ class Director:
             seams.append(f"  {A.seg_id}→{B.seg_id} at {float(B.out_start):.2f} s ({what}, {kind}): …{lw} \"{lt}\" | "
                          f"{rw} \"{rt}\"…")
         lines.append(f"Seams ({len(seams)}):" + ("\n" + "\n".join(seams) if seams else " none"))
-        # framing asked → rendered
+        # framing asked → rendered, with the picture's upsampling (output px per source px) and how long it holds
+        from studio.compile.timeline import base_window
+
         fr = []
+        src_w, src_h = ix.media.width, ix.media.height
+        _bw, bh = base_window(src_w, src_h, tl.width / tl.height)
+        base_up = tl.height / max(1.0, bh * src_h)  # output px per source px at scale 1
+        total = float(tl.duration) or 1.0
         for seg in doc.segments:
             want = seg.framing.scale if seg.framing is not None else (1.3 if seg.seam_in.kind == "punch" else None)
-            if want is None:
+            pieces_ = [p for p in tl.segments if p.seg_id == seg.id]
+            got = max((key.scale for p in pieces_ for key in p.framing), default=1.0)
+            up = base_up * got
+            held = sum(float(p.out_end - p.out_start) for p in pieces_)
+            if want is None and up <= 1.2 + 1e-6:
                 continue
-            got = max((key.scale for p in tl.segments if p.seg_id == seg.id for key in p.framing), default=1.0)
             flag = ""
-            if got + 0.01 < want:
+            if want is not None and got + 0.01 < want:
                 flag = (" — CLAMPED by the face-safe ceiling (more would look soft); a punch below 1.25x may not hide "
                         "a pose jump: consider a cutaway, a J/L into a pause, or no punch")
-            fr.append(f"  {seg.id}: asked x{want:.2f} → rendered x{got:.2f}{flag}")
+            if up > 1.2 + 1e-6:
+                flag += (f" — SOFT: the picture is upsampled x{up:.2f} (clean up to x1.2) for {held:.1f} s "
+                         f"({held / total * 100:.0f}% of the video)" + ("; punch for the beat, then return to 1.0"
+                                                                       if want is not None and got > 1.0 else ""))
+            fr.append(f"  {seg.id}: " + (f"asked x{want:.2f} → rendered x{got:.2f}" if want is not None else
+                                         f"base framing x{got:.2f}") + flag)
         if fr:
-            lines.append("Framing (asked → rendered):\n" + "\n".join(fr))
+            lines.append(f"Framing (asked → rendered; source {src_w}x{src_h}, base upsampling x{base_up:.2f}):\n"
+                         + "\n".join(fr))
         if tl.inserts:
             lines.append("Inserts:\n" + "\n".join(
                 f"  {i.insert_id} {i.mode} {float(i.out_start):.2f}–{float(i.out_end):.2f} s "
@@ -1110,6 +1364,7 @@ class Director:
                                                                   else " (automatic paging)")
                          + f", reading speed max {max(cps_all):.0f} CPS, "
                            f"median {sorted(cps_all)[len(cps_all) // 2]:.0f} CPS")
+            lines.extend(_caption_layout_lines(tl, doc, ix))
             if fast:
                 lines.append("  over 20 CPS: " + "; ".join(fast[:12]) + " — re-page (merge with a neighbour), never "
                              "delete words")
@@ -1185,6 +1440,7 @@ class Director:
 
         events = ix.visual.events if ix.visual is not None else []
         blinks = [(e.start_us, e.end_us) for e in events if e.kind == "blink"]
+        audio_facts, audio_head = self._seam_audio_facts(tl, pairs)
         for k, (A, B) in enumerate(pairs, start=1):
             t_out = max(0, A.src_out_us - fus)
             t_in = B.src_in_us
@@ -1212,6 +1468,8 @@ class Director:
                 desc += "face not measured on both sides"
             if any(a <= t_in < b or a <= t_out < b for a, b in blinks):
                 desc += "; a blink touches the cut (hides it)"
+            if audio_facts.get(k - 1):
+                desc += "\n      audio: " + audio_facts[k - 1]
             meas.append(desc)
         # two seams per row (OUT, IN, OUT, IN)
         sheet = fr.contact_sheet(self.job, items, index=ix, source="proxy", columns=4,
@@ -1222,8 +1480,76 @@ class Director:
                           "mid-word, or a head snap; fix with a seam move, J/L, punch or cutaway (or accept it between "
                           "thoughts)."]
         out.extend(self._images([("Seam sheet", sheet)]))
-        out.append("\n".join(meas))
+        out.append("\n".join(meas + ([audio_head] if audio_head else [])))
         return out
+
+    def _seam_audio_facts(self, tl: Any, pairs: list[tuple[Any, Any]]) -> tuple[dict[int, str], str]:
+        """Per seam (index into ``pairs``): what the ear gets — the pause the compile actually keeps, a clause or
+        beat edge (from punctuation), words the recording itself chops, untranscribed sound in the pads, and the
+        click detector on a dialogue-only assembly (no video render: works when previews are blocked). Plus a
+        line for hard stops at recording dropouts elsewhere in kept audio."""
+        from studio.compile.audio import assemble_dialogue, soften_dropout_edges
+        from studio.qa import metrics as M
+
+        ix = self.index
+        facts: dict[int, str] = {}
+        try:
+            import soundfile as sf
+
+            x, sr = sf.read(str(self.job.audio_path), dtype="float32", always_2d=True)
+            x = x.mean(axis=1)
+            x = soften_dropout_edges(x, sr, ix)
+            if sr != tl.sample_rate:
+                raise ValueError("sample rate mismatch")
+            dia = assemble_dialogue(tl, x, sr, index=ix).audio
+        except Exception as e:  # audio facts are advisory: frames still come back
+            return {}, f"(seam audio audition unavailable: {type(e).__name__})"
+        times = [M._audio_seam_t(B) for _A, B in pairs]
+        labels = [(A.word_ids[-1] if A.word_ids else None, B.word_ids[0] if B.word_ids else None) for A, B in pairs]
+        src = [(round(A.audio_src_out_us * sr / 1e6), round(B.audio_src_in_us * sr / 1e6)) for A, B in pairs]
+        try:
+            clicks = M.detect_seam_clicks(dia, sr, times, labels=labels, source=x, source_samples=src)
+        except Exception:
+            clicks = []
+        integ = M.word_integrity(tl, ix)
+        wm = tl.word_map
+        for k, (_A, _B) in enumerate(pairs):
+            lw, rw = labels[k]
+            bits: list[str] = []
+            if lw and rw and wm.get(lw) is not None and wm.get(rw) is not None:
+                pause = float(wm[rw].out_start - wm[lw].out_end) * 1000
+                bits.append(f"compiled pause {pause:.0f} ms between the words")
+            if lw and rw and ix.has_word(lw) and ix.has_word(rw):
+                l_end = M._clause_end(ix.word(lw).text)
+                r_start = M._punct_start(ix, rw)
+                bits.append("between sentences" if M._SENTENCE_END.search(ix.word(lw).text.strip()) else
+                            "at a clause edge" if (l_end or r_start) else "MID-CLAUSE (no punctuation either side)")
+            for w in (lw, rw):
+                if w and ix.has_word(w) and ix.word(w).truncated:
+                    bits.append(f"{w} {ix.word(w).display()!r} is CHOPPED by a recording dropout")
+            leaks = [d for d in integ.sound_leaks if d.get("before_word") == rw or d.get("after_word") == lw]
+            for d in leaks:
+                bits.append(f"{d['overlap_ms']:.0f} ms of untranscribed sound ({d['gap_id']}) "
+                            + ("sits in the pad (muted under room tone: a fragment of a lost word — the seam is on "
+                               "damaged material, consider moving it)" if d.get("muted")
+                               else "plays between the words"))
+            c = clicks[k] if k < len(clicks) else None
+            if c is not None and c.margin_db is not None:
+                bits.append(("CLICK" if c.click else "no click") + f" (detector margin {c.margin_db:+.1f} dB"
+                            + (", inherited from the source" if c.rule == "inherited" else "") + ")")
+            facts[k] = "; ".join(bits)
+        head = ""
+        edges = M.dropout_edges_in_output(tl, ix)
+        if edges:
+            try:
+                ec = M.detect_seam_clicks(dia, sr, [t for t, _l, _r in edges], labels=[(a, b) for _t, a, b in edges])
+            except Exception:
+                ec = []
+            head = ("Hard stops/starts at recording dropouts inside the kept audio (the source goes to digital "
+                    "silence mid-sound; not a seam, but the ear hears it): " + "; ".join(
+                        f"{float(t):.2f} s after {a or '…'} before {b or '…'}"
+                        + (" CLICK" if k < len(ec) and ec[k].click else "") for k, (t, a, b) in enumerate(edges)))
+        return facts, head
 
     # ---------------------------------------------------------------- b-roll
     def _anchor_span_s(self, a: str, b: str) -> tuple[float | None, float | None, float | None]:
@@ -1409,11 +1735,84 @@ class Director:
             emph = [w.word_id for w in p.words if w.emphasis]
             flag = " FAST" if cps > 20 else ""
             flag += " SHORT" if d < 0.5 and len(p.words) > 1 else ""
-            rows.append(f"  {p.page_id} {float(p.out_start):.2f}+{d:.2f}s {cps:4.0f} CPS{flag}: \"{t}\""
+            fit = cap.caption_fit(p.style, t, tl.width)
+            px = fit.size_px * 1080.0 / tl.width
+            where = f" {px:.0f}px{f' x{fit.lines} lines' if fit.lines > 1 else ''} {p.placement or ''} y{p.y_norm:.2f}"
+            rows.append(f"  {p.page_id} {float(p.out_start):.2f}+{d:.2f}s {cps:4.0f} CPS{flag}{where}: "
+                        f"\"{fit.display if fit.lines > 1 else t}\""
                         + (f" accent {','.join(emph)}" if emph else ""))
-        head = (f"{len(tl.captions)} caption pages ({style.font} {style.size_px}px {style.animation}, "
+        head = (f"{len(tl.captions)} caption pages ({style.font} {style.weight} {style.size_px}px {style.animation}, "
                 f"{'applied' if apply else 'proposed, not applied'}):")
-        return text + head + "\n" + "\n".join(rows[:120])
+        summary = _caption_layout_lines(tl, s.doc, self.index) if apply and tl.captions else []
+        return text + head + "\n" + "\n".join(rows[:120]) + ("\n" + "\n".join(summary) if summary else "")
+
+    def t_caption_preview(self, pages: Sequence[str] | None = None) -> Any:
+        from studio.compile import captions as cap
+
+        s = self.session
+        doc = s.doc
+        if not doc.segments:
+            return "ERROR: the story is empty."
+        tl = self._compile()
+        if not tl.captions:
+            s.caption_preview_sig = _caption_sig(doc)
+            return "No caption pages compiled (captions are off or empty): nothing to look at."
+        platforms = [d.platform for d in doc.deliverables] or list(self.platforms)
+        plat: Any = platforms[0] if len(platforms) == 1 else platforms
+        geo = cap.caption_geometry(tl, self.index, platform=plat, settings=self.settings,
+                                   style_px=doc.captions.style.size_px if doc.captions is not None else None)
+        rows = {r["page"]: r for r in geo.get("pages", [])}
+        by_id = {p.page_id: p for p in tl.captions}
+        want = [str(x).strip() for x in (pages or []) if str(x).strip()]
+        unknown = [x for x in want if x not in by_id]
+        chosen: list[Any] = []
+
+        def add(pg: Any) -> None:
+            if pg is not None and pg.page_id not in {c.page_id for c in chosen} and len(chosen) < 6:
+                chosen.append(pg)
+
+        for x in want:
+            add(by_id.get(x))
+        add(tl.captions[0])
+        add(min(tl.captions, key=lambda p: rows.get(p.page_id, {}).get("size_px", 1e9)))
+        for pg in tl.captions:
+            if rows.get(pg.page_id, {}).get("relation") not in ("below_chin", "no_face", None) or \
+                    rows.get(pg.page_id, {}).get("into_ui_px", 0) > 0.5:
+                add(pg)
+                break
+        add(tl.captions[len(tl.captions) // 2])
+        add(tl.captions[-1])
+        fps = Fraction(tl.fps)
+        frames = {}
+        for pg in chosen:
+            a = frame_index_floor(pg.out_start, fps)
+            b = max(a + 1, frame_index_floor(pg.out_end, fps))
+            frames[pg.page_id] = min(b - 1, a + min(8, max(0, (b - a) // 2)))
+        try:
+            sheet = _caption_preview_sheet(self.job, self.index, tl, chosen, frames, platforms, rows,
+                                           settings=self.settings, version=doc.version)
+        except Exception as e:  # no picture to show (no video yet): the exit test does not wait on a broken tool
+            s.caption_preview_unavailable = True
+            s.caption_preview_sig = _caption_sig(doc)
+            return (f"Caption preview unavailable ({type(e).__name__}: {_clip(str(e), 200)}). Judge from the "
+                    "measurements:\n" + cap.caption_geometry_text(geo))
+        s.caption_preview_sig = _caption_sig(doc)
+        lines = [f"CAPTION PREVIEW of document v{doc.version} ({sheet.stem.split('_')[-1]} overlay stills): "
+                 f"{len(chosen)} pages at their settled frame on the framed picture, under the "
+                 f"{'/'.join(platforms)} UI mask, each tile 540 px wide (about a phone's width).",
+                 cap.caption_geometry_text(geo)]
+        for pg in chosen:
+            r = rows.get(pg.page_id, {})
+            lines.append(f"  {pg.page_id} \"{_clip(r.get('text', ''), 40)}\": {r.get('size_px', '?')} px font "
+                         f"(cap {r.get('cap_height_px', '?')} px), top y{r.get('top_px', 0):.0f}, "
+                         f"{r.get('relation', '?')}" + (f" gap {r['chin_gap_px']:.0f} px" if "chin_gap_px" in r else "")
+                         + (f", {r['into_ui_px']:.0f} px into the strict band" if r.get("into_ui_px", 0) > 0.5
+                            else ""))
+        if unknown:
+            lines.append("Unknown page IDs ignored: " + ", ".join(unknown[:8]))
+        out: list[Any] = ["\n".join(lines)]
+        out.extend(self._images([("Caption preview (phone scale, UI mask)", sheet)]))
+        return out
 
     # ---------------------------------------------------------------- sound
     def t_voice_plan(self, apply: bool = False) -> str:
@@ -1515,15 +1914,20 @@ class Director:
 
         d = self
 
-        async def finish_stage(summary: str) -> str:
+        async def finish_stage(summary: str, questions_for_critics: list[str] | None = None) -> str:
             """End the current stage. Code checks the stage's exit test (brief written; story passes the radio test;
-            fine cut compiled and its seams checked; no validation errors) and says what is missing if it fails.
+            fine cut compiled and its seams checked; captions looked at with caption_preview; in revision and chat,
+            the checks of whatever you touched; no validation errors) and says what is missing if it fails.
 
             Args:
                 summary: What you decided in this stage and why, by ID (for finishing passes, 'none' with the reason
                     is a complete answer). For the story stage include your radio-test verdict.
+                questions_for_critics: At finalize and in revisions: up to 6 ID-anchored questions about what you
+                    are unsure of (e.g. 'At w0088->w0091, does the tail feel clipped?'); the critics answer them when
+                    the render is reviewed.
             """
-            return await d._arun("finish_stage", {"summary": summary}, lambda: d.t_finish_stage(summary))
+            return await d._arun("finish_stage", {"summary": summary, "questions_for_critics": questions_for_critics},
+                                 lambda: d.t_finish_stage(summary, questions_for_critics))
 
         async def radio_test() -> str:
             """The kept story as a listener hears it with the picture off, in output order: each segment's words and
@@ -1638,12 +2042,17 @@ class Director:
             Args:
                 apply: Apply the plan (default) or only propose it.
                 font: Caption font (default Montserrat).
-                size_px: Font size at 1080 px width.
+                size_px: Font size at 1080 px width (house default 88; the doctrine's phrase range is 64-96; a
+                    page never renders under 64, one too wide for a line at 64 wraps instead).
                 animation: none, pop, karaoke, fade or slide.
                 case: as_is, upper, lower or title.
                 highlight_color: Accent colour, e.g. '#FFD400'.
                 max_words_per_page: Page size cap (1-10).
-                position: Placement policy (default auto: below the chin, inside the safe zone).
+                position: Placement policy. 'auto' (default) follows the doctrine's order: under the chin in the
+                    strict band, smaller text, the relaxed caption floor, then above the head. 'below_chin' only
+                    places under the chin (strict band, then the relaxed floor; never above the head). 'lower_third',
+                    'center', 'upper_third' fix a height (kept off eyes and mouth). The report after applying lists
+                    the options on this take with their measured costs.
             """
             args = {"apply": apply, "font": font, "size_px": size_px, "animation": animation, "case": case,
                     "highlight_color": highlight_color, "max_words_per_page": max_words_per_page, "position": position}
@@ -1690,11 +2099,175 @@ class Director:
             """
             return await d._arun("measure_color", {"items": items}, lambda: d.t_measure_color(items))
 
+        async def caption_preview(pages: list[str] | None = None) -> Any:
+            """Look at the captions as the viewer will: the overlay renderer draws the caption pages (and any text on
+            screen) on the framed picture at the page's settled frame, under the platform UI mask (red = UI, amber =
+            UI only with a long post description), at phone scale. Shows the hook page, the smallest page, pages off
+            the position prior and any pages you name, with measured size, height and relation to the face.
+
+            Args:
+                pages: Caption page IDs to include (up to 6 in all), e.g. ['p004', 'p017'].
+            """
+            return await d._arun("caption_preview", {"pages": pages}, lambda: d.t_caption_preview(pages))
+
         funcs = [finish_stage, radio_test, compile_check, check_seams, broll_search, broll_use, broll_screenshot,
-                 broll_generate, auto_captions, voice_plan, music_options, sfx_guidance, measure_color]
-        sequential = {"finish_stage", "broll_use", "auto_captions", "voice_plan", "music_options"}
+                 broll_generate, auto_captions, caption_preview, voice_plan, music_options, sfx_guidance,
+                 measure_color]
+        sequential = {"finish_stage", "broll_use", "auto_captions", "voice_plan", "music_options", "caption_preview"}
         return [Tool(f, takes_ctx=False, max_retries=5, docstring_format="google", sequential=f.__name__ in sequential)
                 for f in funcs]
+
+
+# ============================================================================================ caption preview
+def frame_index_floor(t: Any, fps: Fraction) -> int:
+    return math.floor(Fraction(t) * fps + Fraction(1, 1_000_000))
+
+
+def _framed_frame(job: Job, index: TakeIndex, tl: Any, t: Fraction) -> Any:
+    """The A-roll picture at output time ``t`` as the renderer frames it (source frame, framing crop, split region),
+    as a PIL image at the output size; a full-frame insert shows as a labelled grey tile."""
+    from PIL import Image, ImageDraw
+
+    from studio.compile.timeline import crop_window, framing_state, region_for_time
+    from studio.perception import frames as fr
+
+    W, H = tl.width, tl.height
+    canvas = Image.new("RGB", (W, H), (60, 60, 60))
+    covering = [x for x in tl.inserts if Fraction(x.out_start) <= t < Fraction(x.out_end)
+                and x.mode in ("full", "card")]
+    if covering:
+        ImageDraw.Draw(canvas).text((40, H // 2), f"insert {covering[0].insert_id} ({covering[0].mode})",
+                                    fill=(230, 230, 230))
+        return canvas
+    seg = tl.segment_at(t)
+    if seg is None:
+        return canvas
+    src = "mezz" if job.mezz_path.exists() else "proxy"
+    src_us = min(max(seg.out_to_src_us(t), seg.src_in_us), max(seg.src_in_us, seg.src_out_us - 1))
+    img = Image.fromarray(fr.grab_frame(job, src_us, source=src))
+    sw, sh = index.media.width, index.media.height
+    fx, fy = img.width / sw, img.height / sh
+    rx, ry, rw, rh = region_for_time(tl, t)
+    sc, cx, cy = framing_state(seg.framing, t)
+    x0, y0, w, h = crop_window(sc, cx, cy, sw, sh, rw * W, rh * H)
+    crop = img.crop((round(x0 * fx), round(y0 * fy), round((x0 + w) * fx), round((y0 + h) * fy)))
+    canvas.paste(crop.resize((max(1, round(rw * W)), max(1, round(rh * H))), Image.LANCZOS),
+                 (round(rx * W), round(ry * H)))
+    return canvas
+
+
+def _overlay_stills(tl: Any, index: TakeIndex, frames: Sequence[int], platforms: Sequence[str], out_dir: Path,
+                    settings: Settings | None) -> dict[int, Path]:
+    """The overlay layer at ``frames`` rendered by the real renderer (Remotion stills of the full overlay props).
+    ``STUDIO_PREVIEW_STILLS=approx`` (keyless tests) or a missing renderer returns {} (the caller approximates)."""
+    if (os.environ.get("STUDIO_PREVIEW_STILLS") or "").strip().lower() == "approx":
+        return {}
+    import concurrent.futures
+
+    from studio.compile import overlays as ov
+
+    props = ov.build_overlay_props(tl, index=index, platforms=list(platforms), settings=settings)
+    bundle = ov.bundle_overlay(settings)
+    root = ov._overlay_dir(settings)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pfile = out_dir / "props.json"
+    pfile.write_text(json.dumps(props.to_json_dict()), encoding="utf-8")
+
+    def one(f: int) -> tuple[int, Path | None]:
+        out = out_dir / f"still_{f:06d}.png"
+        cmd = [*ov._remotion_bin(root), "still", str(bundle), ov.COMPOSITION_ID, str(out), f"--props={pfile}",
+               f"--frame={int(f)}", "--image-format=png", "--overwrite", "--log=error"]
+        proc = ov._run(cmd, root, timeout=180)
+        return f, out if proc.returncode == 0 and out.exists() else None
+
+    res: dict[int, Path] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+        for f, p in ex.map(one, sorted(set(int(x) for x in frames))):
+            if p is not None:
+                res[f] = p
+    return res
+
+
+def _approx_caption(canvas: Any, pg: Any, row: Mapping[str, Any], tl: Any) -> None:
+    """Draw a caption block where the placer put it (the renderer was unavailable): white text, black outline."""
+    from PIL import ImageDraw, ImageFont
+
+    W = tl.width
+    size = max(12, round(float(row.get("size_px", pg.style.size_px)) * W / 1080))
+    font = None
+    for f in ("/System/Library/Fonts/Supplemental/Arial Black.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
+        if os.path.exists(f):
+            font = ImageFont.truetype(f, size)
+            break
+    dr = ImageDraw.Draw(canvas)
+    text = pg.text or " ".join(w.text for w in pg.words)
+    top = float(row.get("top_px", pg.y_norm * tl.height))
+    bbox = dr.textbbox((0, 0), text, font=font)
+    x = (W - (bbox[2] - bbox[0])) / 2
+    dr.text((x, top), text, font=font, fill=(255, 255, 255), stroke_width=max(2, size // 10), stroke_fill=(0, 0, 0))
+
+
+def _mask_tile(img: Any, zone: Any) -> Any:
+    """The platform UI mask on one full-size frame: red = UI, amber = UI only with a long description."""
+    from PIL import Image, ImageDraw
+
+    W, H = img.size
+    over = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    dr = ImageDraw.Draw(over)
+    floor = zone.relaxed_bottom
+    for b in ((0, 0, W, zone.top), (0, H - floor, W, H), (0, 0, zone.left, H), (W - zone.right, 0, W, H)):
+        dr.rectangle(b, fill=(255, 30, 30, 70))
+    if zone.bottom > floor + 0.5:
+        dr.rectangle((0, H - zone.bottom, W, H - floor), fill=(255, 170, 0, 45))
+    dr.rectangle((zone.left, zone.top, W - zone.right, H - zone.bottom), outline=(255, 40, 40, 230), width=4)
+    return Image.alpha_composite(img.convert("RGBA"), over).convert("RGB")
+
+
+def _caption_preview_sheet(job: Job, index: TakeIndex, tl: Any, pages: Sequence[Any], frames: Mapping[str, int],
+                           platforms: Sequence[str], rows: Mapping[str, Mapping[str, Any]], *,
+                           settings: Settings | None, version: int) -> Path:
+    """Composite the chosen caption pages on the framed picture under the UI mask; 540-px tiles in one sheet."""
+    from PIL import Image, ImageDraw
+
+    from studio.compile.captions import safe_zone_for
+
+    out_dir = job.critique_dir / "caption_preview" / f"v{version}"
+    stills = _overlay_stills(tl, index, list(frames.values()), platforms, out_dir, settings)
+    zone = safe_zone_for(list(platforms), width=tl.width, height=tl.height)
+    fps = Fraction(tl.fps)
+    tiles = []
+    for pg in pages:
+        f = frames[pg.page_id]
+        t = Fraction(f) / fps
+        base = _framed_frame(job, index, tl, t)
+        if f in stills:
+            ovl = Image.open(stills[f]).convert("RGBA").resize(base.size, Image.LANCZOS)
+            base = Image.alpha_composite(base.convert("RGBA"), ovl).convert("RGB")
+        else:
+            _approx_caption(base, pg, rows.get(pg.page_id, {}), tl)
+        base = _mask_tile(base, zone)
+        tw = 540
+        th = round(base.height * tw / base.width)
+        tile = Image.new("RGB", (tw, th + 44), (18, 18, 18))
+        tile.paste(base.resize((tw, th), Image.LANCZOS), (0, 0))
+        r = rows.get(pg.page_id, {})
+        ImageDraw.Draw(tile).text((8, th + 6), f"{pg.page_id} f{f}  {r.get('size_px', '?')}px  "
+                                               f"{r.get('relation', '?')}  top y{r.get('top_px', 0):.0f}",
+                                  fill=(255, 220, 60))
+        ImageDraw.Draw(tile).text((8, th + 24), _clip(str(r.get("text", "")), 60), fill=(230, 230, 230))
+        tiles.append(tile)
+    cols = min(3, len(tiles))
+    rows_n = -(-len(tiles) // cols)
+    tw, th = tiles[0].size
+    sheet = Image.new("RGB", (cols * tw + (cols + 1) * 6, rows_n * th + (rows_n + 1) * 6), (8, 8, 8))
+    for k, tile in enumerate(tiles):
+        sheet.paste(tile, (6 + (k % cols) * (tw + 6), 6 + (k // cols) * (th + 6)))
+    kind = "rendered" if stills else "approx"
+    path = out_dir / f"caption_preview_{kind}.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(path, format="PNG")
+    return path
 
 
 # ============================================================================================ helpers

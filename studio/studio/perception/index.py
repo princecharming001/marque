@@ -51,7 +51,7 @@ __all__ = [
     "word_id", "gap_id", "sentence_id", "cluster_id",
     "WordKind", "GapKind", "VisualEventKind",
     "CharTime", "Prosody", "Word", "Sentence", "Cluster", "Gap",
-    "FaceBox", "VisualSample", "VisualEvent", "FaceTrackPoint", "FaceTrack", "Visual",
+    "FaceBox", "VisualSample", "VisualEvent", "FaceTrackPoint", "FaceTrack", "HeadTop", "Visual",
     "AudioMetrics", "Energy", "AsrInfo", "AsrResult", "TakeIndex",
     "save_index", "load_index", "build_index",
 ]
@@ -129,6 +129,9 @@ class Word(_Model):
     emphasis: float = Field(default=0.0, ge=0.0, le=1.0)
     source: str = "main"  # source/take file id; ranges must stay within one source
     chars: list[CharTime] | None = None
+    #: the recording itself cuts this word off (a digital-silence dropout): "end" = its end is lost ("meaningfu-"),
+    #: "start" = its onset is lost ("-nough"), "both". Such words also have ``kind="cutoff"``.
+    truncated: Literal["start", "end", "both"] | None = None
 
     @model_validator(mode="after")
     def _order(self) -> Word:
@@ -153,6 +156,10 @@ class Word(_Model):
         if self.kind == "event":
             return t if (t.startswith("(") or t.startswith("[")) else f"({t})"
         if self.kind == "cutoff":
+            if self.truncated == "start":
+                return t if t.startswith(("-", "—", "–")) else f"-{t}"
+            if self.truncated == "both":
+                return f"-{t}-"
             return t if t.endswith(("-", "—", "–")) else f"{t}-"
         return t
 
@@ -207,6 +214,11 @@ class Gap(_Model):
     #: measured breath spans inside the gap (source µs, time order). Empty when none were measured (e.g. a
     #: hand-built index): consumers then treat the whole gap as the breath region.
     breaths_us: list[tuple[int, int]] = Field(default_factory=list)
+    #: digital-silence runs inside the gap (a recording dropout, not room tone), source µs
+    dropouts_us: list[tuple[int, int]] = Field(default_factory=list)
+    #: non-word sound inside the gap (a fragment of a lost word beside a dropout, an isolated noise), source µs;
+    #: cut pads never reach into it
+    sound_us: list[tuple[int, int]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check(self) -> Gap:
@@ -219,7 +231,16 @@ class Gap(_Model):
         for a, b in self.breaths_us:
             if not (self.start_us <= a < b <= self.end_us):
                 raise ValueError(f"{self.id}: breath span ({a}, {b}) outside [{self.start_us}, {self.end_us}]")
+        for name, spans in (("dropout", self.dropouts_us), ("sound", self.sound_us)):
+            for a, b in spans:
+                if not (self.start_us <= a < b <= self.end_us):
+                    raise ValueError(f"{self.id}: {name} span ({a}, {b}) outside [{self.start_us}, {self.end_us}]")
         return self
+
+    @property
+    def is_dropout(self) -> bool:
+        """The gap holds a recording dropout (digital silence), not room tone."""
+        return bool(self.dropouts_us)
 
     @property
     def duration_us(self) -> int:
@@ -322,11 +343,31 @@ class FaceTrack(_Model):
         return FaceBox.from_center(lerp(a.cx, b.cx), lerp(a.cy, b.cy), lerp(a.w, b.w), lerp(a.h, b.h))
 
 
+class HeadTop(_Model):
+    """One measured top of the head (hair included) at ``t_us``: ``y`` normalized to the upright frame,
+    ``k`` = how far it sits above the landmark box top, in landmark-box heights."""
+
+    t_us: int = Field(ge=0)
+    y: float
+    k: float
+    touches_top: bool = False  # the head runs off the top of the frame (``k`` is then a lower bound)
+
+
 class Visual(_Model):
     sample_fps: float = 10.0
     samples: list[VisualSample] = Field(default_factory=list)
     events: list[VisualEvent] = Field(default_factory=list)
     face_track: FaceTrack | None = None
+    # The landmark box runs from the upper forehead to the chin; hair and crown sit above it by a
+    # per-person amount. ``head_top_ratio`` is that height in landmark-box heights, measured over the take
+    # (None: not measured, callers use a prior); ``head_tops`` are the raw measurements.
+    head_top_ratio: float | None = None
+    head_tops: list[HeadTop] = Field(default_factory=list)
+
+    def head_top_y(self, box: FaceBox, prior: float = 0.55) -> float:
+        """Top of the head (hair included), normalized y, for a landmark ``box``."""
+        k = self.head_top_ratio if self.head_top_ratio is not None else prior
+        return box.y - k * box.h
 
 
 # ---------------------------------------------------------------------------------------------- audio / energy
@@ -680,6 +721,11 @@ class TakeIndex(_Model):
             if not all(inc(x) for x in neighbours):
                 return None
             suffix = "" if g.kind == "pause" else f" {g.kind}"
+            if g.dropouts_us:
+                lost = sum(b - a for a, b in g.dropouts_us) / 1e6
+                suffix += f" DROPOUT {lost:.2f}s lost"
+            if g.sound_us and g.kind != "noise":
+                suffix += f" +{sum(b - a for a, b in g.sound_us) / 1e6:.2f}s untranscribed sound"
             return f"[{g.id} {g.duration_us / 1e6:.2f}s{suffix}]"
 
         # group words by sentence (words without a sentence form their own pseudo-groups)
@@ -784,6 +830,7 @@ def build_index(
     """
     from studio.perception import (
         audio_metrics,
+        fill,
         gaps,
         prosody,
         takes,
@@ -796,7 +843,24 @@ def build_index(
     asr = transcribe.transcribe(job, provider=asr_provider, keyterms=keyterms, settings=settings)
     words = gaps.refine_word_boundaries(job, asr.words)
     gap_list = gaps.detect_gaps(job, words)
-    words, sentences = takes.segment_sentences(words)
+    # speech the ASR left out (a dropped verbatim restart) gets a second pass on its own; what stays untranscribed is
+    # marked on its gap (see studio.perception.fill)
+    try:
+        extra, fill_report = fill.fill_untranscribed(job, words, gap_list, provider=asr_provider, settings=settings)
+        if extra:
+            merged = sorted([*asr.words, *extra], key=lambda w: (w.start_us, w.end_us))
+            merged = [w.model_copy(update={"id": word_id(k + 1)}) for k, w in enumerate(merged)]
+            words = gaps.refine_word_boundaries(job, merged)
+            gap_list = gaps.detect_gaps(job, words)
+        left = fill.untranscribed_speech(job, words, gap_list)
+        if left:
+            gap_list = fill.mark_untranscribed(gap_list, left)
+        if fill_report or left:
+            job.trace("stage", stage="index", step="fill_untranscribed", regions=fill_report[:20],
+                      added=len(extra), still_untranscribed=[(r.gap_id, r.start_us, r.end_us) for r in left][:20])
+    except Exception as e:  # an optional pass: the first transcript stands
+        job.trace("stage", stage="index", step="fill_untranscribed", error=f"{type(e).__name__}: {str(e)[:300]}")
+    words, sentences = takes.segment_sentences(words, dropouts=[d for g in gap_list for d in g.dropouts_us])
     words, sentences, clusters = takes.cluster_takes(words, sentences, settings=settings)
     words, energy = prosody.analyze_prosody(job, words, sentences)
     audio = audio_metrics.measure_audio(job, gaps=gap_list, words=words) if media.has_audio else None

@@ -57,6 +57,20 @@ fricative is never taken for a breath, so it can never be cut off a word. VAD is
 used: Silero's probability lags 150-300 ms behind every word offset, exactly where post-word inhales
 sit.
 
+Dropouts (digital silence inside the recording)
+-----------------------------------------------
+A run of exact digital zeros ≥ 40 ms after the file's first sample is a *dropout* (a muted or lost stretch of the
+recording, not room tone). An edge is a *cut* when sound runs straight into (or out of) the zeros: the 10 ms of
+samples beside it sit ≥ 25 dB above the take's floor and above -50 dBFS. Words are cut there, not ended there:
+
+* the word whose sound runs into a cut edge (its refined end within 40 ms of it, or past it) ends exactly at the edge
+  and is marked ``kind="cutoff"``, ``truncated="end"`` ("meaningfu-");
+* when sound resumes straight out of a dropout, the next word takes it as its onset if the sound is continuous up
+  to the word (no 20 dB dip on the 1 ms voice-band envelope, within 350 ms) and is marked ``truncated="start"``
+  ("-nough"); otherwise that sound is a fragment of a lost word and is recorded on the gap (``sound_us``), where the
+  compiler's pads never reach;
+* gaps record their dropout runs (``dropouts_us``). Sentence segmentation does not count dropout time as a pause.
+
 Gaps (:func:`detect_gaps`)
 --------------------------
 Every inter-word interval ≥20 ms (stop closures count: they are clean cut points) becomes a
@@ -138,6 +152,14 @@ SHORT_GAP_US = 80_000  # gaps shorter than this must contain a measurable dip
 MIN_WORD_US = 20_000  # refined words keep at least this duration (unless ASR gave less)
 BRIDGE_US = 70_000  # internal silences shorter than this stay inside a word (stop closures)
 OVERLAP_KEEP_US = 50_000  # ASR overlaps larger than this (event over speech) are left untouched
+LONG_HOLE_US = 250_000  # a word never spans a silent run this long (ASR stretches words over dropouts)
+DROPOUT_MIN_US = 40_000  # digital-zero runs at least this long (after the first sample) are recording dropouts
+DROPOUT_SNAP_US = 40_000  # a word whose refined edge lies this close to a cut dropout edge is cut by it
+DROPOUT_REACH_US = 350_000  # sound resuming out of a dropout joins the next word only this close to its onset
+DROPOUT_DIP_DB = 20.0  # a dip this deep between resumed sound and the next word makes the sound a fragment
+DROPOUT_EDGE_DB = -50.0  # sound beside a dropout edge louder than this (and 25 dB over the floor) is cut there
+EOF_WINDOW_US = 150_000  # the recording stopping mid-sound: look this far back for the dip before the fragment
+EOF_DIP_DB = 15.0  # dip below the word's level, and rise back to the end of the file, that mark a fragment
 MIN_CONTRAST_DB = 10.0  # below this speech-to-local-noise contrast, energy refinement is skipped
 ACT_SIGMAS = 3.5  # activity margin in noise σ (clamped to 6..15 dB)
 
@@ -278,6 +300,11 @@ class AudioFeatures:
         return out
 
     @cached_property
+    def dropouts(self) -> list[Dropout]:
+        """Digital-zero runs inside the recording (see module docstring), time order."""
+        return _find_dropouts(self)
+
+    @cached_property
     def breath_runs(self) -> list[tuple[int, int]]:
         """Frame ranges ``[k0, k1)`` of detected breaths over the whole recording."""
         return _detect_breath_runs(self)
@@ -300,6 +327,16 @@ class Breath:
     level_db: float  # full-band power-mean dBFS
     rel_speech_db: float  # peak relative to the recording's typical speech level (negative)
     gap_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Dropout:
+    """A run of digital zeros inside the recording (source µs, sample-accurate)."""
+
+    start_us: int
+    end_us: int
+    cut_before: bool  # sound runs straight into the zeros (a hard stop: the word before it is cut off)
+    cut_after: bool  # sound resumes straight out of the zeros (a hard start)
 
 
 @dataclass
@@ -869,6 +906,59 @@ def _breath_from_run(feat: AudioFeatures, a: int, b: int, gap_id: str | None = N
 
 
 # ---------------------------------------------------------------------------------------------- refinement
+def _find_dropouts(feat: AudioFeatures) -> list[Dropout]:
+    x = np.asarray(feat.x)
+    if x.size == 0:
+        return []
+    zero = (np.abs(x) < DIGITAL_EPS).astype(np.int8)
+    d = np.diff(np.concatenate(([0], zero, [0])))
+    starts, ends = np.flatnonzero(d == 1), np.flatnonzero(d == -1)
+    min_len = max(1, round(DROPOUT_MIN_US * feat.sr / 1_000_000))
+    w = max(1, round(0.010 * feat.sr))
+    nd = ~feat.digital
+    floor = float(np.percentile(feat.db[nd], 10)) if nd.any() else DB_FLOOR
+    edge_db = max(DROPOUT_EDGE_DB, floor + 25.0)
+
+    def level(seg: np.ndarray) -> float:
+        if seg.size == 0:
+            return DB_FLOOR
+        return float(10.0 * np.log10(float(np.mean(seg.astype(np.float64) ** 2)) + 1e-20))
+
+    out: list[Dropout] = []
+    for a, b in zip(starts, ends, strict=True):
+        if b - a < min_len or a == 0:
+            continue  # the file head (ingest pre-roll, a recording that starts on zeros) is not a dropout
+        out.append(Dropout(start_us=round(int(a) * 1_000_000 / feat.sr), end_us=round(int(b) * 1_000_000 / feat.sr),
+                           cut_before=level(x[max(0, a - w):a]) >= edge_db,
+                           cut_after=b < x.size and level(x[b:b + w]) >= edge_db))
+    return out
+
+
+def _resumed_dip(feat: AudioFeatures, resume_us: int, onset_us: int) -> int | None:
+    """Where sound that resumes out of a dropout at ``resume_us`` dips ≥ ``DROPOUT_DIP_DB`` below both itself and
+    the word starting at ``onset_us`` (1 ms voice-band envelope): the end of a fragment of a lost word. None when
+    the sound runs continuously into the word (it is the word's own, cut-off onset)."""
+    if onset_us - resume_us <= 8_000:
+        return None
+    a, b = feat.sample_at(resume_us), feat.sample_at(min(feat.duration_us, onset_us + 60_000))
+    centres, env = _band_envelope(feat, a, b, VOICE_BAND, win_s=0.006)
+    if env.size < 20:
+        return None
+    t = centres * 1_000_000 // feat.sr
+    head = env[(t >= resume_us + 2_000) & (t <= resume_us + 22_000)]
+    body = env[t >= onset_us]
+    if head.size == 0 or body.size == 0:
+        return None
+    ref = min(float(np.percentile(head, 75)), float(np.percentile(body, 75)))
+    zone = (t >= resume_us + 5_000) & (t <= onset_us + 10_000)
+    if not zone.any():
+        return None
+    k = int(np.flatnonzero(zone)[int(np.argmin(env[zone]))])
+    if float(env[k]) > ref - DROPOUT_DIP_DB:
+        return None
+    return int(t[k])
+
+
 def _scan_offset(active: np.ndarray, k_lo: int, k_hi: int, bridge: int) -> int:
     """Last active frame connected (holes < ``bridge``) to ``k_lo``; -1 if none."""
     last = -1
@@ -1011,6 +1101,83 @@ def _refine(feat: AudioFeatures, words: list[Word]) -> list[Word]:
             lo = max(lo, new_s[-1] + MIN_WORD_US)
         new_e[-1] = offset(E, max(lo, new_s[-1]), E + MAX_SHIFT_US)
 
+    # the recording stops mid-sound just after the last word (the start of the next syllable, cut by the end of
+    # the file): ASR hands the fragment to the last word. End the word at the dip before it, so no out-point
+    # keeps a chopped onset (real multitake: "truth" decays to -39 dB, then a new syllable at -13 dB for the
+    # file's last 30 ms).
+    if words[-1].kind != "event" and end_audio - new_e[-1] <= 2 * feat.hop_us:
+        kz = min(feat.n_frames - 1, feat.frame_floor(end_audio))
+        k0 = max(feat.frame_ceil(new_s[-1] + MIN_WORD_US), feat.frame_ceil(end_audio - EOF_WINDOW_US))
+        if kz - k0 >= 3:
+            lv = feat.vb_smooth
+            body_a, body_b = feat.frame_ceil(new_s[-1]), feat.frame_floor(new_e[-1])
+            body = lv[body_a:body_b + 1]
+            word_db = float(np.percentile(body, 75)) if body.size else float(lv[kz])
+            kd = k0 + int(np.argmin(lv[k0:kz + 1]))
+            tail_db = float(np.max(lv[kd:kz + 1]))
+            if kd < kz and word_db - float(lv[kd]) >= EOF_DIP_DB and tail_db - float(lv[kd]) >= EOF_DIP_DB:
+                new_e[-1] = int(max(new_s[-1] + MIN_WORD_US, min(new_e[-1], feat.frame_time(kd))))
+
+    # ASR stretches the word before an abrupt stop over the silence after it (a take broken off, a dropout to
+    # digital zero): "proof..." ran 1.46 s over 1.2 s of zeros on a real retake join. A word never spans a
+    # silent run of LONG_HOLE_US or more, whatever the ±MAX_SHIFT_US limit above: it keeps the side of the run
+    # holding most of its sound (the other side is a blip or nothing) and ends/starts at that sound's edge.
+    hole_min = max(1, round(LONG_HOLE_US / 1_000_000 / HOP_S))
+    for i, w in enumerate(words):
+        s_, e_ = new_s[i], new_e[i]
+        if w.kind == "event" or e_ - s_ < LONG_HOLE_US + MIN_WORD_US or e_ > end_audio or not contrast_ok(s_, e_):
+            continue  # (a low-contrast background makes the activity mask meaningless)
+        a, b = feat.frame_ceil(s_), feat.frame_floor(e_)
+        if b - a < hole_min:
+            continue
+        seg = act[a:b + 1]
+        holes = [(ra, rb) for ra, rb in _runs(~seg) if rb - ra >= hole_min]
+        if not holes:
+            continue
+        head, tail = int(seg[:holes[0][0]].sum()), int(seg[holes[-1][1]:].sum())
+        if head == 0 and tail == 0:
+            continue  # no measurable sound at all (low contrast): keep the ASR span
+        if head >= tail:
+            k_last = a + holes[0][0] - 1
+            if k_last >= a:
+                off = _fine_edge(feat, thr, min(e_, feat.frame_time(k_last) + half), onset=False, lo_us=s_,
+                                 hi_us=e_)
+                new_e[i] = int(max(off, s_ + MIN_WORD_US))
+        else:
+            k_first = a + holes[-1][1]
+            if k_first <= b:
+                on = _fine_edge(feat, thr, max(s_, feat.frame_time(k_first) - half), onset=True, lo_us=s_, hi_us=e_)
+                new_s[i] = int(min(on, e_ - MIN_WORD_US))
+
+    # dropouts: a word whose sound runs into digital zeros is cut off there (and marked), and sound that resumes
+    # straight out of them is the next word's cut-off onset when it runs continuously into it
+    trunc: dict[int, set[str]] = {}
+    spoken = [i for i, w in enumerate(words) if w.kind != "event"]
+    for dr in feat.dropouts:
+        a_us, b_us = dr.start_us, dr.end_us
+        if dr.cut_before:
+            cands = [i for i in spoken if new_s[i] < a_us - MIN_WORD_US and new_e[i] >= a_us - DROPOUT_SNAP_US]
+            if cands:
+                i = cands[-1]
+                new_e[i] = a_us
+                trunc.setdefault(i, set()).add("end")
+        if dr.cut_after and b_us < end_audio:
+            nxt = [i for i in spoken if new_e[i] > b_us + MIN_WORD_US and new_e[i] > a_us]
+            if nxt:
+                j = nxt[0]
+                # the word's onset as ASR heard it (refinement may have bridged back into a fragment before it)
+                ref_on = max(new_s[j], starts[j]) if starts[j] > b_us else new_s[j]
+                if ref_on <= b_us + DROPOUT_SNAP_US // 4:
+                    new_s[j] = b_us
+                    trunc.setdefault(j, set()).add("start")
+                elif ref_on - b_us <= DROPOUT_REACH_US:
+                    tip = _resumed_dip(feat, b_us, ref_on)
+                    if tip is None:  # continuous sound from the edge into the word: its own onset, cut off
+                        new_s[j] = b_us
+                        trunc.setdefault(j, set()).add("start")
+                    elif new_s[j] < tip:  # a fragment of a lost word, then a dip: the word starts after the dip
+                        new_s[j] = int(min(tip, new_e[j] - MIN_WORD_US))
+
     # sanitize: start ≤ end; starts non-decreasing
     out: list[Word] = []
     prev_start = 0
@@ -1018,10 +1185,14 @@ def _refine(feat: AudioFeatures, words: list[Word]) -> list[Word]:
         s = max(int(new_s[i]), prev_start, 0)
         e = max(int(new_e[i]), s)
         prev_start = s
-        if s == w.start_us and e == w.end_us:
+        tr = trunc.get(i)
+        if s == w.start_us and e == w.end_us and not tr:
             out.append(w)
             continue
         update: dict[str, Any] = {"start_us": s, "end_us": e}
+        if tr:
+            update["kind"] = "cutoff"
+            update["truncated"] = "both" if len(tr) == 2 else next(iter(tr))
         if w.chars:
             chars = []
             last = len(w.chars) - 1
@@ -1101,7 +1272,10 @@ def _measure_gap(feat: AudioFeatures, thr: _Thresholds, gid: str, after: str | N
     energy_db = float(np.median(feat.db[sl]))  # typical level: robust to decay/onset energy at the edges
     digital_gap = float(np.mean(feat.digital[sl])) >= 0.9
 
-    if dur > 0 and noise_us >= 60_000 and noise_us / dur >= NOISE_COVERAGE:
+    # a trailing gap whose sound runs into the end of the file: the recording stopped on another syllable
+    eof_sound = before is None and after is not None and end >= feat.duration_us - 2 * feat.hop_us \
+        and act.size > 0 and bool(act[-1])
+    if eof_sound or (dur > 0 and noise_us >= 60_000 and noise_us / dur >= NOISE_COVERAGE):
         kind = "noise"
     elif breaths and dur > 0 and breath_us / dur >= BREATH_COVERAGE:
         kind = "breath"
@@ -1110,7 +1284,39 @@ def _measure_gap(feat: AudioFeatures, thr: _Thresholds, gid: str, after: str | N
     else:
         kind = "pause"
 
+    # dropouts inside the gap, and non-word sound the compiler's pads must not reach into: fragments of lost words
+    # beside a dropout, and isolated noise runs
+    drops = [(max(int(start), d.start_us), min(int(end), d.end_us), d) for d in feat.dropouts
+             if d.start_us < end and d.end_us > start]
+    drops = [(a, b, d) for a, b, d in drops if b - a >= DROPOUT_MIN_US // 2]
+    sound: list[tuple[int, int]] = []
+    for a, b, d in drops:
+        if d.cut_after and b < end:  # sound resumes before the next word: a fragment up to its dip
+            tip = _resumed_dip(feat, b, int(end)) if before is not None else None
+            sound.append((b, min(int(end), tip) if tip is not None and tip > b else int(end)))
+        if d.cut_before and a > start:  # sound before the zeros that the previous word does not own
+            k = feat.frame_floor(a) - 1
+            while k > k0 and thr.active[k]:
+                k -= 1
+            sound.append((max(int(start), feat.frame_time(k + 1) - feat.hop_us // 2), a))
+    for ra, rb in _runs(noise):
+        sa, sb = feat.frame_time(k0 + ra) - feat.hop_us // 2, feat.frame_time(k0 + rb - 1) + feat.hop_us // 2
+        sa, sb = max(int(start), sa), min(int(end), sb)
+        if sb - sa >= 20_000:
+            sound.append((sa, sb))
+    sound = sorted((a, b) for a, b in sound if b > a)
+    merged: list[tuple[int, int]] = []
+    for a, b in sound:
+        if merged and a <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+
     snap = _snap_point(feat, start, end, k0, k1, bmask, noise, after, before)
+    if drops:  # the quietest point of a dropout gap is its digital silence: snap inside the zeros
+        a, b, _d = max(drops, key=lambda r: r[1] - r[0])
+        if not (a <= snap <= b):
+            snap = (a + b) // 2
     spans = []  # measured breath spans for the audio stage (breath attenuation acts on these, not the gap)
     for br in breaths:
         a, b = max(int(start), br.start_us), min(int(end), br.end_us)
@@ -1118,7 +1324,7 @@ def _measure_gap(feat: AudioFeatures, thr: _Thresholds, gid: str, after: str | N
             spans.append((a, b))
     gap = Gap(id=gid, after_word_id=after, before_word_id=before, start_us=int(start), end_us=int(end),
               kind=kind, snap_us=int(snap), energy_db=round(energy_db, 2), has_breath=bool(breaths),  # type: ignore[arg-type]
-              breaths_us=spans)
+              breaths_us=spans, dropouts_us=[(a, b) for a, b, _d in drops], sound_us=merged)
     return gap, breaths
 
 

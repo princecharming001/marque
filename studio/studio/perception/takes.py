@@ -181,7 +181,8 @@ def _lex_of(w: Word, pos: int) -> _Lex | None:
     n = normalize_token(w.text)
     if not n:
         return None
-    cut = w.kind == "cutoff" or is_cutoff_token(w.text)
+    # a word a dropout cut at its *start* ("-nough.") was still delivered to its end: it is not an interruption
+    cut = (w.kind == "cutoff" and w.truncated != "start") or is_cutoff_token(w.text)
     return _Lex(pos=pos, norm=n, cutoff=cut, dash=ends_with_dash(w.text))
 
 
@@ -301,12 +302,38 @@ def _find_split(run: list[int], ws: Sequence[Word], prev: list[_Lex], p: TakePar
         if ok:
             best = b
             break
+
+    # (iii) a phrase restarted mid-sentence after a reset ("One, do the two cuisines, [1.3 s] do the two cuisines
+    # share …"): split off what precedes the abandoned attempt (it is delivered, so it stays complete); rule (ii)
+    # then separates the attempt from its restart on the next pass
+    if best is None:
+        for j in range(2, len(lex)):
+            first, again = lex[:j], lex[j:]
+            k = _tail_match(first, again, min_len=3)
+            if k < 3 or len(again) <= k or len(first) <= k:
+                continue
+            rep = first[len(first) - k:]
+            if all(x.norm in _STOPWORDS for x in rep):
+                continue
+            a_last, b_first = first[-1], again[0]
+            pause = max(0, ws[b_first.pos].start_us - ws[a_last.pos].end_us)
+            filler_between = any(ws[run[x]].kind == "filler" for x in range(where[a_last.pos] + 1, where[b_first.pos]))
+            if pause >= p.restart_pause_ms * 1000 or filler_between or a_last.interrupted:
+                return (where[rep[0].pos], True)  # type: ignore[return-value]
     return best
 
 
-def segment_sentences(words: list[Word], *, params: TakeParams | None = None) -> tuple[list[Word], list[Sentence]]:
+def _audible_pause(a_us: int, b_us: int, dropouts: Sequence[tuple[int, int]]) -> int:
+    """``b - a`` minus the recording dropouts (digital silence) inside it: a lost stretch is not a pause."""
+    lost = sum(max(0, min(b_us, e) - max(a_us, s)) for s, e in dropouts)
+    return max(0, b_us - a_us - lost)
+
+
+def segment_sentences(words: list[Word], *, params: TakeParams | None = None,
+                      dropouts: Sequence[tuple[int, int]] = ()) -> tuple[list[Word], list[Sentence]]:
     """Split words into sentences; returns words with ``sentence_id`` set (``cluster_id`` cleared), and the
-    sentences (``complete=False`` only on evidence of abandonment; see module docstring)."""
+    sentences (``complete=False`` only on evidence of abandonment; see module docstring). ``dropouts``
+    (digital-silence runs, source µs) never count as pause time, so a dropout alone never ends a sentence."""
     p = params or TakeParams()
     ws = [w.model_copy(update={"sentence_id": None, "cluster_id": None}) for w in words]
     spoken = [i for i, w in enumerate(ws) if w.kind != "event"]
@@ -318,7 +345,7 @@ def segment_sentences(words: list[Word], *, params: TakeParams | None = None) ->
     cur = [spoken[0]]
     for a, b in pairwise(spoken):
         wa, wb = ws[a], ws[b]
-        pause = wb.start_us - wa.end_us
+        pause = _audible_pause(wa.end_us, wb.start_us, dropouts) if dropouts else wb.start_us - wa.end_us
         if ((wa.speaker is not None and wb.speaker is not None and wa.speaker != wb.speaker)
                 or pause >= p.hard_pause_ms * 1000 or _is_sentence_end(wa, wb, pause, p)):
             runs.append(cur)
@@ -333,11 +360,15 @@ def segment_sentences(words: list[Word], *, params: TakeParams | None = None) ->
     for run in runs:
         rest = run
         while True:
-            cut = _find_split(rest, ws, prev, p)
+            found = _find_split(rest, ws, prev, p)
+            head_complete = False
+            if isinstance(found, tuple):
+                found, head_complete = found
+            cut = found
             if cut is None or cut <= 0:
                 break
             head = rest[:cut]
-            pieces.append((head, False))
+            pieces.append((head, head_complete))
             prev = [x for x in (_lex_of(ws[i], i) for i in head) if x is not None]
             rest = rest[cut:]
         lex = [x for x in (_lex_of(ws[i], i) for i in rest) if x is not None]
@@ -509,8 +540,10 @@ def _relate(A: _SInfo, B: _SInfo, dist: int, between: Sequence[_SInfo], p: TakeP
         if lb >= 2 and share >= p.prefix_match and _eq(A.lex[0], B.lex[0]):
             return _Edge(A.idx, B.idx, "abandoned_retake", round(share, 3), short=B.idx)
 
-    # B re-says only the tail of A, right after an abandoned sentence (running start into a retake)
-    if 2 <= lb < la and any(not x.s.complete for x in between):
+    # B re-says only the tail of A, right after an abandoned sentence (running start into a retake). A line
+    # that trails off ("So founders spend months..." then a pause) is abandoned even though the segmenter
+    # closed it as a sentence: only a terminal full stop counts as finished here.
+    if 2 <= lb < la and any(not x.s.complete or not x.terminal for x in between):
         k = _tail_match(A.lex, B.lex)
         if k == lb and not _eq(A.lex[0], B.lex[0]):
             return _Edge(A.idx, B.idx, "pickup", 1.0, short=B.idx)
@@ -714,24 +747,44 @@ def _notes(members: list[int], edges: list[_Edge], infos: list[_SInfo], words: l
 
 
 def _passage_notes(clusters: list[Cluster], groups: list[list[int]], edges: list[_Edge], infos: list[_SInfo]) -> None:
-    """Flag clusters whose takes pair up sentence-by-sentence (a whole passage delivered twice)."""
+    """Flag clusters whose takes pair up sentence-by-sentence (a whole passage delivered twice).
+
+    A first pass that is abandoned in its last sentence and then re-delivered whole (A1 B1… A2 B2, B1 a false
+    start of B2: the speaker broke off and restarted the passage) is a passage too: the second pass is the
+    creator's take, and mixing passes would put a seam inside the passage."""
     pairs_by_cluster: list[set[tuple[int, int]]] = []
+    abandoned_by_cluster: list[set[tuple[int, int]]] = []
     for members in groups:
         mset = set(members)
         # only full re-deliveries form a passage (a pickup + false start is a splice, not a second pass)
         pairs_by_cluster.append({(e.a, e.b) for e in edges
                                  if e.a in mset and e.b in mset and e.kind in ("retake", "rephrase")})
+        abandoned_by_cluster.append({(e.a, e.b) for e in edges
+                                     if e.a in mset and e.b in mset and e.kind == "false_start" and e.short == e.a})
     for x in range(len(groups)):
-        for y in range(x + 1, len(groups)):
-            links = [(a, b) for (a, b) in pairs_by_cluster[x] if (a + 1, b + 1) in pairs_by_cluster[y]]
-            if not links:
+        for y in range(len(groups)):
+            if x == y:
                 continue
-            a, b = links[0]
-            span = f"{infos[a].s.id}-{infos[a + 1].s.id} re-delivered as {infos[b].s.id}-{infos[b + 1].s.id}"
+            full = [(a, b) for (a, b) in pairs_by_cluster[x] if (a + 1, b + 1) in pairs_by_cluster[y]] if x < y \
+                else []
+            broken = [(a, b) for (a, b) in pairs_by_cluster[x] if (a + 1, b + 1) in abandoned_by_cluster[y]]
+            if full:
+                a, b = full[0]
+                span = f"{infos[a].s.id}-{infos[a + 1].s.id} re-delivered as {infos[b].s.id}-{infos[b + 1].s.id}"
+                tail = "prefer takes from one pass for continuity."
+            elif broken:
+                a, b = broken[0]
+                span = (f"{infos[a].s.id}-{infos[a + 1].s.id} is a first pass abandoned in {infos[a + 1].s.id}, "
+                        f"re-delivered whole as {infos[b].s.id}-{infos[b + 1].s.id}")
+                tail = (f"keep the second pass whole ({infos[b].s.id}-{infos[b + 1].s.id}): mixing passes puts a seam "
+                        "inside the passage, between two deliveries.")
+            else:
+                continue
             for idx, other in ((x, clusters[y].id), (y, clusters[x].id)):
                 c = clusters[idx]
-                clusters[idx] = c.model_copy(update={
-                    "notes": c.notes + f" Passage with {other}: {span}; prefer takes from one pass for continuity."})
+                if f"Passage with {other}" in c.notes:
+                    continue
+                clusters[idx] = c.model_copy(update={"notes": c.notes + f" Passage with {other}: {span}; {tail}"})
 
 
 def analyze_takes(words: list[Word], *, params: TakeParams | None = None

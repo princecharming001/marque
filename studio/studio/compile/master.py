@@ -596,9 +596,10 @@ def _verify_delivery(path: Path, timeline: Timeline, size: tuple[int, int]) -> N
 
 
 # ============================================================================================ render_document
-def render_document(job: Job, doc: CutDocument, index: TakeIndex, *, preview: bool = False) -> MasterResult:
+def render_document(job: Job, doc: CutDocument, index: TakeIndex, *, preview: bool = False,
+                    aroll_codec: str | None = None) -> MasterResult:
     """Full render of one document version into a new ``renders/r{n}/`` (compile → A-roll → overlays →
-    audio → master)."""
+    audio → master). ``aroll_codec``: ``prores_hq`` (default) or ``lean`` (the disk-budget intermediate)."""
     from studio.compile import audio as audio_mod
     from studio.compile import overlays as overlays_mod
     from studio.compile import timeline as timeline_mod
@@ -612,7 +613,8 @@ def render_document(job: Job, doc: CutDocument, index: TakeIndex, *, preview: bo
     timeline = timeline_mod.compile(doc, index, job=job)
     platforms = [d.platform for d in doc.deliverables] or ["tiktok"]
     tl_path = timeline.save(rd / "timeline.json")
-    aroll = video_mod.render_aroll(job, timeline, rd, preview=preview, color=doc.color)
+    aroll = video_mod.render_aroll(job, timeline, rd, preview=preview, color=doc.color,
+                                   codec=aroll_codec or "prores_hq")
     ovl = overlays_mod.render_overlays(job, timeline, rd, preview=preview, index=index, platforms=platforms)
     aud = audio_mod.render_audio(job, doc, timeline, rd, preview=preview, index=index)
     result = master(job, aroll, ovl, aud.mix, aud.mix_nomusic, platforms, timeline=timeline, render_dir=rd,
@@ -624,7 +626,8 @@ def render_document(job: Job, doc: CutDocument, index: TakeIndex, *, preview: bo
         "finals": {k: v.name for k, v in result.finals.items()},
         "nomusic": result.nomusic.name if result.nomusic else None,
         "cover": result.cover.name if result.cover else None, "srt": result.srt.name if result.srt else None,
-        "aroll": Path(aroll).name, "overlays": Path(ovl).name if ovl else None,
+        "aroll": Path(aroll).name, "aroll_codec": None if preview else (aroll_codec or "prores_hq"),
+        "overlays": Path(ovl).name if ovl else None,
         "mix": Path(aud.mix).name, "seconds": round(time.monotonic() - t0, 2),
     }
     mp = rd / "render.json"

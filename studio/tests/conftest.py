@@ -99,6 +99,10 @@ def _isolate_settings(request: pytest.FixtureRequest, monkeypatch: pytest.Monkey
             for n in names:
                 monkeypatch.delenv(n, raising=False)
     monkeypatch.setenv("STUDIO_WORK_DIR", str(tmp_path_factory.mktemp("work")))
+    # machine-wide edit/render slots of tests never contend with (or wait on) a real edit running on this machine
+    monkeypatch.setenv("STUDIO_SLOTS_DIR", str(tmp_path_factory.mktemp("slots")))
+    # the Director's caption_preview draws an approximation instead of launching the overlay renderer per still
+    monkeypatch.setenv("STUDIO_PREVIEW_STILLS", "approx")
     reset_settings()
     yield
     reset_settings()

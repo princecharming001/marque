@@ -86,6 +86,12 @@ def validate_document(doc: CutDocument, index: TakeIndex, job: Job | None = None
                 coverage[wid] = s.id
             output_order.append(wid)
         inner = {g.id: g for g in ix.gaps_between(s.from_word, s.to_word)}
+        if k + 1 < len(doc.segments):  # a continuous join's gap may carry the pause target on the left segment
+            nxt = doc.segments[k + 1]
+            if nxt.from_word in words and ix.word_pos(nxt.from_word) == b + 1:
+                jg = ix.gap_after(s.to_word)
+                if jg is not None and jg.before_word_id == nxt.from_word:
+                    inner[jg.id] = jg
         for gid, ms in s.gap_overrides.items():
             g = inner.get(gid)
             if g is None:

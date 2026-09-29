@@ -56,6 +56,8 @@ def _add_director_flags(p: argparse.ArgumentParser) -> None:
     g.add_argument("--director-provider", choices=PROVIDERS, help="Director provider (default: house Anthropic)")
     g.add_argument("--director-model", metavar="M", help="Director model id")
     g.add_argument("--director-key-env", metavar="VAR", help="NAME of the env var holding the Director key")
+    g.add_argument("--house", action="store_true",
+                   help="Use the house Director for a job that was edited with your own key (explicit switch)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -172,14 +174,15 @@ def _dispatch(args: argparse.Namespace) -> Any:
             args.video, brief=args.brief, style=args.style,
             platform=args.platform or (None if resume else "tiktok"),
             director_provider=args.director_provider, director_model=args.director_model,
-            director_key_env=args.director_key_env, rounds=args.rounds, out=args.out, settings=settings,
-            log=_progress, **kw,
+            director_key_env=args.director_key_env, house=args.house, rounds=args.rounds, out=args.out,
+            settings=settings, log=_progress, **kw,
         )
     if cmd == "chat":
         kw = {"out": args.out} if args.out is not None else {}
         return pipeline.chat(
             args.job_dir, args.instruction, director_provider=args.director_provider,
-            director_model=args.director_model, director_key_env=args.director_key_env, settings=settings, **kw,
+            director_model=args.director_model, director_key_env=args.director_key_env, house=args.house,
+            settings=settings, **kw,
         )
     if cmd == "index":
         return pipeline.index(args.video, asr_provider=args.asr_provider, settings=settings)

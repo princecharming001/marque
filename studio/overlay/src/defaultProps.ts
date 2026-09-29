@@ -36,7 +36,7 @@ export const defaultOverlayProps: OverlayProps = {
   fps: 30,
   durationInFrames: 180,
   safe: {top: 288, bottom: 672, left: 65, right: 192},
-  captionLayout: {xCenterPx: 540, maxWidthPx: 690, leftPx: 65, rightPx: 888, minScale: 0.72},
+  captionLayout: {xCenterPx: 540, maxWidthPx: 690, leftPx: 65, rightPx: 888, minScale: 0.72, minSizePx: 64, overflowLines: 2, topPx: 288, bottomPx: 1436},
   theme: {
     accent: '#FFD400',
     font: 'Montserrat',

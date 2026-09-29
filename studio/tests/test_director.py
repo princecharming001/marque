@@ -325,7 +325,7 @@ def test_chat_applies_the_instruction(job: Job, take_index: TakeIndex) -> None:
     d.session.apply_ops([{"op": "set_story", "segments": STORY}])
     base = d.session.doc.version
     plan = {"chat": [[("captions_ops", {"ops": [{"op": "set_caption_style", "style": {"size_px": 96}}]})],
-                     [("finish_stage", {"summary": "captions bigger (96 px)"})], "ok"]}
+                     [("caption_preview", {})], [("finish_stage", {"summary": "captions bigger (96 px)"})], "ok"]}
     d2, sc = make_director(job, take_index, plan)
     out = d2.chat("make the captions bigger", base_version=base)
     assert out["changed"] and out["summary"] == "captions bigger (96 px)" and out["base_version"] == base
@@ -378,9 +378,9 @@ def test_byok_director_never_falls_back_to_a_house_model(job: Job, take_index: T
 def test_director_spec_effort(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("STUDIO_DIRECTOR_EFFORT", raising=False)
     spec = director_spec()
-    assert spec.model == "claude-fable-5-1" and spec.effort == "high" and spec.provider == "anthropic"
-    monkeypatch.setenv("STUDIO_DIRECTOR_EFFORT", "max")
-    assert director_spec().effort == "max"
+    assert spec.model == "claude-fable-5-1" and spec.effort == "max" and spec.provider == "anthropic"
+    monkeypatch.setenv("STUDIO_DIRECTOR_EFFORT", "high")
+    assert director_spec().effort == "high"
 
 
 def test_resume_skips_finished_stages_and_restores_the_conversation(job: Job, take_index: TakeIndex) -> None:
@@ -484,3 +484,64 @@ def test_schema_generated_arguments_never_crash_the_director_tools(job: Job, tak
     assert set(DIRECTOR_TOOL_NAMES) <= {c["tool"] for c in calls}
     assert all("internally" not in (c.get("error") or "") for c in calls), [c for c in calls if c.get("error")]
     assert rec.stage == "story"
+
+
+# ============================================================================================ review-loop fixes
+def test_caption_report_offers_measured_options_not_instructions(job: Job, take_index: TakeIndex) -> None:
+    d, _ = make_director(job, take_index)
+    d.session.apply_ops([{"op": "set_story", "segments": STORY}])
+    d.session.set_stage("captions")
+    out = d.t_auto_captions()
+    assert "keep them above the head" not in out
+    assert "placement options on this take" in out and "(a) just under the chin" in out
+    assert "(c) a base reframe" in out and "(d) above the head" in out and "caption_preview" in out
+
+
+def test_captions_stage_needs_a_look_at_the_rendered_captions(media_job: Job, take_index: TakeIndex) -> None:
+    d, _ = make_director(media_job, take_index)
+    d.session.apply_ops([{"op": "set_story", "segments": STORY}])
+    d.session.set_stage("captions")
+    d.t_auto_captions()
+    msg = d.t_finish_stage("auto-paged captions, default style")
+    assert msg.startswith("NOT FINISHED") and "caption_preview" in msg
+    out = d.t_caption_preview(["p002"])
+    text = out[0] if isinstance(out, list) else out
+    assert "CAPTION PREVIEW" in text and "approx" in text and "Caption geometry" in text
+    sheet = next(iter((media_job.critique_dir / "caption_preview").rglob("caption_preview_*.png")))
+    from PIL import Image
+
+    assert Image.open(sheet).width >= 540
+    assert d.t_finish_stage("auto-paged captions, default style").startswith("Stage captions finished")
+    # a later caption change needs another look
+    d.session.set_stage("captions")
+    d.session.apply_ops([{"op": "set_caption_style", "style": {"size_px": 92}}])
+    assert "caption_preview" in d.t_finish_stage("captions at 92 px")
+
+
+def test_revise_and_chat_exit_tests_follow_what_changed(job: Job, take_index: TakeIndex) -> None:
+    d, _ = make_director(job, take_index)
+    d.session.apply_ops([{"op": "set_story", "segments": STORY}])
+    base = d.session.doc
+    d.session.base_doc = base
+    d.session.set_stage("revise")
+    d.session.apply_ops([{"op": "set_story", "segments": [STORY[0], STORY[2]]}])  # a story change with a new seam
+    msg = d.t_finish_stage("cut the middle beat after the note")
+    assert "radio_test" in msg and "compile_check" in msg and "check_seams" in msg
+    assert "caption_preview" in msg  # the story re-pages the captions
+    d.t_radio_test()
+    d.t_compile_check()
+    d.session.seams_unavailable = True
+    out = d.t_caption_preview()  # no video in this fixture job: the preview reports it and the exit test moves on
+    assert "unavailable" in (out if isinstance(out, str) else out[0])
+    assert d.t_finish_stage("cut the middle beat after the note").startswith("Stage revise finished")
+    # questions for the critics are kept with the stage
+    d.session.set_stage("revise")
+    d.t_finish_stage("nothing else to change here", ["At w0008->w0020, does the head jump?"])
+    assert d.session.critic_questions == ["At w0008->w0020, does the head jump?"]
+
+
+def test_brief_prompt_asks_for_viewer_checks_not_plan_restatements() -> None:
+    p = dr._stage_prompt("brief", {})
+    assert "what a viewer experiences" in p and "Never restate your own add/skip decisions" in p
+    f = dr._stage_prompt("finalize", {})
+    assert "rendered at full quality and judged pairwise" in f and "questions_for_critics" in f

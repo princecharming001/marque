@@ -33,6 +33,13 @@ export const captionLayoutSchema = z.object({
   rightPx: z.number().positive(),
   /** Smallest font scale the fitter may use before wrapping/overflowing. */
   minScale: z.number().min(0.3).max(1),
+  /** Legibility floor (px at the output size): a caption never shrinks below it while wrapping can help. */
+  minSizePx: z.number().min(0).default(0),
+  /** A page too wide for its style's lines at the floor may wrap to this many lines instead of shrinking. */
+  overflowLines: z.number().int().min(1).max(3).default(1),
+  /** Vertical band a caption block must stay inside (px): the safe top and the (relaxed) caption floor. */
+  topPx: z.number().min(0).default(0),
+  bottomPx: z.number().min(0).default(0),
 });
 
 export const captionStyleSchema = z.object({
@@ -67,6 +74,12 @@ export const captionPageSchema = z.object({
   /** Vertical centre of the caption block, normalized. */
   yNorm: norm,
   style: captionStyleSchema,
+  /** Line count the placer planned the block for (the renderer keeps it, shrinking as needed, so the
+   * block it draws is the block that was placed); absent = fit freely. */
+  lines: z.number().int().min(1).max(3).optional(),
+  /** Planned line breaks (word index where each line after the first starts), chosen in Python with the
+   * syntax-aware splitter (no "the / budget"); when present the renderer keeps them and only fits the size. */
+  breaks: z.array(z.number().int().min(1)).nullable().optional(),
 });
 
 export const textStyleSchema = z.object({

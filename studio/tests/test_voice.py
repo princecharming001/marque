@@ -52,9 +52,16 @@ def test_plan_clean_recording_gets_a_gentle_chain():
     ix = make_index(WORDS, 10.0)
     spec = V.plan_voice_chain(None, ix, audio=voice(), sr=SR)
     assert spec.denoise == "none" and spec.eq == [] and spec.deess_db == 0.0 and spec.breath_atten_db == 0.0
-    assert spec.compression_db <= 3.0 and spec.comp_ratio <= 2.0 and spec.leveler
+    assert spec.compression_db <= 3.0 and spec.comp_ratio <= 2.0
+    # an even, clean take keeps its dynamics: the leveler has no measured job (the var-silences E2E flattened a
+    # 3.8 dB word spread to 2.5 dB and LRA 5 → 1.2 LU)
+    assert not spec.leveler and "leveler off" in spec.notes and spec.compression_db == 2.0
     assert 60.0 <= spec.hpf_hz <= 100.0
     assert "SNR" in spec.notes and "HPF" in spec.notes
+    m = V.measure_voice(None, ix, audio=voice(), sr=SR)
+    uneven = V.plan_voice_chain(None, ix, audio=voice(), sr=SR,
+                                measurements={**m, "word_level_spread_db": 9.0, "sentence_level_drift_db": 4.0})
+    assert uneven.leveler and uneven.compression_db == 3.0 and "leveler on" in uneven.notes
 
 
 @pytest.mark.parametrize(("noise_db", "expect", "provider"), [(-35.0, "light", None), (-26.0, "isolate", "elevenlabs")])

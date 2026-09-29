@@ -57,6 +57,7 @@ from studio.compile.captions import (
     CaptionParams,
     SafeZone,
     _apply_case,
+    caption_fit,
     load_caption_params,
     load_constants,
     safe_zone_for,
@@ -112,6 +113,10 @@ class CaptionLayoutProps(_P):
     left_px: float
     right_px: float
     min_scale: float = Field(ge=0.3, le=1.0)
+    min_size_px: float = Field(default=0.0, ge=0.0)  # legibility floor at the output size
+    overflow_lines: int = Field(default=1, ge=1, le=3)
+    top_px: float = Field(default=0.0, ge=0.0)  # caption band: safe top …
+    bottom_px: float = Field(default=0.0, ge=0.0)  # … and the lowest allowed bottom edge (relaxed floor)
 
 
 class CaptionStyleProps(_P):
@@ -145,6 +150,9 @@ class CaptionPageProps(_P):
     words: list[CaptionWordProps] = Field(min_length=1)
     y_norm: float = Field(ge=0.0, le=1.0)
     style: CaptionStyleProps
+    lines: int | None = Field(default=None, ge=1, le=3)  # planned line count (the placer's caption_fit)
+    #: planned line breaks: word index where each line after the first starts (syntax-aware, from caption_fit)
+    breaks: list[int] | None = None
 
 
 class TextStyleProps(_P):
@@ -414,7 +422,8 @@ def _card_rect(ins: TimelineInsert) -> tuple[float, float, float, float] | None:
     return (0.55, 0.06, 0.4, 0.24)  # pip default: top right, inside the band
 
 
-def _caption_props(pg: TimelineCaptionPage, k: int, fps: Fraction, total: int, ws: float) -> CaptionPageProps | None:
+def _caption_props(pg: TimelineCaptionPage, k: int, fps: Fraction, total: int, ws: float,
+                   lines: int | None = None, breaks: Sequence[int] | None = None) -> CaptionPageProps | None:
     st = pg.style
     start, end = _frames(pg.out_start, fps, total), _frames(pg.out_end, fps, total)
     if end <= start:
@@ -444,7 +453,11 @@ def _caption_props(pg: TimelineCaptionPage, k: int, fps: Fraction, total: int, w
         highlight_lead_frames=min(12, round(st.highlight_lead_frames * float(fps) / 30)),
         max_lines=min(3, st.lines), letter_spacing_em=0.0, line_height=1.12,
     )
-    return CaptionPageProps(id=pg.page_id or f"p{k:03d}", start=start, end=end, words=wp, y_norm=pg.y_norm, style=style)
+    brk = [b for b in (breaks or []) if 0 < b < len(wp)]
+    if lines is not None and len(brk) != lines - 1:
+        brk = []
+    return CaptionPageProps(id=pg.page_id or f"p{k:03d}", start=start, end=end, words=wp, y_norm=pg.y_norm, style=style,
+                            lines=lines, breaks=sorted(set(brk)) or None)
 
 
 # ============================================================================================== props
@@ -473,8 +486,13 @@ def build_overlay_props(timeline: Timeline, *, index: TakeIndex | None = None,
     th.update(theme or {})
     theme_p = ThemeProps(**th)
 
+    def planned(pg: TimelineCaptionPage) -> Any:
+        text = pg.text or " ".join(w.text for w in pg.words)
+        return caption_fit(pg.style, text, W, params, max_width=W - zone.left - zone.right)
+
     captions = [c for k, pg in enumerate(sorted(timeline.captions, key=lambda p: p.out_start), start=1)
-                if (c := _caption_props(pg, k, fps, total, ws)) is not None]
+                if (f := planned(pg)) is not None
+                and (c := _caption_props(pg, k, fps, total, ws, f.lines, f.breaks)) is not None]
 
     band_w = W - zone.left - zone.right
     texts: list[TextOverlayProps] = []
@@ -529,7 +547,10 @@ def build_overlay_props(timeline: Timeline, *, index: TakeIndex | None = None,
 
     left, right = zone.left, W - zone.right
     layout = CaptionLayoutProps(x_center_px=W / 2, max_width_px=min(params.max_line_px * ws, right - left),
-                                left_px=left, right_px=right, min_scale=params.min_font_scale)
+                                left_px=left, right_px=right, min_scale=params.min_font_scale,
+                                min_size_px=params.min_size_px * ws,
+                                overflow_lines=max(1, min(3, params.overflow_lines)),
+                                top_px=zone.top, bottom_px=H - zone.relaxed_bottom)
     return OverlayProps(
         width=W, height=H, fps=float(fps), duration_in_frames=total,
         safe=SafeZoneProps(top=zone.top, bottom=zone.bottom, left=zone.left, right=zone.right),

@@ -687,10 +687,50 @@ def _inner_gaps_in(ix: TakeIndex, a: int, b: int) -> set[str]:
     return {g.id for g in ix.gaps_between(ix.words[a].id, ix.words[b].id)}
 
 
+def _gap_after_pos(ix: TakeIndex, b: int) -> str | None:
+    """The gap between source positions ``b`` and ``b + 1`` (None at the end or when they abut)."""
+    if b + 1 >= len(ix.words):
+        return None
+    g = ix.gap_after(ix.words[b].id)
+    return g.id if g is not None and g.before_word_id == ix.words[b + 1].id else None
+
+
+def _join_gap(doc: CutDocument, ix: TakeIndex, i: int) -> str | None:
+    """The gap segment ``i`` shares with the next output segment when they continue the source (a continuous join,
+    e.g. a framing split): the compiler trims it like an inner pause, so its override may live on segment ``i``."""
+    if i + 1 >= len(doc.segments):
+        return None
+    a = doc.segments[i]
+    b = doc.segments[i + 1]
+    pa, pb = ix.word_pos(a.to_word), ix.word_pos(b.from_word)
+    if pb != pa + 1 or ix.words[pa].source != ix.words[pb].source:
+        return None
+    return _gap_after_pos(ix, pa)
+
+
+def _drop_stale_join_overrides(doc: CutDocument, ix: TakeIndex, ctx: _Ctx) -> None:
+    """A pause target kept on a segment for the gap after it (a continuous join) is dropped once the join is a real
+    cut again (the cut removes that pause anyway)."""
+    for i, s in enumerate(doc.segments):
+        a, b = _seg_range(ix, s)
+        inner = _inner_gaps_in(ix, a, b)
+        join = _join_gap(doc, ix, i)
+        stale = [g for g in s.gap_overrides if g not in inner and g != join]
+        if stale:
+            doc.segments[i] = s.model_copy(update={"gap_overrides": {g: ms for g, ms in s.gap_overrides.items()
+                                                                     if g not in stale}})
+            ctx.warnings.append(f"{s.id}: pause target(s) {', '.join(stale)} dropped: that gap is now at a cut")
+
+
 def _piece(ix: TakeIndex, seg: Segment, a: int, b: int, *, new_id: str | None = None,
            seam: SeamTreatment | None = None) -> Segment:
-    """Copy of ``seg`` restricted to source positions ``a..b`` (gap overrides/framing anchor filtered)."""
+    """Copy of ``seg`` restricted to source positions ``a..b`` (gap overrides/framing anchor filtered). The override
+    of the gap right after ``b`` is kept too: when the next piece continues the source (a framing split) the
+    compiler still trims that pause; a stale one is dropped once the join becomes a cut."""
     gaps = _inner_gaps_in(ix, a, b)
+    after = _gap_after_pos(ix, b)
+    if after is not None:
+        gaps.add(after)
     framing = seg.framing
     if framing is not None and framing.anchor_word is not None:
         ap = ix.word_pos(framing.anchor_word)
@@ -991,11 +1031,12 @@ def _reconcile(old: CutDocument, new: CutDocument, ix: TakeIndex, ctx: _Ctx) -> 
 def _post_check(doc: CutDocument, ix: TakeIndex) -> None:
     """Structural safety net + pins (invariant 4)."""
     cov = _kept_positions(doc, ix)  # raises on overlap/unknown ids
-    for s in doc.segments:
+    for i, s in enumerate(doc.segments):
         a, b = _source_range(ix, s.from_word, s.to_word, f"segment {s.id}")
         inner = _inner_gaps_in(ix, a, b)
+        join = _join_gap(doc, ix, i)
         for gid, ms in s.gap_overrides.items():
-            if gid not in inner:
+            if gid not in inner and gid != join:
                 raise OpRejected(f"{s.id}: gap {gid} is not inside the segment")
             if _gap_too_long(ms, ix.gap(gid).duration_us):
                 raise OpRejected(f"{s.id}: gap {gid} target {ms} ms is longer than measured")
@@ -1191,11 +1232,29 @@ def _h_set_gap(doc: CutDocument, op: SetGap, ctx: _Ctx) -> None:
         raise OpRejected(f"{op.gap_id} is a leading/trailing gap; the compiler trims those")
     kept = _kept_positions(doc, ix)
     pa, pb = ix.word_pos(g.after_word_id), ix.word_pos(g.before_word_id)  # type: ignore[arg-type]
-    if pa not in kept or pb not in kept or kept[pa] != kept[pb]:
-        raise OpRejected(f"{op.gap_id} is not inside a kept segment (it is at a cut or removed)")
+    wa, wb = ix.words[pa], ix.words[pb]
+    if pa not in kept and pb not in kept:
+        raise OpRejected(f"{op.gap_id} ({wa.id} “{wa.text}” | {wb.id} “{wb.text}”) lies in removed material: both "
+                         "words are out of the story, so the pause never plays")
+    if pa not in kept or pb not in kept:
+        out = wa if pa not in kept else wb
+        raise OpRejected(f"{op.gap_id} borders {out.id} “{out.text}”, which is cut: the pause is part of a cut edge, "
+                         "not a playing pause. The cut's pads keep ~120 ms after the outgoing word and ~60 ms before "
+                         "the incoming one; to change that join, move the seam (cut_words / restore_words)")
+    if kept[pa] != kept[pb]:
+        ia, ib = doc.segment_index(kept[pa]), doc.segment_index(kept[pb])
+        if ib == ia + 1 and _join_gap(doc, ix, ia) == op.gap_id:
+            i = ia  # a continuous join (e.g. a framing split): the compiler trims this pause like an inner one
+        else:
+            raise OpRejected(
+                f"{op.gap_id} ({wa.id} “{wa.text}” | {wb.id} “{wb.text}”) sits at a CUT between {kept[pa]} and "
+                f"{kept[pb]}: the cut already removes this pause; the seam plays only the pads (~120 ms tail + "
+                "~60 ms lead, never into another word or untranscribed sound). To change the join, move the seam "
+                "(cut_words / restore_words) or reorder, not set_gap")
+    else:
+        i = doc.segment_index(kept[pa])
     if _gap_too_long(op.ms, g.duration_us):
         raise OpRejected(f"{op.gap_id} is {g.duration_ms:.0f} ms; cannot lengthen a pause to {op.ms} ms")
-    i = doc.segment_index(kept[pa])
     seg = doc.segments[i]
     ov = dict(seg.gap_overrides)
     if op.ms * 1000 >= g.duration_us - 500:  # within half a millisecond of natural = restore
@@ -1650,6 +1709,7 @@ def apply_ops(
         trial = working.model_copy(deep=True)
         try:
             _HANDLERS[name](trial, op, ctx)
+            _drop_stale_join_overrides(trial, index, ctx)
             trial = CutDocument.model_validate(trial.model_dump())
             _post_check(trial, index)
         except OpRejected as e:

@@ -87,6 +87,8 @@ def _director(job: Job, index: TakeIndex, plan: dict[str, list[Any]]) -> tuple[D
 @pytest.fixture(autouse=True)
 def _no_disk_floor(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("STUDIO_MIN_FREE_GB", "0")
+    # the loop's "low disk" policy (losers also lose their finals) must not depend on the test machine's disk
+    monkeypatch.setattr("studio.storage.free_bytes", lambda _p: 500_000_000_000)
 
 
 def test_ties_keep_the_champion_and_two_winless_rounds_stop(job: Job, take_index: TakeIndex) -> None:
@@ -102,7 +104,9 @@ def test_ties_keep_the_champion_and_two_winless_rounds_stop(job: Job, take_index
         rd = job.renders_dir / name
         assert not (rd / "aroll.mov").exists() and not (rd / "stems").exists() and (rd / "final_tiktok.mp4").exists()
         assert json.loads((rd / "pruned.json").read_text())["bytes"] > 0
-    assert (job.renders_dir / "r1" / "aroll.mov").exists()  # the champion keeps its intermediates during the loop
+    # the champion keeps only its finals too: critique and pairwise read the finals and the saved QA
+    r1 = job.renders_dir / "r1"
+    assert not (r1 / "aroll.mov").exists() and (r1 / "final_tiktok.mp4").exists() and (r1 / "render.json").exists()
     # every revision branched from the champion
     for r in res.rounds:
         assert job.load_doc(r.challenger_doc).parent_version == res.champion_doc
@@ -251,3 +255,122 @@ def test_a_director_outage_ships_the_champion(job: Job, take_index: TakeIndex) -
     res = ChampionLoop(job, d, take_index, **fk.kwargs()).run()
     assert res.rounds[-1].outcome == "error" and "could not revise" in res.stop_reason
     assert res.champion_render.name == "r1" and fk.watched == ["r1"]
+
+
+# ============================================================================================ review-loop fixes
+def test_a_critique_outage_ships_not_reviewed_never_nothing_to_change(job: Job, take_index: TakeIndex) -> None:
+    from studio.agent.critics import CritiqueUnavailable
+
+    d, sc = _director(job, take_index, GAP_300)
+    fk = Fakes(job)
+    calls: list[str] = []
+
+    def down(rd: Path, doc: CutDocument) -> list[dict[str, Any]]:
+        calls.append(rd.name)
+        raise CritiqueUnavailable("the critics could not review this render: frame judge failed: Connection error")
+
+    waits: list[float] = []
+    res = ChampionLoop(job, d, take_index, **{**fk.kwargs(), "critic": down}, sleep=waits.append).run()
+    assert res.stop_reason.startswith("critique unavailable") and "NOT REVIEWED" in res.stop_reason
+    assert not res.reviewed and "Connection error" in res.review_note
+    assert calls == ["r1", "r1", "r1"] and waits == [60.0, 180.0]
+    assert res.rounds[-1].outcome == "unreviewed" and not [p for s, p in sc.prompts if s == "revise"]
+    from studio.qa.report import _review_lines
+
+    assert any("NOT REVIEWED" in line for line in _review_lines(job, None))
+
+
+def test_a_critique_blip_is_retried_and_the_loop_goes_on(job: Job, take_index: TakeIndex) -> None:
+    d, _ = _director(job, take_index, NOOP)
+    fk = Fakes(job)
+    n = {"k": 0}
+
+    def flaky(rd: Path, doc: CutDocument) -> list[dict[str, Any]]:
+        n["k"] += 1
+        if n["k"] == 1:
+            raise RuntimeError("Connection error")
+        return fk.critic(rd, doc)
+
+    res = ChampionLoop(job, d, take_index, **{**fk.kwargs(), "critic": flaky}, sleep=lambda _s: None).run()
+    assert res.reviewed and [r.outcome for r in res.rounds] == ["no_change", "no_change"]
+
+
+def test_the_revision_sees_the_champion_render_and_the_critics_evidence(job: Job, take_index: TakeIndex) -> None:
+    from PIL import Image
+
+    d, sc = _director(job, take_index, NOOP)
+    fk = Fakes(job)
+
+    def critic(rd: Path, doc: CutDocument) -> list[dict[str, Any]]:
+        frames = job.critique_dir / rd.name / "frames"
+        frames.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (64, 114), (40, 40, 40)).save(frames / "captions_phone.png")
+        rec = {"doc_version": doc.version, "complete": True, "notes": fk.notes, "verdict": "revise",
+               "rubric": [{"question": "K4. Does all text stay clear of the eyes and mouth throughout?",
+                           "answer": "no", "passed": False, "refs": ["p003"], "evidence": "p003 sits on the hair"},
+                          {"question": "C3. Is any word or word edge clipped?", "answer": "no", "passed": True}],
+               "answers": ["the tail is fine"]}
+        (job.critique_dir / rd.name / "notes.json").write_text(json.dumps(rec))
+        fk.critiqued.append(rd.name)
+        return list(fk.notes)
+
+    ChampionLoop(job, d, take_index, **{**fk.kwargs(), "critic": critic}).run()
+    prompt = next(p for s, p in sc.prompts if s == "revise")
+    assert "verdict on this render: revise" in prompt and "Rubric checks that FAILED" in prompt and "K4." in prompt
+    assert "C3." not in prompt  # a "no" that is the good outcome is not a failure
+    assert "source='render') shows that render" in prompt and "sheets are attached" in prompt
+    assert "Answers to your questions: the tail is fine" in prompt
+    assert d.session.last_render is not None and d.session.last_render.parent.name == "r1"
+    assert fk.critiqued == ["r1"]  # the complete record is reused, not recomputed
+
+
+def test_a_confirmed_final_watch_note_opens_one_more_round(job: Job, take_index: TakeIndex) -> None:
+    d, sc = _director(job, take_index, NOOP)
+    fk = Fakes(job)
+    note = {"by": "final_watch", "severity": "P1", "area": "pacing", "refs": ["w0028"], "text": "dead air after rest.",
+            "confirmed_by": ["critic:second"]}
+    seq = [{"ran": True, "confirmed": [note], "verdict": "fix it"}, {"ran": True, "confirmed": [], "verdict": "ship"}]
+    watched: list[str] = []
+
+    def fw(rd: Path) -> dict[str, Any]:
+        watched.append(rd.name)
+        return seq[len(watched) - 1]
+
+    res = ChampionLoop(job, d, take_index, **{**fk.kwargs(), "final_watch": fw}).run()
+    assert len(watched) == 2 and [r.kind for r in res.rounds] == ["revise", "revise", "final_watch"]
+    assert "dead air after rest." in [p for s, p in sc.prompts if s == "revise"][-1]
+    assert res.final_watch is not None and res.final_watch["verdict"] == "ship"
+
+
+def _variant_plan() -> dict[str, list[Any]]:
+    from director_script import last_prompt
+
+    def step(k: int) -> Any:
+        def pick(sc: Any, messages: Any) -> Any:
+            if "VARIANT" not in last_prompt(messages):
+                return [("finish_stage", {"summary": "declined every note: taste only"})] if k == 0 else "ok"
+            return [[("cut_ops", {"ops": [{"op": "set_gap", "gap_id": "g0009", "ms": 300}]})], [("compile_check", {})],
+                    [("finish_stage", {"summary": "built h01 from the champion"})], "ok"][k]
+        return pick
+
+    return {"revise": [step(0), step(1), step(2), step(3)]}
+
+
+@pytest.mark.parametrize("winner", ["tie", "b"])
+def test_hook_alternates_are_built_rendered_judged_and_delivered(job: Job, take_index: TakeIndex,
+                                                                  winner: str) -> None:
+    d, _ = _director(job, take_index, _variant_plan())
+    d.session.apply_ops([{"op": "set_hook_alternates", "alternates": [
+        {"ranges": [{"from_word": "w0003", "to_word": "w0008"}], "note": "open without the greeting"}]}])
+    fk = Fakes(job, winners=[winner])
+    res = ChampionLoop(job, d, take_index, **fk.kwargs()).run()
+    var = [r for r in res.rounds if r.kind == "variant"]
+    assert len(var) == 1 and var[0].variant == "h01" and fk.judged == [("r1", "r2")]
+    alt = res.alternates[0]["alternate"]
+    if winner == "tie":  # the champion ships; the variant is delivered as an alternate (finals kept)
+        assert res.champion_render.name == "r1" and alt == {"render": "r2", "doc_version": var[0].challenger_doc,
+                                                            "label": "h01"}
+    else:  # the variant ships; the old champion is the alternate
+        assert res.champion_render.name == "r2" and alt["render"] == "r1" and alt["label"] == "without_h01"
+    assert (job.renders_dir / alt["render"] / "final_tiktok.mp4").exists()
+    assert LoopState.load(job).variants_done

@@ -348,7 +348,7 @@ def test_build_index_calls_stages_in_order(monkeypatch: pytest.MonkeyPatch, job:
         calls.append("gaps")
         return ix.gaps
 
-    def fake_sentences(words):
+    def fake_sentences(words, **_kw):
         calls.append("sentences")
         sid = {w.id: w.sentence_id for w in ix.words}
         return [w.model_copy(update={"sentence_id": sid[w.id]}) for w in words], ix.sentences
