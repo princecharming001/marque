@@ -120,19 +120,19 @@ export STUDIO_ENV_FILE=~/studio.env STUDIO_REAL=1 STUDIO_WORK_DIR=~/studio-work
 STUDIO_ENV_FILE=~/studio.env STUDIO_REAL=1 .venv/bin/python -m pytest tests -q -m real   # small real API calls
 ```
 
-**Test videos:** our QA takes are public objects in the Supabase bucket `marque-clips`. The full URLs are in `backend/eval/out/long_video/ledger.jsonl` in the repo (search for `qa-editor-`). The useful ones:
+**Test videos** (public URLs; download with `curl -L -o <name> <url>` into e.g. `~/studio-testdata/`):
 
-| File | What it is |
-|---|---|
-| `qa-editor-d030-h264.mov` | 30 s hot take |
-| `qa-editor-var-multitake.mov` | 51 s; a verbatim retake plus a false start |
-| `qa-editor-var-silences.mov` | 105 s with long pauses |
-| `qa-editor-real-take40.mov` | 40 s real take; landscape pixels with rotation metadata |
-| `qa-editor-var-landscape.mp4` | Landscape 16:9 |
-| `qa-editor-var-music.mov` | Music playing in the room |
-| `qa-editor-var-4k60_hevc.mov` | 15 s 4K60 HEVC |
-| `qa-editor-var-vfr.mov` | Variable frame rate |
-| `qa-editor-var-noaudio.mp4` | No audio track |
+| File | What it is | URL |
+|---|---|---|
+| `qa-editor-d030-h264.mov` | 30 s hot take | https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/c6b40acc-d791-45ef-a2bc-da3db612478c/qa-editor-d030-h264.mov |
+| `qa-editor-var-multitake.mov` | 51 s; verbatim retake + false start | https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/3735be9b-0f54-49bc-862e-5b3cbc5094e7/qa-editor-var-multitake.mov |
+| `qa-editor-var-silences.mov` | 105 s with long pauses | https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/53a55b1b-682f-434c-bbad-caf941498c4d/qa-editor-var-silences.mov |
+| `qa-editor-real-take40.mov` | 40 s real take, rotation metadata | https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/4c08691b-1795-435e-bb02-f463d5abbd5f/qa-editor-real-take40.mov |
+| `qa-editor-var-landscape.mp4` | Landscape 16:9 | https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/62aae798-5805-4613-b2ac-654b285866e2/qa-editor-var-landscape.mp4 |
+| `qa-editor-var-music.mov` | Music playing in the room | https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/96d7d563-4033-4c88-a9e7-9faecaa84a37/qa-editor-var-music.mov |
+| `qa-editor-var-4k60_hevc.mov` | 15 s 4K60 HEVC | https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/20b16fa4-4da2-489b-8c7f-270ccf9cf83f/qa-editor-var-4k60_hevc.mov |
+| `qa-editor-var-vfr.mov` | Variable frame rate | https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/40aeb7da-5623-4994-bd3e-f4790655a332/qa-editor-var-vfr.mov |
+| `qa-editor-var-noaudio.mp4` | No audio track | https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/5461f943-e0a6-4ae8-9102-47645503d4ed/qa-editor-var-noaudio.mp4 |
 
 `qa-editor-real-take40` shows the owner's face: fine for internal testing, **never** for marketing.
 
