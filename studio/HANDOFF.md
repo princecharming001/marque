@@ -182,10 +182,10 @@ STUDIO_ENV_FILE=~/studio.env STUDIO_REAL=1 .venv/bin/python -m pytest tests -q -
   - Native FFmpeg AAC: PNS and intensity stereo off (low-bitrate tools that synthesize noise at 320 kbps; a dual-mono
     mix decoded 0.03 apart between channels), mid/side forced for a mono mix (channels now bit-identical).
 
-**Open decision (owner):** FFmpeg's native AAC encoder is quality-limited: asked for 320k it delivers ~220-245 kbps
-on simple content, below invariant 10's 250 kbps floor, and no setting raises it. AudioToolbox (macOS) does not
-have this problem. Options: build FFmpeg with FDK-AAC (`--enable-nonfree`: fine server-side, not redistributable)
-or make the floor encoder-aware.
+- **AAC on Linux: FDK-AAC** (owner's decision). FFmpeg's native AAC is quality-limited (asked for 320k it stops at
+  ~220-245 kbps on simple content, below invariant 10's 250 kbps floor, and no setting raises it). The master now
+  prefers AudioToolbox, then `libfdk_aac` (CBR 320k, 20 kHz band, priming 2048 measured), then native `aac`.
+  `setup-linux.sh` builds FFmpeg with `--enable-nonfree`: fine on our own servers, never redistribute that binary.
 
 **Environment limits here:** no libvmaf (CAMBI banding metric reports unavailable; advisory, not an invariant).
 

@@ -22,7 +22,8 @@ render stages' outputs into the delivery files in the render dir (the timeline i
   offsets, so the first frame is presented at t=0), and the AAC encoder's priming delay (measured once
   per encoder by a click round-trip; 2112 samples for AudioToolbox, 1024 for FFmpeg's native encoder) is
   pre-trimmed from the input so decoded audio is sample-aligned with the picture. Apple's AudioToolbox
-  AAC-LC (``aac_at``, constrained VBR, quality 0) is used when available, else FFmpeg's ``aac`` (no PNS or
+  AAC-LC (``aac_at``, constrained VBR, quality 0) is used when available, then FDK (``libfdk_aac``, CBR, on Linux
+  servers built with ``--enable-nonfree``), else FFmpeg's ``aac`` (no PNS or
   intensity stereo; mid/side forced for a mono mix so both channels decode identical); 320 kbps,
   48 kHz, stereo. A mono mix is duplicated to both channels at −3.01 dB so the BS.1770 loudness of the
   stereo file equals the loudness measured on the mono mix. ``+faststart`` puts the moov atom first.
@@ -73,7 +74,7 @@ PLATFORM_PROFILES: dict[str, dict[str, Any]] = {
 CRF_FINAL = 15
 CRF_PREVIEW = 20
 AUDIO_BITRATE = "320k"
-_KNOWN_PRIMING = {"aac": 1024, "aac_at": 2112}
+_KNOWN_PRIMING = {"aac": 1024, "aac_at": 2112, "libfdk_aac": 2048}
 
 
 @dataclass
@@ -115,13 +116,20 @@ def _encoders() -> str:
 
 
 def aac_encoder() -> str:
-    """AudioToolbox AAC when this FFmpeg has it (higher quality than the native encoder), else ``aac``."""
-    return "aac_at" if " aac_at " in _encoders() else "aac"
+    """The best AAC-LC encoder this FFmpeg has: AudioToolbox (macOS), then Fraunhofer FDK (a ``--enable-nonfree``
+    build: honours the bitrate, where the native encoder stops at ~220-245 kbps on simple content), then ``aac``."""
+    enc = _encoders()
+    for name in ("aac_at", "libfdk_aac"):
+        if f" {name} " in enc:
+            return name
+    return "aac"
 
 
 def _aac_args(encoder: str, *, mono: bool = False) -> list[str]:
     if encoder == "aac_at":
         return ["-c:a", "aac_at", "-aac_at_mode", "cvbr", "-aac_at_quality", "0", "-b:a", AUDIO_BITRATE]
+    if encoder == "libfdk_aac":  # CBR AAC-LC, full 20 kHz band (FDK low-passes by default at some rates)
+        return ["-c:a", "libfdk_aac", "-profile:a", "aac_low", "-b:a", AUDIO_BITRATE, "-cutoff", "20000"]
     # The native encoder's perceptual noise substitution and intensity stereo are low-bitrate tools: at 320 kbps
     # they only synthesize noise and smear the image (a dual-mono mix decoded 0.03 apart between channels). A mono
     # mix is forced to mid/side so both channels decode bit-identical.

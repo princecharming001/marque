@@ -129,8 +129,8 @@ def test_encode_settings():
 
 def test_aac_priming_is_measured():
     enc = aac_encoder()
-    assert enc in ("aac", "aac_at")
-    assert aac_priming(enc) in (1024, 2112)
+    assert enc in ("aac", "aac_at", "libfdk_aac")
+    assert aac_priming(enc) == {"aac": 1024, "aac_at": 2112, "libfdk_aac": 2048}[enc]
 
 
 def test_write_srt(take_index, cut_doc, tmp_path):
