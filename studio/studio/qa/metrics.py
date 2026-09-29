@@ -280,6 +280,10 @@ class Integrity(_M):
     #: non-word sound (a fragment of a lost word, a noise; ``Gap.sound_us``) inside a kept audio window: in a cut pad
     #: the audio stage mutes it under room tone (``muted``); between kept words it plays (reported, not a gate)
     sound_leaks: list[dict[str, Any]] = Field(default_factory=list)
+    #: kept cut-off words (``kind == "cutoff"``: a fragment such as "restr-") at a join, i.e. the edge of a continuous
+    #: audio run (a true seam or the story's first/last word): a broken word, then a jump (invariant 1). Words the
+    #: recording chops are listed under ``truncated`` instead.
+    cutoff_at_join: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Pacing(_M):
@@ -433,6 +437,7 @@ class MetricsPacket(_M):
                                     for c in self.cuts if c.inside_clause and c.kind != "pause_trim"],
             "integrity": {"clipped": self.integrity.clipped, "leaked": self.integrity.leaked,
                           "truncated_by_recording": self.integrity.truncated,
+                          "cutoff_at_join": self.integrity.cutoff_at_join,
                           "untranscribed_sound_kept": self.integrity.sound_leaks},
             "dropout_edge_clicks": [{"t": c.out_t, "words": [c.left_word, c.right_word], "margin_db": c.margin_db}
                                     for c in self.edge_clicks_found],
@@ -1676,6 +1681,15 @@ def word_integrity(timeline: Timeline, index: TakeIndex, *, tol_ms: float = 2.0,
         if index.has_word(wid) and index.word(wid).truncated:
             w = index.word(wid)
             res.truncated.append({"word_id": wid, "text": w.text, "side": w.truncated})
+    for _a, _b, ws, ids in runs:  # each run's edges are joins: a fragment there is a broken word, then a jump
+        edge = [index.word(w) for w in ws if index.has_word(w) and index.word(w).kind != "event"]
+        if not edge:
+            continue
+        for side, w in (("start", edge[0]), ("end", edge[-1])):
+            if w.kind == "cutoff" and not w.truncated \
+                    and not any(d["word_id"] == w.id for d in res.cutoff_at_join):
+                res.cutoff_at_join.append({"word_id": w.id, "text": w.display(), "side": side,
+                                           "seg": ids[0] if side == "start" else ids[-1]})
     return res
 
 
@@ -2107,6 +2121,9 @@ def _advice(pk: MetricsPacket, priors: Mapping[str, Any], doc: CutDocument | Non
                    f"(invariant 1).")
     for d in pk.integrity.leaked:
         out.append(f"Removed word {d['word_id']} “{d['text']}” is audible for {d['overlap_ms']} ms inside {d['seg']}.")
+    for d in pk.integrity.cutoff_at_join:
+        out.append(f"Cut-off word {d['word_id']} “{d['text']}” sits at a join ({d['seg']} {d['side']}): a broken word, "
+                   "then a jump (invariant 1).")
     p = pk.pacing
     if p is not None:
         lo, hi = _range(prior(priors, "hook.first_word_target_s", [0.1, 0.5]), (0.1, 0.5))

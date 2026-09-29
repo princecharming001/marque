@@ -7,7 +7,8 @@ mistake, or doctrine advice a critic should see) or ``info``. Ops keep documents
 usually mean a document was edited by hand, loaded against a different index, or went stale.
 
 Checks: non-empty story; segment IDs/ranges/sources; no word in two segments; gap overrides; speed
-and framing ranges; seams (first segment, J/L leads); pinned words present (invariant 4); inserts
+and framing ranges; seams (first segment, J/L leads); no cut-off word at a join (invariant 1, see
+:func:`cutoffs_at_joins`); pinned words present (invariant 4); inserts
 (anchors resolvable, kept and ordered, licence per invariant 5, asset files present when a job is given,
 no overlapping full-screen inserts); text/caption/SFX/music anchors; caption coverage; loudness target
 and true-peak ceiling (invariant 8); deliverables.
@@ -26,7 +27,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from studio.jobs import Job
     from studio.perception.index import TakeIndex
 
-__all__ = ["Finding", "validate_document", "has_errors", "errors", "format_findings"]
+__all__ = ["Finding", "validate_document", "has_errors", "errors", "format_findings", "cutoffs_at_joins"]
 
 Level = Literal["error", "warning", "info"]
 
@@ -49,6 +50,63 @@ def errors(findings: Iterable[Finding]) -> list[Finding]:
 def format_findings(findings: Iterable[Finding]) -> str:
     return "\n".join(f"[{f.level}] {f.code}: {f.message}" + (f" ({', '.join(f.refs)})" if f.refs else "")
                      for f in findings)
+
+
+def cutoffs_at_joins(doc: CutDocument, index: TakeIndex) -> list[dict[str, str | None]]:
+    """Cut-off words (``kind == "cutoff"``: a fragment such as ``restr-``, or a word a recording dropout chops) on
+    either side of a join, in output order.
+
+    A join is where the audio stops being the take's own continuous sound: a seam between two segments that are
+    not contiguous in the source, and the story's first and last word. The edge word is the outermost non-event
+    word of the segment. A fragment there is heard as a broken word followed by a jump (and often a click): it
+    never survives a join, whatever the seam treatment. A fragment inside continuous kept speech ("I was go-
+    going") is the speaker's own stumble and stays a judgment call. Each entry: ``word_id``, ``text`` (as
+    displayed), ``seg``, ``side`` (``"end"``: the segment ends on it; ``"start"``: it starts on it) and
+    ``other`` (the word across the join, ``None`` at the story's edge).
+    """
+    ix = index
+    segs = [s for s in doc.segments if ix.has_word(s.from_word) and ix.has_word(s.to_word)
+            and ix.word_pos(s.from_word) <= ix.word_pos(s.to_word)]
+
+    def contiguous(a_to: str, b_from: str) -> bool:
+        pa, pb = ix.word_pos(a_to), ix.word_pos(b_from)
+        return pb == pa + 1 and ix.words[pa].source == ix.words[pb].source
+
+    def edge(ids: list[str], *, last: bool) -> str | None:
+        for wid in (reversed(ids) if last else ids):
+            if ix.word(wid).kind != "event":
+                return wid
+        return None
+
+    out: list[dict[str, str | None]] = []
+    edges = [(edge(ix.word_ids(s.from_word, s.to_word), last=False),
+              edge(ix.word_ids(s.from_word, s.to_word), last=True)) for s in segs]
+    for k, s in enumerate(segs):
+        first, last = edges[k]
+        join_in = k == 0 or not contiguous(segs[k - 1].to_word, s.from_word)
+        join_out = k + 1 == len(segs) or not contiguous(s.to_word, segs[k + 1].from_word)
+        if join_in and first is not None and ix.word(first).kind == "cutoff":
+            out.append({"word_id": first, "text": ix.word(first).display(), "seg": s.id, "side": "start",
+                        "other": edges[k - 1][1] if k else None})
+        if join_out and last is not None and ix.word(last).kind == "cutoff" \
+                and not (out and out[-1]["word_id"] == last):
+            out.append({"word_id": last, "text": ix.word(last).display(), "seg": s.id, "side": "end",
+                        "other": edges[k + 1][0] if k + 1 < len(segs) else None})
+    return out
+
+
+def describe_cutoff_at_join(ix: TakeIndex, c: dict[str, str | None]) -> str:
+    """One line for the Director: which fragment sits at which join, and the ID-level ways out."""
+    wid, seg = c["word_id"], c["seg"]
+    assert wid is not None
+    where = (f"{seg} ends on it" if c["side"] == "end" else f"{seg} starts on it")
+    across = f", then the audio jumps to {c['other']}" if c["other"] and c["side"] == "end" else \
+        f", right after the jump from {c['other']}" if c["other"] else " at the edge of the story"
+    nb = ix.prev_word(wid) if c["side"] == "end" else ix.next_word(wid)
+    fix = f"cut it (cut_words {wid} {wid}) so the join lands on {nb.id} {nb.display()!r}" if nb is not None \
+        else f"cut it (cut_words {wid} {wid})"
+    return (f"cut-off word {wid} {c['text']!r} at a join ({where}{across}): the listener hears a broken word and a "
+            f"jump (invariant 1 fails) — {fix}, or move the seam to a clean clause edge nearby")
 
 
 def validate_document(doc: CutDocument, index: TakeIndex, job: Job | None = None) -> list[Finding]:
@@ -116,6 +174,10 @@ def validate_document(doc: CutDocument, index: TakeIndex, job: Job | None = None
     pos: dict[str, int] = {}
     for i, w in enumerate(output_order):
         pos.setdefault(w, i)
+
+    # ------------------------------------------------------------------ cut-off words at joins (invariant 1)
+    for c in cutoffs_at_joins(doc, ix):
+        add("error", "cutoff_at_join", describe_cutoff_at_join(ix, c), str(c["seg"]), str(c["word_id"]))
 
     # ------------------------------------------------------------------ pins (invariant 4)
     for wid, kind in doc.pins.all().items():

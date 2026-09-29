@@ -713,6 +713,17 @@ def test_asr_seam_damage_fails_invariant_1(env: SimpleNamespace, clean: SimpleNa
     assert res[4].passed  # w0014 is not pinned
 
 
+def test_a_cutoff_word_at_a_join_fails_invariant_1(env: SimpleNamespace, clean: SimpleNamespace) -> None:
+    """A fragment ("restr-") at a seam is a broken word and a jump: invariant 1 fails even with no click."""
+    frag = {"word_id": "w0008", "text": "much-", "side": "end", "seg": "seg001"}
+    pk = clean.pk.model_copy(update={"integrity": clean.pk.integrity.model_copy(update={"cutoff_at_join": [frag]})})
+    res = _by_number(inv.check_invariants(env.job, env.doc, env.index, env.timeline, clean.r["dir"], metrics=pk,
+                                          asr=False, save=False))
+    assert not res[1].passed and "cut-off word at a join" in res[1].detail and "w0008" in res[1].refs
+    assert res[1].data["cutoff_at_join"] == [frag]
+    assert any("Cut-off word w0008" in a for a in qm._advice(pk, {}, env.doc))
+
+
 def test_asr_masking_is_not_seam_damage(env: SimpleNamespace, clean: SimpleNamespace, tmp_path: Path) -> None:
     """When the mix carries music/SFX, a seam word lost in the final is re-checked on the dialogue stem:
     heard there → masked (advice, invariant 1 passes); lost there too → seam damage (fails)."""

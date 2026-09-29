@@ -494,6 +494,13 @@ def check_invariants(job: Job | None, doc: CutDocument, index: TakeIndex, timeli
                     "on the neighbouring word")
         refs.append(d["word_id"])
 
+    at_joins = ref_pk.integrity.cutoff_at_join if ref_pk is not None else []
+    for d in at_joins:
+        where = "ends" if d["side"] == "end" else "starts"
+        msgs.append(f"{d['word_id']} “{d['text']}” is a cut-off word at a join ({d['seg']} {where} on it): the "
+                    "listener hears a broken word, then a jump; cut it so the seam lands on the neighbouring word")
+        refs.append(d["word_id"])
+
     inside = [c for c in (ref_pk.cuts if ref_pk is not None else []) if c.inside_word]
     for c in inside:
         msgs.append(f"seam {c.seam} at {c.out_t:.2f} s falls inside a kept word")
@@ -524,7 +531,7 @@ def check_invariants(job: Job | None, doc: CutDocument, index: TakeIndex, timeli
         results.append(_result(1, not msgs, "; ".join(msgs) if msgs else
                                f"{n_seams} seams clean in {len(ordered)} file(s), no clipped words{asr_note}",
                                refs, clicks=click_data, clipped=clipped, inside_word=[c.seam for c in inside],
-                               asr=asr_data, seams=n_seams, truncated=truncated))
+                               asr=asr_data, seams=n_seams, truncated=truncated, cutoff_at_join=at_joins))
 
     # ------------------------------------------------------------------ 2 A/V alignment
     msgs, av_data = [], {}

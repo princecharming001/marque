@@ -613,6 +613,13 @@ def _remotion_bin(root: Path) -> list[str]:
     return ["npx", "--no-install", "remotion"]
 
 
+def _browser_executable(settings: Settings | None) -> str | None:
+    """``STUDIO_REMOTION_BROWSER``: a headless Chrome to use instead of Remotion's download (hosts that cannot reach
+    remotion.media). Ignored when the file does not exist."""
+    exe = _settings(settings).remotion_browser
+    return exe if exe and Path(exe).exists() else None
+
+
 def _child_env() -> dict[str, str]:
     """Environment for node: no provider secrets (the overlay never needs them)."""
     from studio.config import KEY_ENV_NAMES
@@ -646,8 +653,8 @@ def ensure_overlay_project(settings: Settings | None = None, *, install: bool = 
         ((root / "node_modules" / ".bin" / "remotion").exists(),
          ["npm", "ci", "--no-audit", "--no-fund"], "npm ci"),
         (_fonts_ok(root), ["node", "scripts/fetch-fonts.mjs"], "fetch fonts"),
-        ((root / "node_modules" / ".remotion").exists(), [*_remotion_bin(root), "browser", "ensure"],
-         "headless Chrome"),
+        ((root / "node_modules" / ".remotion").exists() or _browser_executable(settings) is not None,
+         [*_remotion_bin(root), "browser", "ensure"], "headless Chrome"),
     ]
     for ok, cmd, what in steps:
         if ok:
@@ -852,6 +859,9 @@ def render_overlay_props(props: OverlayProps | dict[str, Any] | str | os.PathLik
                f"--props={props_file}", "--codec=prores", "--prores-profile=4444", "--pixel-format=yuva444p10le",
                "--image-format=png", "--color-space=bt709", "--muted", "--overwrite",
                f"--concurrency={concurrency or _concurrency()}", "--timeout=120000", "--log=error"]
+        exe = _browser_executable(settings)
+        if exe is not None:
+            cmd.append(f"--browser-executable={exe}")
         timeout = max(900.0, model.duration_in_frames * 1.5)
         proc = _run(cmd, root, timeout=timeout, log=log)
         if proc.returncode != 0 or not tmp_out.exists():

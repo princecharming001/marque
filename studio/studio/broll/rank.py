@@ -976,19 +976,64 @@ _ocr_lock = threading.Lock()
 _ocr_ok: bool | None = None
 
 
+_rapid_engine: Any = None
+_rapid_ok: bool | None = None
+
+
+def ocr_backend() -> str:
+    """The OCR backend :func:`ocr_text` uses on this host: ``vision``, ``rapidocr`` or ``none``."""
+    if _ocr_ok is not False:
+        try:
+            import Vision  # noqa: F401
+            return "vision"
+        except ImportError:
+            pass
+    return "rapidocr" if _rapid() is not None else "none"
+
+
+def _rapid() -> Any:
+    """RapidOCR (PaddleOCR det/rec models on ONNX Runtime, Apache-2.0; weights ship in the wheel): the OCR on hosts
+    without Apple Vision (Linux servers)."""
+    global _rapid_engine, _rapid_ok
+    if _rapid_ok is None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+
+            _rapid_engine = RapidOCR()
+            _rapid_ok = True
+        except Exception:
+            _rapid_ok = False
+    return _rapid_engine if _rapid_ok else None
+
+
+def _ocr_rapid(frame: np.ndarray) -> list[tuple[str, float, tuple[float, float, float, float]]] | None:
+    eng = _rapid()
+    if eng is None:
+        return None
+    H, W = frame.shape[:2]
+    with _ocr_lock:
+        result, _elapse = eng(np.ascontiguousarray(frame[:, :, ::-1]))  # the engine expects BGR (OpenCV order)
+    out: list[tuple[str, float, tuple[float, float, float, float]]] = []
+    for box, txt, conf in result or []:
+        xs, ys = [float(p[0]) for p in box], [float(p[1]) for p in box]
+        x0, y0 = max(0.0, min(xs)), max(0.0, min(ys))
+        out.append((str(txt), float(conf), (x0 / W, y0 / H, (min(W, max(xs)) - x0) / W, (min(H, max(ys)) - y0) / H)))
+    return out
+
+
 def ocr_text(frame: np.ndarray) -> list[tuple[str, float, tuple[float, float, float, float]]] | None:
-    """Apple Vision OCR: ``[(text, confidence, (x, y, w, h) normalised, top-left origin)]``; None when the
-    backend is unavailable (non-macOS or pyobjc missing)."""
+    """OCR: ``[(text, confidence, (x, y, w, h) normalised, top-left origin)]``. Apple Vision on macOS, RapidOCR
+    elsewhere; None when neither backend is available."""
     global _ocr_ok
     if _ocr_ok is False:
-        return None
+        return _ocr_rapid(frame)
     try:
         import Foundation
         import objc
         import Vision
     except ImportError:
         _ocr_ok = False
-        return None
+        return _ocr_rapid(frame)
     from PIL import Image
 
     buf = io.BytesIO()
@@ -1766,7 +1811,7 @@ def _analyze_at(c: BrollCandidate, need: Need | str, src: str | None, *, embedde
                 backend = "mser"
                 text_frac = max(text_frac, sum(b[2] * b[3] for b in boxes))
                 continue
-            backend = "vision"
+            backend = ocr_backend()
             area = 0.0
             for txt, conf, (bx, by, bw, bh) in res:
                 if conf < 0.5 or bh < g.min_text_height:

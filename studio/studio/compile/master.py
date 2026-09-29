@@ -22,7 +22,8 @@ render stages' outputs into the delivery files in the render dir (the timeline i
   offsets, so the first frame is presented at t=0), and the AAC encoder's priming delay (measured once
   per encoder by a click round-trip; 2112 samples for AudioToolbox, 1024 for FFmpeg's native encoder) is
   pre-trimmed from the input so decoded audio is sample-aligned with the picture. Apple's AudioToolbox
-  AAC-LC (``aac_at``, constrained VBR, quality 0) is used when available, else FFmpeg's ``aac``; 320 kbps,
+  AAC-LC (``aac_at``, constrained VBR, quality 0) is used when available, else FFmpeg's ``aac`` (no PNS or
+  intensity stereo; mid/side forced for a mono mix so both channels decode identical); 320 kbps,
   48 kHz, stereo. A mono mix is duplicated to both channels at −3.01 dB so the BS.1770 loudness of the
   stereo file equals the loudness measured on the mono mix. ``+faststart`` puts the moov atom first.
 * **Deliverables** — ``final_<platform>.mp4`` for every requested platform, ``final_nomusic.mp4``,
@@ -118,10 +119,23 @@ def aac_encoder() -> str:
     return "aac_at" if " aac_at " in _encoders() else "aac"
 
 
-def _aac_args(encoder: str) -> list[str]:
+def _aac_args(encoder: str, *, mono: bool = False) -> list[str]:
     if encoder == "aac_at":
         return ["-c:a", "aac_at", "-aac_at_mode", "cvbr", "-aac_at_quality", "0", "-b:a", AUDIO_BITRATE]
-    return ["-c:a", "aac", "-b:a", AUDIO_BITRATE]
+    # The native encoder's perceptual noise substitution and intensity stereo are low-bitrate tools: at 320 kbps
+    # they only synthesize noise and smear the image (a dual-mono mix decoded 0.03 apart between channels). A mono
+    # mix is forced to mid/side so both channels decode bit-identical.
+    return ["-c:a", "aac", "-b:a", AUDIO_BITRATE, "-aac_pns", "0", "-aac_is", "0", *(["-aac_ms", "1"] if mono else [])]
+
+
+def _channels(path: Path) -> int:
+    try:
+        for s in _probe_streams(path):
+            if s.get("codec_type") == "audio":
+                return int(s.get("channels") or 2)
+    except RenderError:
+        pass
+    return 2
 
 
 @functools.lru_cache(maxsize=4)
@@ -217,14 +231,7 @@ def _overlay_color(overlays: Path) -> str:
 def _audio_chain(mix: Path, total_samples: int, priming: int) -> str:
     """Resample to 48 kHz, stereo (mono duplicated at −3.01 dB), pre-trim the encoder priming and pad or
     cut so the decoded stream (priming + content) covers exactly the picture."""
-    ch = 2
-    try:
-        for s in _probe_streams(mix):
-            if s.get("codec_type") == "audio":
-                ch = int(s.get("channels") or 2)
-                break
-    except RenderError:
-        pass
+    ch = _channels(mix)
     parts = ["aresample=48000:resampler=soxr:precision=28"]
     if ch == 1:
         parts.append("pan=stereo|c0=0.70710678*c0|c1=0.70710678*c0")
@@ -501,8 +508,8 @@ def master(job: Job | None, aroll: PathLike, overlays: PathLike | None, mix: Pat
     def mux(video: Path, wav: Path, out: Path) -> Path:
         cmd = [FFMPEG, "-hide_banner", "-loglevel", "warning", "-y", "-i", str(video), "-i", str(wav),
                "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-af", _audio_chain(wav, total_samples, priming),
-               *_aac_args(enc), "-ar", "48000", "-ac", "2", *_MUXFLAGS, "-metadata:s:a:0", "language=und",
-               str(out)]
+               *_aac_args(enc, mono=_channels(wav) == 1), "-ar", "48000", "-ac", "2", *_MUXFLAGS,
+               "-metadata:s:a:0", "language=und", str(out)]
         _run(cmd, log, f"mux {out.name}")
         return out
 

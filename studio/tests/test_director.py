@@ -166,8 +166,9 @@ def test_story_radio_test_blockers(job: Job, take_index: TakeIndex) -> None:
     # both takes of c01 kept and the story ends on the false start's cut-off word
     d.session.apply_ops([{"op": "set_story", "segments": [{"from_word": "w0001", "to_word": "w0013"}]}])
     radio = d.t_radio_test()
-    assert "ends on a cut-off word" in radio and "[blocker]" in radio and "incomplete" in radio
-    assert "ends on a cut-off word" in d.t_finish_stage("verdict: fine")
+    assert "cut-off word w0013" in radio and "at the edge of the story" in radio and "[blocker]" in radio
+    assert "incomplete" in radio
+    assert "cut-off word w0013" in d.t_finish_stage("verdict: fine")
     d.session.apply_ops([{"op": "set_story", "segments": [{"from_word": "w0001", "to_word": "w0018"}]}])
     radio = d.t_radio_test()
     assert "c01: 2 takes kept" in radio

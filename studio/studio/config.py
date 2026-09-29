@@ -100,6 +100,8 @@ class Settings:
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
     rubberband: str = "rubberband"
+    #: headless Chrome for Remotion; empty = Remotion's own download (``remotion browser ensure``)
+    remotion_browser: str | None = None
 
     director_provider: str = DIRECTOR_PROVIDER
     director_model: str = DIRECTOR_MODEL
@@ -163,6 +165,7 @@ class Settings:
             ffmpeg=get("STUDIO_FFMPEG") or "ffmpeg",
             ffprobe=get("STUDIO_FFPROBE") or "ffprobe",
             rubberband=get("STUDIO_RUBBERBAND") or "rubberband",
+            remotion_browser=get("STUDIO_REMOTION_BROWSER") or None,
             director_provider=get("STUDIO_DIRECTOR_PROVIDER") or DIRECTOR_PROVIDER,
             director_model=get("STUDIO_DIRECTOR_MODEL") or DIRECTOR_MODEL,
             director_fallback_model=get("STUDIO_DIRECTOR_FALLBACK_MODEL") or DIRECTOR_FALLBACK_MODEL,

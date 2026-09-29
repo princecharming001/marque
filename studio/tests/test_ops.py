@@ -881,8 +881,11 @@ def test_random_op_sequences_keep_documents_valid(cut_doc: CutDocument, take_ind
         removed_ids = set(doc.removed_word_ids(ix))
         recorded = {w for r in doc.removed for w in ix.word_ids(r.from_word, r.to_word)}
         assert recorded == removed_ids, (op, res)
+        # judgment-level errors ops may leave for the Director to resolve (order after a move; a cut-off word a random
+        # cut leaves at a join): the Director's stage exits and invariant 1 block them, not the ops
         fs = [f for f in validate_document(doc, ix) if f.level == "error" and f.code not in ("anchor_order",
-                                                                                             "caption_order")]
+                                                                                             "caption_order",
+                                                                                             "cutoff_at_join")]
         assert not fs, (op, fs)
     assert applied > 100  # the sequence really exercised the mutator
 

@@ -160,6 +160,35 @@ STUDIO_ENV_FILE=~/studio.env STUDIO_REAL=1 .venv/bin/python -m pytest tests -q -
 - There is no scoped preview render; previews re-render the whole document.
 - Deferred ideas are logged in the build notes: J/L picture cuts on blinks, a `repetition` word kind, and partial pickup splices.
 
+## 6b. Session 2 update (2026-09-29, Linux cloud container)
+
+**Done:**
+- **Cut-off words never survive a join.** A plain ASR fragment (`kind == "cutoff"`, e.g. `restr-`, no dropout) at a
+  seam or at the story's first/last word was not gated anywhere; dropout-chopped words (`truncated`) already were.
+  Now `studio.doc.validate.cutoffs_at_joins` defines it once, and:
+  - validator error `cutoff_at_join` blocks every Director stage exit, with the ID-level fix ("cut_words w0123 w0123
+    so the join lands on w0122");
+  - the radio test lists it as a blocker (replacing the narrower "story ends on a cut-off word");
+  - `check_seams` audio facts name a fragment at the join;
+  - invariant 1 fails on it in the render (`Integrity.cutoff_at_join`, measured on the timeline's continuous audio
+    runs), so it can never ship. A fragment inside continuous kept speech stays a judgment call.
+  - Regression tests: `tests/test_cutoff_joins.py`, `tests/test_qa.py::test_a_cutoff_word_at_a_join_fails_invariant_1`.
+- **Linux portability** (production will most likely run on Linux):
+  - `scripts/setup-linux.sh`: idempotent setup (FFmpeg 8.1.2 from Ubuntu's source tarball with zimg, rubberband,
+    libass, x264, x265, vidstab; rubberband CLI; Node 24; venv; Remotion).
+  - `STUDIO_REMOTION_BROWSER`: point Remotion at an existing headless Chrome when remotion.media is unreachable.
+  - OCR off macOS: RapidOCR (Apache-2.0, ONNX, weights in the wheel) backs the b-roll text/watermark gates where
+    Apple Vision is missing; the MSER fallback alone missed a plain "shutterstock" watermark.
+  - Native FFmpeg AAC: PNS and intensity stereo off (low-bitrate tools that synthesize noise at 320 kbps; a dual-mono
+    mix decoded 0.03 apart between channels), mid/side forced for a mono mix (channels now bit-identical).
+
+**Open decision (owner):** FFmpeg's native AAC encoder is quality-limited: asked for 320k it delivers ~220-245 kbps
+on simple content, below invariant 10's 250 kbps floor, and no setting raises it. AudioToolbox (macOS) does not
+have this problem. Options: build FFmpeg with FDK-AAC (`--enable-nonfree`: fine server-side, not redistributable)
+or make the floor encoder-aware.
+
+**Environment limits here:** no libvmaf (CAMBI banding metric reports unavailable; advisory, not an invariant).
+
 ## 7. Your next steps, in order
 
 1. **Set up** (§4) and run the keyless tests.

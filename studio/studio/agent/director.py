@@ -1111,6 +1111,8 @@ class Director:
             errs = [f for f in validate_document(doc, self.index, self.job) if f.level == "error"]
         except Exception:
             errs = []
+        if stage == "story":  # the radio blockers above already name each cut-off word at a join
+            errs = [f for f in errs if f.code != "cutoff_at_join"]
         for f in errs[:8]:
             out.append(f"validation error {f.code}: {f.message}")
         return out
@@ -1132,10 +1134,12 @@ class Director:
         missing = [w for w in (*doc.pins.payoff_word_ids, *doc.pins.cta_word_ids) if w not in set(kept)]
         if missing:
             out.append(f"pinned payoff/CTA words are not in the story: {', '.join(missing)}")
-        spoken = [w for w in kept if ix.word(w).kind not in ("event",)]
-        if spoken and ix.word(spoken[-1]).kind == "cutoff":
-            out.append(f"the story ends on a cut-off word ({spoken[-1]} {ix.word(spoken[-1]).text!r})")
-        chopped = [w for w in kept if ix.word(w).truncated]
+        from studio.doc.validate import cutoffs_at_joins, describe_cutoff_at_join
+
+        at_joins = cutoffs_at_joins(doc, ix)
+        out.extend(describe_cutoff_at_join(ix, c) for c in at_joins[:8])
+        joined = {c["word_id"] for c in at_joins}
+        chopped = [w for w in kept if ix.word(w).truncated and w not in joined]
         if chopped:
             out.append("words the recording itself chops (a digital-silence dropout) are kept: "
                        + ", ".join(f"{w} {ix.word(w).display()!r}" for w in chopped[:8])
@@ -1207,9 +1211,13 @@ class Director:
                               "the listener hears the line twice")
         if not doc.pins.payoff_word_ids:
             checks.append("[check] no payoff word is pinned (meta pin kind payoff) — pins protect it from later ops")
-        cut_offs = [w for w in kept if ix.word(w).kind == "cutoff"]
+        from studio.doc.validate import cutoffs_at_joins
+
+        joined = {c["word_id"] for c in cutoffs_at_joins(doc, ix)}
+        cut_offs = [w for w in kept if ix.word(w).kind == "cutoff" and w not in joined]
         if cut_offs:
-            checks.append(f"[check] cut-off words kept: {', '.join(cut_offs[:10])}")
+            checks.append(f"[check] cut-off words kept inside continuous speech (the speaker's own stumble; keep or "
+                          f"cut by taste): {', '.join(cut_offs[:10])}")
         fillers = [w for w in kept if ix.word(w).kind == "filler"]
         if fillers:
             checks.append(f"[info] {len(fillers)} fillers kept (decide them in the fine cut): "
@@ -1527,6 +1535,9 @@ class Director:
             for w in (lw, rw):
                 if w and ix.has_word(w) and ix.word(w).truncated:
                     bits.append(f"{w} {ix.word(w).display()!r} is CHOPPED by a recording dropout")
+                elif w and ix.has_word(w) and ix.word(w).kind == "cutoff":
+                    bits.append(f"{w} {ix.word(w).display()!r} is a CUT-OFF fragment at the join (invariant 1 fails: "
+                                "move the seam off it)")
             leaks = [d for d in integ.sound_leaks if d.get("before_word") == rw or d.get("after_word") == lw]
             for d in leaks:
                 bits.append(f"{d['overlap_ms']:.0f} ms of untranscribed sound ({d['gap_id']}) "
@@ -2177,6 +2188,9 @@ def _overlay_stills(tl: Any, index: TakeIndex, frames: Sequence[int], platforms:
         out = out_dir / f"still_{f:06d}.png"
         cmd = [*ov._remotion_bin(root), "still", str(bundle), ov.COMPOSITION_ID, str(out), f"--props={pfile}",
                f"--frame={int(f)}", "--image-format=png", "--overwrite", "--log=error"]
+        exe = ov._browser_executable(settings)
+        if exe is not None:
+            cmd.append(f"--browser-executable={exe}")
         proc = ov._run(cmd, root, timeout=180)
         return f, out if proc.returncode == 0 and out.exists() else None
 
