@@ -546,3 +546,37 @@ def test_brief_prompt_asks_for_viewer_checks_not_plan_restatements() -> None:
     assert "what a viewer experiences" in p and "Never restate your own add/skip decisions" in p
     f = dr._stage_prompt("finalize", {})
     assert "rendered at full quality and judged pairwise" in f and "questions_for_critics" in f
+
+
+# ============================================================================================ fresh rounds
+def test_revise_and_chat_start_in_a_fresh_context(job: Job, take_index: TakeIndex) -> None:
+    """A render-review round or a chat edit drops the editing conversation (~300k tokens by then) and starts from
+    the stage summaries and the document; the loop's brief carries what earlier rounds decided."""
+    d, _ = make_director(job, take_index)
+    d.run(stages=("brief", "story"))
+    champion = d.session.doc.version
+    assert d.history
+    plan = {"revise": [[("meta_ops", {"ops": [{"op": "note", "text": "declined"}]})],
+                       [("finish_stage", {"summary": "declined: taste"})], "ok"]}
+    d2, sc = make_director(job, take_index, plan)
+    n_before = len(d2.history)
+    res = d2.revise("[P2 taste] maybe music", base_version=champion, round_no=1)
+    assert res.base_version == champion
+    prompt = sc.prompts[0][1]
+    assert "fresh context" in prompt and "render review round 1" in prompt
+    assert "Finished stages:" in prompt and "Brief: restraint idea" in prompt  # the stage summaries
+    assert "Current document:" in prompt and "RENDER REVIEW" in prompt
+    assert len(d2.history) < n_before  # only this round's messages remain
+    notes = [e for e in job.read_trace() if e.get("event") == "director_note"]
+    assert any("fresh context: render review round 1" in str(n.get("note")) for n in notes)
+    # a chat edit likewise
+    plan2 = {"chat": [[("finish_stage", {"summary": "nothing to do"})], "ok"]}
+    d3, sc3 = make_director(job, take_index, plan2)
+    assert d3.history  # restored from the saved round
+    d3.chat("make it pop", base_version=res.doc.version)
+    assert "chat edit" in sc3.prompts[0][1] and "CREATOR REQUEST" in sc3.prompts[0][1]
+    # the knob keeps the old behaviour
+    d4, sc4 = make_director(job, take_index, plan, options=DirectorOptions(fresh_rounds=False))
+    kept = len(d4.history)
+    d4.revise("[P2 taste] maybe music", base_version=champion, round_no=2)
+    assert "fresh context" not in sc4.prompts[0][1] and len(d4.history) > kept

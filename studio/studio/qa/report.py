@@ -804,6 +804,17 @@ def _section_history(job: Job, doc: CutDocument | None) -> list[str]:
                     [[r, m, f"{a['calls']:.0f}", f"{a['input_tokens']:.0f}", f"{a['output_tokens']:.0f}",
                       f"{a['latency_ms'] / 1000:.0f} s"] for (r, m), a in sorted(agg.items())])
         L.append("")
+        from studio.agent.cost import PRICES_AS_OF, job_cost
+
+        cs = job_cost(calls)
+        if cs.priced_calls:
+            t = cs.tokens
+            L += [f"**Estimated model cost: ${cs.total_usd:.2f}** (Anthropic list prices as of {PRICES_AS_OF}; "
+                  f"{t.get('output', 0):,} output, {t.get('cache_read', 0):,} cache-read, "
+                  f"{t.get('cache_write', 0):,} cache-write and {t.get('uncached_input', 0):,} uncached input tokens"
+                  + (f"; unpriced: {', '.join(cs.unpriced_models)}" if cs.unpriced_models else "") + ")", ""]
+            L += _table(["Role: stage", "USD"], [[k, f"{v:.2f}"] for k, v in cs.by_stage.items()])
+            L.append("")
     return L
 
 

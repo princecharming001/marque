@@ -149,6 +149,11 @@ intermediates are pruned as soon as its QA has run; a delivered job keeps its fi
 (`STUDIO_KEEP_MEZZ=1` keeps it). `STUDIO_DIRECTOR_EFFORT` (default `max`: quality is the only goal) sets the
 Director's effort.
 
+Cost: `report.md` and the `edit`/`chat` summaries carry the estimated model spend at list prices (`studio.agent.cost`,
+by role and stage). The levers, cheapest-first: render-review rounds and chat edits start in a fresh context
+(`DirectorOptions.fresh_rounds`, on by default), critics run at effort `high`, and `STUDIO_DIRECTOR_MODEL` /
+`STUDIO_DIRECTOR_EFFORT` (e.g. `claude-opus-5-5` / `high`) trade Director quality for price — compare pairwise first.
+
 Keys come from the environment or from the dotenv file named by `STUDIO_ENV_FILE`; see `.env.example` for the names.
 
 ## Tests

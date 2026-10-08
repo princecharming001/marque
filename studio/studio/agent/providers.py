@@ -111,7 +111,12 @@ _EFFORT_RANK = {e: i for i, e in enumerate(EFFORTS)}
 #: Default effort per role when a spec leaves it unset. The Director's comes from Settings
 #: (``STUDIO_DIRECTOR_EFFORT``, default ``max``). Quality is the only goal, so judges also run at ``max``;
 #: the watcher and helpers do perception/lookup work where ``high`` avoids overthinking.
-ROLE_EFFORT: dict[str, str] = {"director": "max", "critic": "max", "watcher": "high", "helper": "high"}
+ROLE_EFFORT: dict[str, str] = {"director": "max", "critic": "high", "watcher": "high", "helper": "high"}
+
+#: Anthropic prompt-cache TTL for every role. Written tokens cost 2x the input price at 1h (1.25x at 5m); reads are
+#: cheap. 1h keeps the Director's conversation warm across the caption previews and seam checks inside a stage.
+#: Cost accounting (:mod:`studio.agent.cost`) prices writes at this TTL.
+CACHE_TTL = "1h"
 
 #: Watcher default when a Google key exists (plan §4: Gemini is the only frontier family that watches
 #: and hears video; the bake-off between Flash and Pro is configurable via ``STUDIO_WATCHER_MODEL``).
@@ -433,8 +438,9 @@ def house_spec(role: Role, *, settings: Settings | None = None) -> ModelSpec:
     :func:`build_model` reports as a :class:`MissingKeyError`).
 
     * director: ``Settings.director_provider/model/effort`` (default ``claude-fable-5-1`` at ``max``);
-    * critic: Anthropic ``Settings.critic_model`` at ``max`` (the frame judge; a different family is
-      preferred by :mod:`studio.agent.critics` when a key for one exists);
+    * critic: Anthropic ``Settings.critic_model`` at ``high`` (the frame judge; a different family is
+      preferred by :mod:`studio.agent.critics` when a key for one exists). Judges answer a rubric with evidence
+      they are shown; at ``max`` they spent ~100k thinking tokens per answer for no measured gain;
     * watcher: Gemini (``Settings.watcher_model`` or :data:`DEFAULT_WATCHER_MODEL`) with video input when a
       Google key exists, else the house critic model watching burned-ID frames;
     * helper: the Director's model at ``high``.
@@ -555,9 +561,9 @@ def model_settings(spec: ModelSpec, role: str | None = None) -> dict[str, Any]:
             budget = {"medium": 10_000, "high": 16_384, "xhigh": 32_768, "max": 48_000}.get(effort, 10_000)
             budget = max(1024, min(budget, caps.max_output_tokens - 8_192))
             out["anthropic_thinking"] = {"type": "enabled", "budget_tokens": budget}
-        out["anthropic_cache_instructions"] = "1h"
-        out["anthropic_cache_tool_definitions"] = "1h"
-        out["anthropic_cache"] = "1h"
+        out["anthropic_cache_instructions"] = CACHE_TTL
+        out["anthropic_cache_tool_definitions"] = CACHE_TTL
+        out["anthropic_cache"] = CACHE_TTL
         if spec.uses_server_fallbacks():
             out["anthropic_betas"] = [SERVER_FALLBACK_BETA]
             out["extra_body"] = {"fallbacks": "default"}

@@ -187,6 +187,19 @@ STUDIO_ENV_FILE=~/studio.env STUDIO_REAL=1 .venv/bin/python -m pytest tests -q -
   prefers AudioToolbox, then `libfdk_aac` (CBR 320k, 20 kHz band, priming 2048 measured), then native `aac`.
   `setup-linux.sh` builds FFmpeg with `--enable-nonfree`: fine on our own servers, never redistribute that binary.
 
+**Cost (owner asked for cheaper edits, 2026-10-08).** Measured on the first three real Linux edits at list prices
+(4K60 15 s: $9.70; var-silences 105 s: ~$33; real-take40 40 s: ~$21), the spend was: the Director's conversation
+growing to ~300k tokens and being re-read on every call (and re-written at the 1h cache-write price, 2x input, after
+a render gap: one call cost ~$6), critics thinking ~100k tokens per rubric answer at effort `max`, and Fable's
+per-token price. Changes, in order of no quality trade-off first:
+- `DirectorOptions.fresh_rounds` (default on): every render-review round and chat edit starts in a fresh context
+  from the stage summaries, the document and the critics' notes; the loop's brief already carries earlier rounds.
+- Critics at effort `high` (`ROLE_EFFORT["critic"]`, the second judge too).
+- `studio.agent.cost`: every report and CLI summary now carries the estimated model spend (list prices, cache
+  writes at `CACHE_TTL`), by role and stage, so cost is measured, not guessed.
+- The Director model and effort stay the quality defaults (Fable 5.1, `max`); `STUDIO_DIRECTOR_MODEL=claude-opus-5-5`
+  and `STUDIO_DIRECTOR_EFFORT=high` are the cheaper settings to compare pairwise before switching the default.
+
 **Environment limits here:** no libvmaf (CAMBI banding metric reports unavailable; advisory, not an invariant).
 
 ## 7. Your next steps, in order

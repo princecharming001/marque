@@ -108,7 +108,7 @@ def test_house_specs(tmp_path: Path) -> None:
     assert (d.provider, d.model, d.effort) == ("anthropic", "claude-fable-5-1", "max")
     assert d.api_key == FAKE_ANT and not d.byok
     c = pv.house_spec("critic", settings=s)
-    assert c.model == "claude-opus-5-5" and c.effort == "max"
+    assert c.model == "claude-opus-5-5" and c.effort == "high"
     w = pv.house_spec("watcher", settings=s)
     assert w.provider == "anthropic" and not w.capabilities.video_input
     h = pv.house_spec("helper", settings=s)
@@ -166,7 +166,7 @@ def test_model_settings_anthropic_fable_max() -> None:
 def test_model_settings_effort_defaults_and_downmapping() -> None:
     # Opus 5.5 defaults to medium on the API: the role default must be sent explicitly
     ms = pv.model_settings(ModelSpec(provider="anthropic", model="claude-opus-5-5"), "critic")
-    assert ms["anthropic_effort"] == "max"
+    assert ms["anthropic_effort"] == "high"
     ms46 = pv.model_settings(ModelSpec(provider="anthropic", model="claude-opus-4-6", effort="xhigh"), "director")
     assert ms46["anthropic_effort"] == "max"
     o45 = pv.model_settings(ModelSpec(provider="anthropic", model="claude-opus-4-5-20251101", effort="max"))

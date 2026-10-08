@@ -64,7 +64,14 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
-from studio.agent.providers import ModelSpec, capabilities_for, house_spec, map_provider_error, trace_event
+from studio.agent.providers import (
+    ROLE_EFFORT,
+    ModelSpec,
+    capabilities_for,
+    house_spec,
+    map_provider_error,
+    trace_event,
+)
 from studio.config import get_settings
 
 os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")  # the CLI prints its own progress
@@ -332,7 +339,7 @@ def default_panel(settings: Settings | None = None, *, director: ModelSpec | Non
     frame.same_family = frame.provider == dprov
     second_model = os.environ.get("STUDIO_SECOND_JUDGE_MODEL") or SECOND_JUDGE_MODEL
     second = Judge("second_judge", ModelSpec(provider="anthropic", model=second_model, api_key=s.key("anthropic"),
-                                             effort="max"))
+                                             effort=ROLE_EFFORT["critic"]))
     second.same_family = second.provider == dprov
     watcher = None
     if s.has_key("google"):

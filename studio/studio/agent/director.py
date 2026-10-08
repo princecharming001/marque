@@ -6,9 +6,11 @@ through the doctrine's stages **in code**:
 ``brief → story → fine_cut → reframe → broll → captions → sound → color → finalize``
 
 then ``revise`` rounds from the champion loop (:mod:`studio.agent.loop`) and ``chat`` for creator
-instructions. Each stage is a separate ``agent.run`` on the same, append-only message history (thinking
-blocks stay bound to their prefix, so the tool list never changes between stages); the stage is enforced
-at runtime:
+instructions. Each editing stage is a separate ``agent.run`` on the same, append-only message history (thinking
+blocks stay bound to their prefix, so the tool list never changes between stages); a render-review round or a
+chat edit starts in a fresh context from the stage summaries and the document (``DirectorOptions.fresh_rounds``:
+the editing conversation is ~300k tokens by then, re-read on every call and re-written after the render gap);
+the stage is enforced at runtime:
 
 * **Op gating.** :class:`DirectorSession` only accepts the op families of the current stage
   (:data:`STAGE_OPS`): the story stage can only cut, finishing passes only add their own layer (plus the
@@ -142,6 +144,11 @@ class DirectorOptions:
     allow_fallback: bool = True
     max_creator_questions: int = 1
     save_history: bool = True
+    #: Start every revision round and chat edit in a fresh context (the stage summaries, the current document and the
+    #: critics' notes) instead of the whole editing conversation. By the first render review that conversation runs to
+    #: ~300k tokens with every stale contact sheet in it, is re-read on every call, and after the render gap is
+    #: re-written at the cache-write price; the loop's brief already carries what earlier rounds decided.
+    fresh_rounds: bool = True
 
 
 def director_spec(settings: Settings | None = None, *, effort: str | None = None) -> ModelSpec:
@@ -646,6 +653,7 @@ class Director:
             self.add_creator_media(creator_media)
         self.tools: list[Tool] = [*self.session.tools(), *self._director_tools()]
         self.history: list[ModelMessage] = self._load_history() if resume else []
+        self._handoff_reason: str | None = None
         self._traced: Any = None
         self.agent = self._make_agent()
 
@@ -762,10 +770,19 @@ class Director:
 
     def _fresh_context_prompt(self, stage: str, prompt: str) -> str:
         done = self.state.summaries() or "- (no stage finished yet)"
-        return ("You are taking over this edit mid-way in a fresh context (the previous model's conversation "
-                "could not continue). Finished stages:\n" + done + "\n\nCurrent document:\n"
-                + summarize_doc(self.session.doc, self.index, job=self.job)
+        why = self._handoff_reason or "the previous model's conversation could not continue"
+        return (f"You are taking over this edit mid-way in a fresh context ({why}). Finished stages:\n" + done
+                + "\n\nCurrent document:\n" + summarize_doc(self.session.doc, self.index, job=self.job)
                 + "\n\nRe-read what you need with the query tools, then continue.\n\n" + prompt)
+
+    def _start_fresh(self, reason: str) -> None:
+        """Drop the carried conversation before a round: the next stage starts from the handoff prompt."""
+        if not self.history:
+            return
+        trace_event(self.job, "director_note", note=f"fresh context: {reason} ({len(self.history)} messages dropped)")
+        self.history = []
+        self.session.new_conversation()
+        self._handoff_reason = reason
 
     def run_stage(self, stage: str, prompt: str | None = None, *, record: bool = True,
                   attachments: Sequence[tuple[str, Path]] = ()) -> StageRecord:
@@ -841,6 +858,7 @@ class Director:
                     history, user_prompt = [], with_images(self._fresh_context_prompt(stage, prompt))
                     continue
                 raise DirectorError(err.message) from None
+        self._handoff_reason = None
         rec.ended_at = time.time()
         rec.doc_version = self.session.doc.version
         if self.session.stage_done:
@@ -903,6 +921,9 @@ class Director:
         self._point_at_render(champion_render)
         self.session.base_doc = base
         self.session.critic_questions = []
+        if self.options.fresh_rounds:
+            self._start_fresh(f"render review round {round_no}: the edit is finished and rendered, and each round "
+                              "starts from the summaries below")
         if raw_prompt:
             prompt = notes_text
         else:
@@ -947,6 +968,8 @@ class Director:
         before = base.version
         self._point_at_render(champion_render)
         self.session.base_doc = base
+        if self.options.fresh_rounds:
+            self._start_fresh("a creator's chat edit on the delivered cut; the edit starts from the summaries below")
         prompt = (
             f"CREATOR REQUEST (chat): \"{instruction}\"\n\n"
             "The creator's instruction is the brief for this change: carry it out cleanly and completely. Re-enter at "

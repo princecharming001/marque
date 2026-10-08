@@ -54,6 +54,7 @@ class EditResult:
     reviewed: bool | None = None
     review_note: str = ""
     alternates: dict[str, Path] = field(default_factory=dict)  # label -> final of a delivered variant
+    estimated_cost: str = ""  # model spend at list prices (studio.agent.cost); the report has the breakdown
 
 
 @dataclass
@@ -65,6 +66,17 @@ class ChatResult:
     changes: list[str] = field(default_factory=list)
     invariants_passed: bool | None = None
     critic_note: str = ""
+    estimated_cost: str = ""
+
+
+def _cost_line(job: Job) -> str:
+    """The job's model spend at list prices, for the CLI summary (never fails a result)."""
+    try:
+        from studio.agent.cost import format_cost, job_cost
+
+        return format_cost(job_cost(job))
+    except Exception:  # pragma: no cover - accounting must never break a delivery
+        return ""
 
 
 @dataclass
@@ -466,6 +478,7 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
             say(f"NOT REVIEWED: the critics could not review the shipped version ({res.review_note})")
     return EditResult(job_dir=job.root, finals=finals, extras=extras, doc_version=res.champion_doc,
                       render=res.champion_render.name, rounds=len(res.rounds), stop_reason=res.stop_reason,
+                      estimated_cost=_cost_line(job),
                       invariants_passed=res.champion_passed, reviewed=res.reviewed, review_note=res.review_note,
                       alternates={k.removeprefix("alt:"): v for k, v in extras.items() if k.startswith("alt:")})
 
@@ -615,7 +628,7 @@ def chat(job_dir: PathLike, instruction: str, *, director_provider: str | None =
         if not res["changed"]:
             job.trace("chat", instruction=instruction[:500], changed=False, doc_version=doc.version)
             return ChatResult(job_dir=job.root, summary=summary or "No render-relevant change was needed.",
-                              doc_version=doc.version, changes=changes)
+                              doc_version=doc.version, changes=changes, estimated_cost=_cost_line(job))
         rd = render_fn(doc)
         passed, failures = qa_fn(rd)
         attempts = 0
@@ -668,7 +681,7 @@ def chat(job_dir: PathLike, instruction: str, *, director_provider: str | None =
         job.trace("chat", instruction=instruction[:500], changed=True, doc_version=doc.version, render=rd.name,
                   passed=passed)
     return ChatResult(job_dir=job.root, summary=summary, doc_version=doc.version, finals=finals, changes=changes,
-                      invariants_passed=passed, critic_note=note_txt)
+                      invariants_passed=passed, critic_note=note_txt, estimated_cost=_cost_line(job))
 
 
 # ============================================================================================ single steps
