@@ -382,6 +382,28 @@ def test_planned_boxes_flag_face_and_safe_zone(env: SimpleNamespace) -> None:
     assert set(boxes[caps[1].page_id].refs) == {w.word_id for w in caps[1].words}
 
 
+def test_rendered_caption_on_the_relaxed_floor_may_be_wider_than_planned(env: SimpleNamespace, tmp_path: Path) -> None:
+    """The planned box is a width estimate; the renderer draws the line wider (real metrics, emphasis, the pop
+    scale). A caption on TikTok's relaxed floor rendered 60 px wider on each side than planned is inside its
+    allowance (regression: two of forty pages failed invariant 7 on a real edit after the preview tool, which
+    measures the real render, had passed them). A page rendered below the relaxed floor is still outside."""
+    caps = list(env.timeline.captions)
+    pg = caps[2].model_copy(update={"y_norm": 0.80})  # centre y 1536: under the strict band (1440), above the floor
+    caps[2] = pg
+    tl = env.timeline.model_copy(update={"captions": caps})
+    planned = {b.id: b for b in qm.planned_text_boxes(tl, env.index, "tiktok")}[pg.page_id]
+    assert not planned.issues and planned.box[3] > 1440
+    x0, y0, x1, y1 = planned.box
+    t0, t1 = float(pg.out_start) + 0.05, float(pg.out_end) - 0.05
+    wide = _write_overlay(tmp_path / "wide.mov", tl, [(int(x0 - 60), int(y0 + 8), int(x1 - x0 + 120), int(y1 - y0 - 16),
+                                                        t0, t1)])
+    boxes = {b.id: b for b in qm.rendered_text_boxes(tl, env.index, wide, "tiktok")}
+    assert boxes[pg.page_id].issues == [], boxes[pg.page_id]
+    low = _write_overlay(tmp_path / "low.mov", tl, [(int(x0), 1620, int(x1 - x0), 60, t0, t1)])  # under the floor
+    boxes = {b.id: b for b in qm.rendered_text_boxes(tl, env.index, low, "tiktok")}
+    assert "outside_safe_zone" in boxes[pg.page_id].issues
+
+
 def test_rendered_overlay_clean_passes(env: SimpleNamespace) -> None:
     # white blocks where the caption module placed the pages (centre y 930 px, clear of the chin)
     r = _render_with_overlay(env, "ovl_clean", [(300, 890, 480, 80, 0.0, 12.0)])

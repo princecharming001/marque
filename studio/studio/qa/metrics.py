@@ -1396,6 +1396,9 @@ def rendered_text_boxes(timeline: Timeline, index: TakeIndex | None, overlay_pat
     def box_mask(box: Sequence[float], d: float) -> np.ndarray:
         return (xs >= box[0] - d) & (xs <= box[2] + d) & (ys >= box[1] - d) & (ys <= box[3] + d)
 
+    def row_mask(box: Sequence[float], d: float) -> np.ndarray:
+        return (ys >= box[1] - d) & (ys <= box[3] + d)
+
     def bbox(m: np.ndarray) -> list[float] | None:
         ys_i, xs_i = np.nonzero(m)
         if not ys_i.size:
@@ -1428,7 +1431,10 @@ def rendered_text_boxes(timeline: Timeline, index: TakeIndex | None, overlay_pat
             bm = box_mask(e[4], dilate)
             emasks.append((e, bm))
             if e[0] == "caption":
-                cap_allowed |= bm & relaxed
+                # a caption may use the relaxed floor on the rows the planner put it on, across the band: the
+                # planned box is a width *estimate* and the renderer (real font metrics, the pop/emphasis scale)
+                # draws the line wider; a page rendered far from its planned rows is still outside
+                cap_allowed |= row_mask(e[4], dilate + 0.5 * (e[4][3] - e[4][1])) & relaxed
         outside = mask & ~(strict | cap_allowed)
         prot = face_protected_rect(timeline, index, t) if index is not None else None
         face_hit = np.zeros_like(mask)
