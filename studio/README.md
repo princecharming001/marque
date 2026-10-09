@@ -55,6 +55,7 @@ delivery.
 | `--media FILE` | Creator b-roll the Director may use (repeatable) |
 | `--out DIR` | Also copy the deliverables into `DIR` |
 | `--rounds N` | Champion-loop round guard (default 12; the loop normally stops after 2 winless rounds). Only to bound a debugging run |
+| `--max-usd USD` | Stop opening review rounds once the job's model spend at list prices reaches this; the champion ships (env `STUDIO_MAX_MODEL_USD`) |
 | `--asr-provider elevenlabs\|assemblyai` | Transcription provider (default ElevenLabs Scribe) |
 | `--director-provider P --director-model M --director-key-env VAR` | Bring your own key for the Director (see BYOK) |
 | `--house` | Switch a BYOK job back to the house Director explicitly |

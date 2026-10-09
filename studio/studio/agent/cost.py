@@ -20,7 +20,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 __all__ = ["PRICES", "PRICES_AS_OF", "CostSummary", "call_cost", "job_cost", "format_cost"]
 
-PRICES_AS_OF = "2026-10-06"
+PRICES_AS_OF = "2026-10-09"
 
 #: USD per million tokens: (input, output, cache read). Cache writes derive from the input price by TTL.
 PRICES: dict[str, tuple[float, float, float]] = {
@@ -31,7 +31,7 @@ PRICES: dict[str, tuple[float, float, float]] = {
     "claude-opus-4-8": (5.0, 25.0, 0.50),
     "claude-opus-4-7": (5.0, 25.0, 0.50),
     "claude-opus-4-6": (5.0, 25.0, 0.50),
-    "claude-sonnet-5-5": (2.0, 10.0, 0.20),
+    "claude-sonnet-5-5": (2.0, 10.0, 0.10),
     "claude-sonnet-5": (2.0, 10.0, 0.20),
     "claude-sonnet-4-6": (3.0, 15.0, 0.30),
     "claude-haiku-5-5": (0.10, 0.50, 0.01),
@@ -39,6 +39,11 @@ PRICES: dict[str, tuple[float, float, float]] = {
 }
 
 _WRITE_MULTIPLIER = {"5m": 1.25, "1h": 2.0}
+
+#: Models priced higher once the prompt exceeds a size: model -> (prompt tokens, input, output, cache read).
+LONG_PROMPT_PRICES: dict[str, tuple[int, float, float, float]] = {
+    "claude-haiku-5-5": (100_000, 0.50, 2.50, 0.05),
+}
 
 
 def _price(model: str | None) -> tuple[float, float, float] | None:
@@ -52,7 +57,8 @@ def _price(model: str | None) -> tuple[float, float, float] | None:
 
 def call_cost(event: dict[str, Any], *, ttl: str = CACHE_TTL) -> float | None:
     """USD for one ``model_call`` trace event, or None when its model is unpriced or the call carried no usage."""
-    p = _price(str(event.get("model_resolved") or event.get("model") or ""))
+    model = str(event.get("model_resolved") or event.get("model") or "")
+    p = _price(model)
     if p is None:
         return None
     try:
@@ -64,6 +70,9 @@ def call_cost(event: dict[str, Any], *, ttl: str = CACHE_TTL) -> float | None:
         return None
     if not (inp or out):
         return None
+    tier = LONG_PROMPT_PRICES.get(model) or LONG_PROMPT_PRICES.get(model.rsplit("-", 1)[0])
+    if tier is not None and inp > tier[0]:
+        p = tier[1:]
     uncached = max(0, inp - cr - cw)
     write = p[0] * _WRITE_MULTIPLIER.get(ttl, 2.0)
     return (uncached * p[0] + out * p[1] + cr * p[2] + cw * write) / 1e6

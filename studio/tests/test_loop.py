@@ -374,3 +374,17 @@ def test_hook_alternates_are_built_rendered_judged_and_delivered(job: Job, take_
         assert res.champion_render.name == "r2" and alt["render"] == "r1" and alt["label"] == "without_h01"
     assert (job.renders_dir / alt["render"] / "final_tiktok.mp4").exists()
     assert LoopState.load(job).variants_done
+
+
+def test_the_model_spend_cap_stops_the_loop_before_a_round(job: Job, take_index: TakeIndex) -> None:
+    """``--max-usd``: once the job's model spend at list prices reaches the cap, no further round (revision, variant
+    or closing-watch) opens and the champion ships with a named stop reason (a Fable job once ran to $36)."""
+    d, _ = _director(job, take_index, GAP_300)
+    job.trace("model_call", role="director", stage="captions", provider="anthropic", model="claude-opus-5-5",
+              input_tokens=10_000, output_tokens=500_000, cache_read_tokens=0, cache_write_tokens=0)  # ~$10
+    fk = Fakes(job, winners=["tie", "a"])
+    res = ChampionLoop(job, d, take_index, max_usd=5.0, **fk.kwargs()).run()
+    assert res.rounds == [] and res.stop_reason.startswith("model spend cap $5.00 reached ($10.")
+    assert res.champion_render.name == "r1" and fk.judged == []
+    st = LoopState.load(job)
+    assert st.done and st.round == 0

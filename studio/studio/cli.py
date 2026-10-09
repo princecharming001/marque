@@ -76,6 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Creator b-roll (video or still) the Director may use; repeatable")
     _add_director_flags(p)
     p.add_argument("--rounds", type=_positive_int, metavar="N", help="Champion-loop round guard (default 12)")
+    p.add_argument("--max-usd", type=float, metavar="USD", help="Stop opening review rounds once the job's model "
+                   "spend (list prices) reaches this; the champion ships (env STUDIO_MAX_MODEL_USD)")
     p.add_argument("--out", type=Path, metavar="DIR", help="Copy deliverables into DIR")
     p.add_argument("--asr-provider", choices=("elevenlabs", "assemblyai"))
 
@@ -174,8 +176,8 @@ def _dispatch(args: argparse.Namespace) -> Any:
             args.video, brief=args.brief, style=args.style,
             platform=args.platform or (None if resume else "tiktok"),
             director_provider=args.director_provider, director_model=args.director_model,
-            director_key_env=args.director_key_env, house=args.house, rounds=args.rounds, out=args.out,
-            settings=settings, log=_progress, **kw,
+            director_key_env=args.director_key_env, house=args.house, rounds=args.rounds, max_usd=args.max_usd,
+            out=args.out, settings=settings, log=_progress, **kw,
         )
     if cmd == "chat":
         kw = {"out": args.out} if args.out is not None else {}

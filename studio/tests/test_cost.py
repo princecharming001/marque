@@ -41,3 +41,10 @@ def test_job_cost_sums_by_role_stage_and_model() -> None:
     assert line.startswith(f"${cs.total_usd:.2f} over 3 calls") and "unpriced: gemini-3.1-pro" in line
     assert cs.to_dict()["cache_ttl"] == "1h"
     assert C.format_cost(C.job_cost([])) == "no priced model calls"
+
+
+def test_long_prompt_tier_prices_haiku_above_100k() -> None:
+    small = C.call_cost(_call("claude-haiku-5-5", "planner", "plan", 90_000, 1_000))
+    big = C.call_cost(_call("claude-haiku-5-5", "planner", "plan", 110_000, 1_000))
+    assert small == pytest.approx((90_000 * 0.10 + 1_000 * 0.50) / 1e6)
+    assert big == pytest.approx((110_000 * 0.50 + 1_000 * 2.50) / 1e6)

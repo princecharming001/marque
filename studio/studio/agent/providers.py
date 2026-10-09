@@ -128,14 +128,22 @@ LONG_TIMEOUT_S = 1800.0
 #: Beta header for the scalar ``fallbacks: "default"`` form (the array form uses ``-2026-06-01``).
 SERVER_FALLBACK_BETA = "server-side-fallback-2026-07-01"
 #: Models whose requests accept ``fallbacks: "default"`` (Fable/Mythos 5.x and the Opus 5 line).
-_SERVER_FALLBACK_PREFIXES = ("claude-fable-5", "claude-mythos-5", "claude-opus-5")
+_SERVER_FALLBACK_PREFIXES = ("claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-sonnet-5-5")
+#: Models whose API behaviour pydantic-ai's profile table does not describe yet (checked 2026-10-09 against the
+#: Claude docs): Haiku 5.5 runs adaptive thinking by default with effort low..max and a 1M context, and rejects
+#: ``budget_tokens``; Sonnet 5.5 rejects forced ``tool_choice`` like Opus 5.5.
+_PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
+    "claude-haiku-5-5": {"anthropic_supports_adaptive_thinking": True, "anthropic_supports_effort": True,
+                         "anthropic_supports_xhigh_effort": True},
+    "claude-sonnet-5-5": {"anthropic_supports_forced_tool_choice": False},
+}
 #: Lifetime of images uploaded for the Director (Files API allows 1 h .. 90 days).
 FILE_EXPIRY_S = 48 * 3600
 _ANTHROPIC_API_HOSTS = ("https://api.anthropic.com",)
 
 _TRUE_1M_CONTEXT_PREFIXES = (
     "claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7",
-    "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6",
+    "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-5-5",
 )
 _HIGHRES_PREFIXES = (
     "claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5",
@@ -269,6 +277,9 @@ def capabilities_for(provider: str, model: str) -> Capabilities:
     m = (model or "").lower()
     if p == "anthropic":
         prof = _anthropic_profile(m)
+        for prefix, over in _PROFILE_OVERRIDES.items():
+            if m.startswith(prefix):
+                prof.update(over)
         big_ctx = m.startswith(_TRUE_1M_CONTEXT_PREFIXES)
         levels: tuple[str, ...] = ()
         if prof.get("anthropic_supports_effort"):

@@ -198,6 +198,9 @@ class LoopConfig:
     #: recorded hook alternates are built from the champion, rendered and compared pairwise (SKILL.md directive 8)
     variants: bool = True
     max_variants: int = 2
+    #: stop opening rounds (revisions, variants, the closing-watch round) once the job's model spend at list prices
+    #: (:func:`studio.agent.cost.job_cost`) reaches this; the champion ships with stop reason ``model spend cap``
+    max_model_usd: float | None = None
 
 
 @dataclass
@@ -302,7 +305,7 @@ class ChampionLoop:
                  critic: Callable[[Path, CutDocument], list[dict[str, Any]]] | None = None,
                  judge: Callable[[Path, Path], dict[str, Any]] | None = None,
                  final_watch: Callable[[Path], dict[str, Any]] | None = None,
-                 sleep: Callable[[float], None] | None = None):
+                 sleep: Callable[[float], None] | None = None, max_usd: float | None = None):
         self.job = job
         self.director = director
         self.index = index or director.index
@@ -310,6 +313,8 @@ class ChampionLoop:
         self.config = config or LoopConfig()
         if rounds is not None:
             self.config.guard = int(rounds)
+        if max_usd is not None:
+            self.config.max_model_usd = float(max_usd)
         self._panel = panel
         self.renderer = renderer or self._render
         self.qa = qa or self._qa
@@ -523,7 +528,7 @@ class ChampionLoop:
             self._save()
             confirmed = list((st.final_watch or {}).get("confirmed") or [])
             if (confirmed and self.config.final_watch_round and not st.final_watch_round_used
-                    and st.round < self.config.guard):
+                    and st.round < self.config.guard and self._spend_cap_hit() is None):
                 # the closing watch found a confirmed problem: one more round on it, then watch again
                 st.final_watch_round_used = True
                 st.pending_notes = confirmed
@@ -551,11 +556,26 @@ class ChampionLoop:
                     return list(r.questions)
         return []
 
+    def _spend_cap_hit(self) -> str | None:
+        """The stop reason when the job's model spend has reached ``LoopConfig.max_model_usd``, else None."""
+        cap = self.config.max_model_usd
+        if cap is None:
+            return None
+        from studio.agent.cost import job_cost
+
+        spent = job_cost(self.job).total_usd
+        if spent >= cap:
+            return f"model spend cap ${cap:.2f} reached (${spent:.2f} at list prices)"
+        return None
+
     def _rounds(self) -> None:
         st = self.state
         while not st.done:
             if st.round >= self.config.guard:
                 self._stop(f"round guard ({self.config.guard}) reached")
+                break
+            if (cap := self._spend_cap_hit()) is not None:
+                self._stop(cap)
                 break
             k = st.round + 1
             champ_rd = self._rd(st.champion_render)  # type: ignore[arg-type]
@@ -676,7 +696,7 @@ class ChampionLoop:
         champ_doc = self.job.load_doc(st.champion_doc)
         alts = [h for h in champ_doc.hook_alternates if h.id not in tried][: max(0, self.config.max_variants)]
         for h in alts:
-            if st.round >= self.config.guard + self.config.max_variants:
+            if st.round >= self.config.guard + self.config.max_variants or self._spend_cap_hit() is not None:
                 break
             champ_rd = self._rd(st.champion_render)  # type: ignore[arg-type]
             champ_doc = self.job.load_doc(st.champion_doc)

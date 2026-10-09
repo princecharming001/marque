@@ -211,6 +211,19 @@ per-token price. Changes, in order of no quality trade-off first:
   model silently (an Opus job finished on Fable). `job.json` now records the house model and effort; resume and chat
   reuse them; flags given now still win.
 
+**Under $0.20 a video (owner requirement, 2026-10-09).** The reviewed agentic edit costs dollars by construction
+(50-150 Director calls over a 36-tool, image-bearing context, then a render-critique-revise loop that was 90% of
+the bill and won 1 of 10 decided rounds); mass-market editors run one ASR pass, code for everything measurable, 1-3
+small text-only model calls, one render, no review. `docs/standard-tier-plan.md` is the investigated design and
+build plan (13-agent workflow: trace profile, competitor pipelines and pricing, verified price sheets, codebase
+levers, three designs, two judges, three refutations): a **standard tier** = the deterministic engine + one
+structured-output planner call (Sonnet 5.5 low ~$0.03, Haiku 5.5 ~$0.002) + one render + the 10 invariants + code
+repair, shipped NOT REVIEWED: **$0.04-0.05 model+ASR per video, $0.08-0.15 all-in with compute** at 1080p30
+(4K60 sources must be downscaled at ingest); the Director/critic loop stays as a paid tier. ~18 days of work.
+No-regret steps already done: `cost.py` prices corrected (Sonnet 5.5 cache read $0.10; Haiku 5.5 >100k tier);
+Haiku 5.5 / Sonnet 5.5 capability overrides (pydantic-ai's profile would send Haiku 5.5 `budget_tokens`, a 400);
+`--max-usd` / `STUDIO_MAX_MODEL_USD` stops the review loop at a dollar cap (`LoopConfig.max_model_usd`).
+
 **Environment limits here:** no libvmaf (CAMBI banding metric reports unavailable; advisory, not an invariant).
 
 ## 7. Your next steps, in order

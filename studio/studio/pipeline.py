@@ -390,6 +390,7 @@ def deliver(job: Job, render_dir: Path, doc: CutDocument, *, out: PathLike | Non
 def edit(video: PathLike, *, brief: str | None = None, style: str | None = None, platform: str | None = None,
          director_provider: str | None = None, director_model: str | None = None,
          director_key_env: str | None = None, house: bool = False, rounds: int | None = None,
+         max_usd: float | None = None,
          out: PathLike | None = None,
          settings: Settings | None = None, creator_media: Sequence[PathLike] = (),
          asr_provider: str | None = None, director_model_override: Any = None,
@@ -478,7 +479,11 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
         director.run()
         # 4 — champion loop
         say("render and critique (champion loop)")
-        loop = ChampionLoop(job, director, index, settings=s, rounds=rounds, panel=panel, **(loop_kwargs or {}))
+        if max_usd is None and os.environ.get("STUDIO_MAX_MODEL_USD"):
+            with contextlib.suppress(ValueError):
+                max_usd = float(os.environ["STUDIO_MAX_MODEL_USD"])
+        loop = ChampionLoop(job, director, index, settings=s, rounds=rounds, max_usd=max_usd, panel=panel,
+                            **(loop_kwargs or {}))
         res = loop.run()
         # 5 — deliver + report
         doc = job.load_doc(res.champion_doc)

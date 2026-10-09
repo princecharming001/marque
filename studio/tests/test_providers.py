@@ -685,3 +685,16 @@ def test_real_director_settings_accepted(tmp_path: Path) -> None:
     rec = [r for r in job.read_trace() if r["event"] == "model_call"][-1]
     assert rec["ok"] and rec["output_tokens"] > 0 and rec["sse"] and rec["server_fallbacks"]
     assert rec["model_resolved"].startswith(spec.model)
+
+
+def test_haiku_and_sonnet_5_5_capabilities_follow_the_api_not_the_stale_profile() -> None:
+    """pydantic-ai's profile table lags the API: Haiku 5.5 would otherwise get a ``budget_tokens`` thinking block
+    (a 400) and no effort; Sonnet 5.5 would be offered forced tool choice (a 400)."""
+    h = pv.capabilities_for("anthropic", "claude-haiku-5-5")
+    assert h.adaptive_thinking and h.effort_levels == ("low", "medium", "high", "xhigh", "max")
+    assert h.context_tokens == 1_000_000 and h.max_output_tokens == 128_000
+    ms = pv.model_settings(ModelSpec(provider="anthropic", model="claude-haiku-5-5", effort="medium"), "planner")
+    assert ms["anthropic_effort"] == "medium" and ms["anthropic_thinking"]["type"] == "adaptive"
+    assert "budget_tokens" not in str(ms)
+    s = pv.capabilities_for("anthropic", "claude-sonnet-5-5")
+    assert not s.forced_tool_choice and s.server_fallbacks and s.adaptive_thinking
