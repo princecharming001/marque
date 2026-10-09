@@ -1389,9 +1389,13 @@ def rendered_text_boxes(timeline: Timeline, index: TakeIndex | None, overlay_pat
     yy, xx = np.mgrid[0:shh, 0:sw]
     xs = (xx + 0.5) / sx
     ys = (yy + 0.5) / sy
-    in_band_x = (xs >= zone.left) & (xs <= W - zone.right)
-    strict = in_band_x & (ys >= zone.top) & (ys <= H - zone.bottom)
-    relaxed = in_band_x & (ys >= zone.top) & (ys <= H - min(zone.bottom, zone.caption_floor))
+    # a glyph's stroke/shadow fringe (the render bleed) over a band edge is not text in the UI
+    from studio.compile.captions import RENDER_BLEED_PX
+
+    fringe = RENDER_BLEED_PX * ref
+    in_band_x = (xs >= zone.left - fringe) & (xs <= W - zone.right + fringe)
+    strict = in_band_x & (ys >= zone.top - fringe) & (ys <= H - zone.bottom + fringe)
+    relaxed = in_band_x & (ys >= zone.top - fringe) & (ys <= H - min(zone.bottom, zone.caption_floor) + fringe)
 
     def box_mask(box: Sequence[float], d: float) -> np.ndarray:
         return (xs >= box[0] - d) & (xs <= box[2] + d) & (ys >= box[1] - d) & (ys <= box[3] + d)

@@ -122,6 +122,13 @@ class SafeZone:
         return min(self.bottom, self.caption_floor)
 
 
+#: How far (px at 1080x1920) the renderer paints past a caption block's layout box at the QA alpha threshold: the
+#: stroke (``strokePx``, half of it outside the glyph) and the block's drop shadows (CaptionPage.tsx: ``0 4px 14px``
+#: and ``0 1px 2px``); 6 px measured on a real edit. A block planned flush on the relaxed floor bleeds into the
+#: platform UI, so the placer keeps this clear of the floor and the QA gate tolerates this much over any band edge
+#: (past the strict band the bleed lands in the caption-allowed zone).
+RENDER_BLEED_PX = 8.0
+
 #: Published/third-party safe zones at 1080x1920 (platforms.md). TikTok uses the conservative end of the
 #: third-party readings; Reels the official Meta 14/35/6 % ad spec; Shorts Google's vertical overlay.
 #: "all" is the cross-platform house band x 65-888, y 288-1248 (the union of the three).
@@ -1355,7 +1362,10 @@ class _Placer:
         return cx - bw / 2, cx + bw / 2
 
     def _bottom(self, relaxed: bool) -> float:
-        return self.H - (self.zone.relaxed_bottom if relaxed else self.zone.bottom)
+        """Lowest block bottom in the band; on the relaxed floor the render bleed stays clear of the UI."""
+        if relaxed:
+            return self.H - self.zone.relaxed_bottom - RENDER_BLEED_PX * self.hs
+        return self.H - self.zone.bottom
 
     def _above_limit(self, f: _FaceOut, hair_ok: bool) -> float:
         """Lowest bottom edge for a block above the head: clear of the hair (grazing its top allowed), or with

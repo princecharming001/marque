@@ -200,6 +200,17 @@ per-token price. Changes, in order of no quality trade-off first:
 - The Director model and effort stay the quality defaults (Fable 5.1, `max`); `STUDIO_DIRECTOR_MODEL=claude-opus-5-5`
   and `STUDIO_DIRECTOR_EFFORT=high` are the cheaper settings to compare pairwise before switching the default.
 
+**Engine bugs found by the first revision rounds (fixed, with regression tests):**
+- Invariant 7 rejected revisions whose captions sat on the relaxed floor: (a) the gate allowed the floor only inside
+  each page's *estimated* box while the renderer draws lines wider (`rendered_text_boxes`: the allowance is now the
+  planned rows across the band); (b) the placer let a block sit flush on the floor and the renderer's stroke/shadow
+  bled 6 px into the UI (`RENDER_BLEED_PX`: the placer keeps 8 px clear of the floor, the gate tolerates 8 px of
+  fringe over any band edge). The preview tool, which measures the real render, had passed those pages; the gate
+  and the tool now agree. Three d030 runs lost all their revision rounds to this before the fix.
+- A house-Director job did not record its model: a resume on a host whose `STUDIO_DIRECTOR_MODEL` differs switched
+  model silently (an Opus job finished on Fable). `job.json` now records the house model and effort; resume and chat
+  reuse them; flags given now still win.
+
 **Environment limits here:** no libvmaf (CAMBI banding metric reports unavailable; advisory, not an invariant).
 
 ## 7. Your next steps, in order

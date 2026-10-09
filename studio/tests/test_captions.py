@@ -554,3 +554,21 @@ def test_auto_pages_fit_at_house_size(auto_pages):
 def test_relaxed_floor_is_never_stricter_than_the_band():
     for name, z in C.PLATFORM_SAFE_ZONES.items():
         assert z.relaxed_bottom <= z.bottom, name
+
+
+def test_placer_keeps_the_render_bleed_clear_of_the_relaxed_floor(take_index, cut_doc) -> None:
+    """A block planned flush on the relaxed floor bled 6 px of stroke/shadow into the UI zone on a real edit and
+    failed invariant 7 after the preview had passed it: the placer keeps RENDER_BLEED_PX clear of the floor (the
+    strict band is unchanged: past it lies the caption-allowed zone)."""
+    from studio.compile.captions import RENDER_BLEED_PX, _Placer, load_caption_params, safe_zone_for
+    from studio.compile.timeline import compile as compile_timeline
+
+    tl = compile_timeline(cut_doc, take_index)
+    zone = safe_zone_for("tiktok", width=tl.width, height=tl.height)
+    placer = _Placer(tl, take_index, zone, load_caption_params())
+    hs = tl.height / 1920
+    assert placer._bottom(True) == pytest.approx(tl.height - zone.relaxed_bottom - RENDER_BLEED_PX * hs)
+    assert placer._bottom(False) == pytest.approx(tl.height - zone.bottom)
+    bh = 90.0 * hs
+    assert placer._valid(placer._bottom(True) - bh, 400.0, bh, [], [], True)
+    assert not placer._valid(placer._bottom(True) - bh + 2, 400.0, bh, [], [], True)

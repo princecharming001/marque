@@ -189,8 +189,9 @@ def _link_or_copy(src: Path, dst: Path) -> Path:
 
 
 def director_spec_for(provider: str | None, model: str | None, key_env: str | None,
-                      settings: Settings) -> ModelSpec | None:
-    """The Director's :class:`ModelSpec` from CLI flags (None = the house Director)."""
+                      settings: Settings, *, effort: str | None = None) -> ModelSpec | None:
+    """The Director's :class:`ModelSpec` from CLI flags (None = the house Director). ``effort`` (a job's recorded
+    effort on a resume) wins over the environment's."""
     if provider is None:
         return None
     from studio.agent.providers import spec_from_cli
@@ -201,8 +202,22 @@ def director_spec_for(provider: str | None, model: str | None, key_env: str | No
             model = settings.director_model
         else:
             raise PipelineError(f"--director-provider {provider} needs --director-model")
-    effort = os.environ.get("STUDIO_DIRECTOR_EFFORT") or settings.director_effort or "max"
+    effort = effort or os.environ.get("STUDIO_DIRECTOR_EFFORT") or settings.director_effort or "max"
     return spec_from_cli(provider, model, key_env, settings=settings, effort=effort)
+
+
+def _house_director_record(settings: Settings) -> dict[str, Any]:
+    """What a house-Director job records (``job.json``) so a resume or a chat keeps the model and effort it was
+    edited with when the environment's ``STUDIO_DIRECTOR_MODEL``/``_EFFORT`` differ. The key stays the house key:
+    no key name is stored (``key_env`` None), so the spec is not BYOK and fallbacks stay on."""
+    effort = os.environ.get("STUDIO_DIRECTOR_EFFORT") or settings.director_effort or "max"
+    return {"provider": settings.director_provider, "model": settings.director_model, "key_env": None,
+            "effort": effort, "house": True}
+
+
+def _recorded_effort(job: Job) -> str | None:
+    d = _job_meta(job).get("director") or {}
+    return d.get("effort") or None
 
 
 def _director_flags(job: Job, provider: str | None, model: str | None, key_env: str | None,
@@ -406,13 +421,22 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
             platform = platform or m.get("platform")
             creator_media = list(creator_media) or list(m.get("creator_media") or [])
         platform = platform or "tiktok"
+        flags_given = director_provider is not None or house
         if resumed:
             director_provider, director_model, director_key_env = _director_flags(
                 job, director_provider, director_model, director_key_env, house)
+        # the job records its Director (BYOK flags, or the house model and effort it started with) so a resume or
+        # a chat keeps them when the environment changes; flags given now win
+        if resumed and not flags_given:
+            director_rec = _job_meta(job).get("director") or _house_director_record(s)
+            effort = _recorded_effort(job)
+        elif director_provider:
+            director_rec, effort = {"provider": director_provider, "model": director_model,
+                                    "key_env": director_key_env, "effort": None}, None
+        else:
+            director_rec, effort = _house_director_record(s), None
         job.update_meta(brief=brief, style=style, platform=platform,
-                        creator_media=[str(x) for x in creator_media],
-                        director={"provider": director_provider, "model": director_model,
-                                  "key_env": director_key_env} if director_provider else None)
+                        creator_media=[str(x) for x in creator_media], director=director_rec)
         job.trace("stage", stage="pipeline.edit", resumed=resumed)
         say(f"job {job.root}" + (" (resumed)" if resumed else ""))
 
@@ -444,7 +468,7 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
                              reclaim=lambda _short: storage.reclaim_job(job, reason="edit start"),
                              work_dir=job.root.parent, exclude=job.root)
         # 3 — Director stages
-        spec = _spec_or_refuse(director_provider, director_model, director_key_env, s)
+        spec = _spec_or_refuse(director_provider, director_model, director_key_env, s, effort=effort)
         director = Director(job, index, spec=spec, settings=s, model=director_model_override, brief=brief,
                             style=style, platforms=(platform,),
                             render_preview=make_preview_callback(job, index, s),
@@ -483,10 +507,11 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
                       alternates={k.removeprefix("alt:"): v for k, v in extras.items() if k.startswith("alt:")})
 
 
-def _spec_or_refuse(provider: str | None, model: str | None, key_env: str | None, settings: Settings) -> Any:
+def _spec_or_refuse(provider: str | None, model: str | None, key_env: str | None, settings: Settings, *,
+                    effort: str | None = None) -> Any:
     """The Director spec; a BYOK job whose key is missing refuses (never falls back to house billing)."""
     try:
-        return director_spec_for(provider, model, key_env, settings)
+        return director_spec_for(provider, model, key_env, settings, effort=effort)
     except Exception as e:
         if key_env:
             raise PipelineError(f"this job's Director is {provider}/{model} with the creator's key from ${key_env}, "
@@ -596,9 +621,11 @@ def chat(job_dir: PathLike, instruction: str, *, director_provider: str | None =
     if base_version is None:
         raise PipelineError(f"job {job.id} has no document yet: run `studio edit` first")
     base = job.load_doc(base_version)
+    flags_given = director_provider is not None or house
     director_provider, director_model, director_key_env = _director_flags(job, director_provider, director_model,
                                                                           director_key_env, house)
-    spec = _spec_or_refuse(director_provider, director_model, director_key_env, s)
+    spec = _spec_or_refuse(director_provider, director_model, director_key_env, s,
+                           effort=None if flags_given else _recorded_effort(job))
     render_fn = renderer or (lambda d: render_full(job, d, index))
 
     def qa_fn(rd: Path) -> tuple[bool, list[dict[str, Any]]]:

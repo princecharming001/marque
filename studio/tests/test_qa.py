@@ -402,6 +402,14 @@ def test_rendered_caption_on_the_relaxed_floor_may_be_wider_than_planned(env: Si
     low = _write_overlay(tmp_path / "low.mov", tl, [(int(x0), 1620, int(x1 - x0), 60, t0, t1)])  # under the floor
     boxes = {b.id: b for b in qm.rendered_text_boxes(tl, env.index, low, "tiktok")}
     assert "outside_safe_zone" in boxes[pg.page_id].issues
+    # the stroke/shadow fringe of a page on the floor (6 px past y 1600, as rendered on a real edit) is not text in
+    # the UI; 16 px past it is
+    fringe = _write_overlay(tmp_path / "fringe.mov", tl, [(int(x0), 1560, int(x1 - x0), 46, t0, t1)])
+    boxes = {b.id: b for b in qm.rendered_text_boxes(tl, env.index, fringe, "tiktok")}
+    assert boxes[pg.page_id].issues == [], boxes[pg.page_id]
+    past = _write_overlay(tmp_path / "past.mov", tl, [(int(x0), 1560, int(x1 - x0), 56, t0, t1)])
+    boxes = {b.id: b for b in qm.rendered_text_boxes(tl, env.index, past, "tiktok")}
+    assert "outside_safe_zone" in boxes[pg.page_id].issues
 
 
 def test_rendered_overlay_clean_passes(env: SimpleNamespace) -> None:

@@ -422,3 +422,28 @@ def test_deliver_puts_alternates_beside_the_finals(job: Job, tmp_path: Path) -> 
     assert (out / "alternates" / "h01" / "final_tiktok.mp4").exists() and (out / "final_tiktok.mp4").exists()
     # the delivery folder names its job: chat / resume / report work on it as on the job directory
     assert Job.open(out) == job
+
+
+def test_house_director_is_recorded_and_reused_on_resume(job: Job, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A house job records the model and effort it started with; a resume or chat keeps them when the environment's
+    STUDIO_DIRECTOR_MODEL/_EFFORT changed (a real resume once switched a job from Opus to Fable silently)."""
+    from studio.config import Settings
+
+    monkeypatch.setenv("STUDIO_DIRECTOR_EFFORT", "high")
+    s = Settings.load(env={"ANTHROPIC_API_KEY": "sk-ant-test-0000000000", "STUDIO_DIRECTOR_MODEL": "claude-opus-5-5"})
+    rec = pipeline._house_director_record(s)
+    assert rec == {"provider": "anthropic", "model": "claude-opus-5-5", "key_env": None, "effort": "high",
+                   "house": True}
+    job.update_meta(director=rec)
+    assert pipeline._director_flags(job, None, None, None, False) == ("anthropic", "claude-opus-5-5", None)
+    assert pipeline._recorded_effort(job) == "high"
+    # the environment moved on: the job's own model and effort still win, with the house key (not BYOK)
+    monkeypatch.setenv("STUDIO_DIRECTOR_EFFORT", "max")
+    s2 = Settings.load(env={"ANTHROPIC_API_KEY": "sk-ant-test-0000000000"})
+    assert s2.director_model == "claude-fable-5-1"
+    prov, model, key_env = pipeline._director_flags(job, None, None, None, False)
+    spec = pipeline._spec_or_refuse(prov, model, key_env, s2, effort=pipeline._recorded_effort(job))
+    assert spec.model == "claude-opus-5-5" and spec.effort == "high" and not spec.byok
+    assert spec.api_key == "sk-ant-test-0000000000"
+    # flags given now win (an explicit switch)
+    assert pipeline._director_flags(job, None, None, None, True) == (None, None, None)
