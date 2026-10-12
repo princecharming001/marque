@@ -6,7 +6,8 @@
 * ``probe.json`` — ffprobe JSON + measurements (:func:`studio.media.probe.probe_full`).
 * ``media_info.json`` — the :class:`~studio.media.models.MediaInfo` (via ``job.save_media_info``).
 * ``mezz.mov`` — the **mezzanine** every later video operation reads: upright, square pixels, full
-  resolution, CFR at the source rate, SDR BT.709 (tv range, tagged), ProRes 422 HQ ``yuv422p10le``.
+  resolution, CFR at the source rate, SDR BT.709 (tv range, tagged), ProRes 422 HQ ``yuv422p10le``. The
+  standard tier asks for a smaller one (``ingest(max_height=, max_fps=)``, see "Conform" below).
 * ``audio.wav`` — 48 kHz float32 **mono dialogue** track, sample-aligned to the mezzanine (sample 0 = first
   video frame) and exactly as long as it; ``audio_stereo.wav`` keeps the stereo mix when the source is
   stereo (or multichannel, downmixed).
@@ -73,6 +74,20 @@ tone under it (its quietest window, joined with a 5 ms equal-power crossfade). E
 padded mezzanine/audio, so source times are consistent; ``flag:preroll`` and ``meta.ingest.preroll`` record
 it. ``STUDIO_INGEST_PREROLL_S=0`` disables it.
 
+**Conform (standard tier).** A 4K60 upload costs ~165-180 vCPU-min through a full-resolution ProRes mezzanine
+before any model is called, which is most of a cheap edit's budget, so the standard tier passes
+``max_height`` (the delivery canvas: 1920 for a portrait source, 1080 for a landscape one) and ``max_fps``
+(30). When a cap bites, :func:`conform_media_info` lowers ``MediaInfo.width``/``height``/``fps`` to the
+mezzanine's values (height capped, aspect kept, even width; the rate divided by the smallest integer that
+brings it under the cap: 60 → 30, 59.94 → 29.97, 50 → 25, 120 → 30, so whole frames are dropped from a
+regular pattern) and records the source geometry and rate under ``MediaInfo.conform``. The resize is one
+more zscale option in the same graph (spline36, in the tone map's linear-light step for HDR, so HDR is still
+tone-mapped exactly once) and the rate conform is the ``fps`` filter that already conforms VFR sources; the
+dialogue WAV and the proxy follow the conformed frame grid as they always did. Passing a cap also selects the
+``lean`` mezzanine codec (:data:`studio.storage.LEAN_X264` / VideoToolbox HEVC 4:2:2 10-bit, ~4-5x smaller
+than ProRes HQ at a difference the 8-bit master cannot show), the tier's budget rather than a disk fallback.
+Callers that pass nothing get the full-resolution ProRes mezzanine as before.
+
 **Proxy.** From the mezzanine (so it inherits rotation, tone map and CFR): Lanczos downscale to 540x960
 (native aspect for non-9:16 sources, e.g. 960x540 for landscape, so normalised face boxes map 1:1),
 x264 CRF 20 with 1 s GOPs for fast seeks, ``HH:MM:SS:FF`` timecode burned bottom-left (non-drop, same
@@ -104,7 +119,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
-from studio.media.models import MediaInfo
+from studio.media.models import ConformInfo, MediaInfo
 from studio.media.probe import (
     FLAG_DV_UNSUPPORTED,
     FLAG_HDR_TONEMAPPED,
@@ -142,6 +157,9 @@ __all__ = [
     "mezz_codec_args",
     "estimate_mezz_bytes",
     "proxy_size",
+    "conform_size",
+    "conform_fps",
+    "conform_media_info",
     "dialogue_downmix",
     "stereo_audio_path",
     "FLAG_NO_AUDIO",
@@ -152,11 +170,13 @@ __all__ = [
     "FLAG_DV_UNSUPPORTED",
     "FLAG_MEZZ_FALLBACK",
     "FLAG_PREROLL",
+    "FLAG_CONFORM",
     "has_flag",
     "detect_speech_at_start",
 ]
 
 FLAG_PREROLL = "flag:preroll"  # the first frame is held (with room tone) because speech starts on it
+FLAG_CONFORM = "flag:conform"  # the mezzanine is smaller or slower than the source (standard tier caps)
 
 TONEMAP_OPERATORS: tuple[str, ...] = ("mobius", "hable", "reinhard", "clip", "linear", "gamma", "none")
 _DEFAULT_TONEMAP_PARAM: dict[str, float] = {"mobius": 0.6}  # our tuned knee; others use ffmpeg's default
@@ -392,7 +412,9 @@ def mezz_video_filter(info: MediaInfo, *, tonemap: ToneMapConfig | None = None, 
     pad = f"start={int(pre_frames)}:start_mode=clone:" if pre_frames > 0 else ""
     parts += ["setpts=PTS-STARTPTS", f"fps=fps={_fps_str(fps)}:round=near", f"tpad={pad}stop_mode=clone:stop=3"]
     size = ""
-    if info.sar != 1:
+    if info.sar != 1 or (info.conform is not None and info.conform.downscaled):
+        # one resize, inside the colour conversion (zimg spline36): square pixels for anamorphic sources, the
+        # standard tier's downscale, or both; the geometry is the upright display size (autorotate runs first)
         size = f":w={info.width}:h={info.height}"
     zin = []
     if (t := _zs(_ZS_TRANSFER, c.transfer)) is not None:
@@ -492,6 +514,61 @@ def proxy_size(width: int, height: int, *, long_side: int = 960, short_side: int
     pw = max(2, round(width * scale / 2) * 2)
     ph = max(2, round(height * scale / 2) * 2)
     return min(pw, box_w), min(ph, box_h)
+
+
+# ============================================================================================ conform
+def conform_size(width: int, height: int, max_height: int | None) -> tuple[int, int]:
+    """The mezzanine size for a source displayed at ``width x height`` under ``max_height``: unchanged when the
+    picture is not taller than the cap, else ``max_height`` tall (even) with the width following the aspect (even).
+    The cap is on the *height* of the upright picture, so callers pass the delivery canvas's height for a portrait
+    source (1920) and its width for a landscape one (1080): both land on the 1080x1920 canvas's pixel count."""
+    if width <= 0 or height <= 0:
+        raise ValueError("dimensions must be positive")
+    if max_height is None or height <= max_height:
+        return width, height
+    if max_height < 2:
+        raise ValueError("max_height must be at least 2")
+    h = max_height // 2 * 2
+    w = max(2, round(width * h / height / 2) * 2)
+    return w, h
+
+
+def conform_fps(fps: Fraction, max_fps: Fraction | int | None) -> Fraction:
+    """The mezzanine's CFR rate under ``max_fps``: the source rate when it is not above the cap, else the source rate
+    divided by the smallest integer that brings it under the cap (60 → 30, 59.94 → 29.97, 50 → 25, 120 → 30,
+    48 → 24). Dropping every n-th frame keeps the remaining frames on their own timestamps; a non-integer ratio
+    would make ``fps`` resample the cadence and judder every few frames."""
+    fps = Fraction(fps)
+    if fps <= 0:
+        raise ValueError("fps must be positive")
+    if max_fps is None:
+        return fps
+    cap = Fraction(max_fps)
+    if cap <= 0:
+        raise ValueError("max_fps must be positive")
+    if fps <= cap:
+        return fps
+    return fps / math.ceil(fps / cap)
+
+
+def conform_media_info(info: MediaInfo, *, max_height: int | None = None,
+                       max_fps: Fraction | int | None = None) -> MediaInfo:
+    """``info`` as the standard tier's mezzanine will be: ``width``/``height``/``fps`` capped by :func:`conform_size`
+    and :func:`conform_fps`, ``duration_us`` unchanged (``frame_count`` follows the new rate) and ``conform``
+    recording the source geometry and rate. Returns ``info`` itself when no cap bites, so a caller that passes
+    nothing (or caps a 1080p30 source at 1080p30) sees no change at all."""
+    if max_height is None and max_fps is None:
+        return info
+    w, h = conform_size(info.width, info.height, max_height)
+    fps = conform_fps(info.fps, max_fps)
+    if (w, h) == (info.width, info.height) and fps == info.fps:
+        return info
+    rec = ConformInfo(source_width=info.width, source_height=info.height, source_fps=info.fps, width=w, height=h,
+                      fps=fps, max_height=max_height, max_fps=Fraction(max_fps) if max_fps is not None else None)
+    update: dict[str, Any] = {"width": w, "height": h, "fps": fps, "conform": rec}
+    if info.display_aspect is not None:
+        update["display_aspect"] = Fraction(w, h)  # the mezzanine's square pixels are what the stages see
+    return info.model_copy(update=update)
 
 
 # ============================================================================================ downmix
@@ -1083,8 +1160,16 @@ def verify_ingest(job: Job, info: MediaInfo, *, settings: Settings | None = None
 
 # ============================================================================================ ingest
 def ingest(src_path: str | os.PathLike[str], job: Job, *, settings: Settings | None = None,
-           options: IngestOptions | None = None) -> MediaInfo:
-    """Run the full ingest and return the saved :class:`MediaInfo` (see module docstring)."""
+           options: IngestOptions | None = None, max_height: int | None = None,
+           max_fps: Fraction | int | None = None) -> MediaInfo:
+    """Run the full ingest and return the saved :class:`MediaInfo` (see module docstring).
+
+    ``max_height`` / ``max_fps`` are the standard tier's caps on the mezzanine (``1920`` for a portrait source /
+    ``1080`` for a landscape one, and ``30``): the picture is downscaled keeping its aspect and the frame rate
+    conformed by whole-frame decimation (:func:`conform_media_info`), HDR is still tone-mapped exactly once, the
+    mezzanine is written with the lean encoder, and the returned ``MediaInfo`` carries the mezzanine's geometry and
+    rate with the source's under ``conform``. Both default to None: nothing changes for callers that pass nothing.
+    """
     s = _settings(settings)
     opts = options or IngestOptions.from_env()
     src = Path(src_path).expanduser()
@@ -1105,6 +1190,15 @@ def ingest(src_path: str | os.PathLike[str], job: Job, *, settings: Settings | N
         peak = _source_peak(info, data)
         notes.append(f"{FLAG_HDR_TONEMAPPED} {info.color.hdr_format} → SDR BT.709 once at ingest "
                      f"({tm.operator}, param {tm.effective_param}, npl {tm.npl:g}, source peak {peak:g} cd/m²)")
+    if max_height is not None or max_fps is not None:
+        # the standard tier: the lean mezzanine is its budget (the caps may or may not bite), and everything below
+        # (audio length, pre-roll frames, proxy, verification) follows the conformed frame grid
+        opts = dataclasses.replace(opts, mezz_codec="lean")
+        info = conform_media_info(info, max_height=max_height, max_fps=max_fps)
+        if info.conform is not None:
+            notes.append(f"{FLAG_CONFORM} mezzanine conformed {info.conform.describe()} (standard tier caps "
+                         f"max_height={max_height}, max_fps={max_fps}); the source keeps its full picture in "
+                         f"media/{original.name}")
 
     _wav, a_notes, a_meta = _extract_audio(job, info, s, opts)
     notes += a_notes
@@ -1136,8 +1230,10 @@ def ingest(src_path: str | os.PathLike[str], job: Job, *, settings: Settings | N
         "source_path": str(src), "original": original.name, "seconds": elapsed,
         "flags": [n.split(" ", 1)[0] for n in notes if n.startswith("flag:")],
         "mezz": mz_meta, "audio": a_meta, "proxy": p_meta, "verify": report, "preroll": pre_meta,
+        "conform": info.conform.model_dump(mode="json") if info.conform is not None else None,
     })
     job.trace("ingest", source=src.name, seconds=elapsed, width=info.width, height=info.height,
               fps=_fps_str(info.fps), frames=info.frame_count, hdr=info.color.hdr, vfr=info.vfr,
-              flags=[n.split(" ", 1)[0] for n in notes if n.startswith("flag:")], mezz_codec=mz_meta["codec"])
+              flags=[n.split(" ", 1)[0] for n in notes if n.startswith("flag:")], mezz_codec=mz_meta["codec"],
+              conform=info.conform.describe() if info.conform is not None else None)
     return info

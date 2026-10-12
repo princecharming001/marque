@@ -12,6 +12,11 @@ and framing ranges; seams (first segment, J/L leads); no cut-off word at a join 
 (anchors resolvable, kept and ordered, licence per invariant 5, asset files present when a job is given,
 no overlapping full-screen inserts); text/caption/SFX/music anchors; caption coverage; loudness target
 and true-peak ceiling (invariant 8); deliverables.
+
+:func:`radio_blockers` is the story-level subset a listener would hear as broken (pinned payoff/CTA words
+missing, a cut-off word at a join, a dropout-chopped word kept), phrased as the ID-level fix. It lives here
+rather than in the Director because both tiers need it: the Director's ``radio_test`` and story exit test,
+and the standard tier's code plan, which has no Director to run a radio test for it.
 """
 
 from __future__ import annotations
@@ -27,7 +32,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from studio.jobs import Job
     from studio.perception.index import TakeIndex
 
-__all__ = ["Finding", "validate_document", "has_errors", "errors", "format_findings", "cutoffs_at_joins"]
+__all__ = ["Finding", "validate_document", "has_errors", "errors", "format_findings", "cutoffs_at_joins",
+           "describe_cutoff_at_join", "radio_blockers"]
 
 Level = Literal["error", "warning", "info"]
 
@@ -107,6 +113,34 @@ def describe_cutoff_at_join(ix: TakeIndex, c: dict[str, str | None]) -> str:
         else f"cut it (cut_words {wid} {wid})"
     return (f"cut-off word {wid} {c['text']!r} at a join ({where}{across}): the listener hears a broken word and a "
             f"jump (invariant 1 fails) — {fix}, or move the seam to a clean clause edge nearby")
+
+
+def radio_blockers(doc: CutDocument, index: TakeIndex) -> list[str]:
+    """What a listener would hear as broken in the story as cut, one line each with the ID-level fix.
+
+    Three things block a story, whatever the Director's taste verdict: a pinned payoff/CTA word that is no
+    longer kept (invariant 4), a cut-off word on either side of a join (:func:`cutoffs_at_joins`, invariant 1)
+    and a word the recording itself chops (``Word.truncated``: a digital-silence dropout) that is kept
+    anywhere, because the chopped audio plays even inside continuous speech. A fragment already named at a
+    join is not repeated as a chopped word. Lines are capped at 8 per kind. An empty list means the story
+    passes; it says nothing about taste.
+    """
+    ix = index
+    kept = doc.kept_word_ids(ix)
+    out: list[str] = []
+    missing = [w for w in (*doc.pins.payoff_word_ids, *doc.pins.cta_word_ids) if w not in set(kept)]
+    if missing:
+        out.append(f"pinned payoff/CTA words are not in the story: {', '.join(missing)}")
+    at_joins = cutoffs_at_joins(doc, ix)
+    out.extend(describe_cutoff_at_join(ix, c) for c in at_joins[:8])
+    joined = {c["word_id"] for c in at_joins}
+    chopped = [w for w in kept if ix.word(w).truncated and w not in joined]
+    if chopped:
+        out.append("words the recording itself chops (a digital-silence dropout) are kept: "
+                   + ", ".join(f"{w} {ix.word(w).display()!r}" for w in chopped[:8])
+                   + " — the listener hears a chopped word (invariant 1 fails): cut them, and move the seam to a "
+                     "clean clause edge nearby")
+    return out
 
 
 def validate_document(doc: CutDocument, index: TakeIndex, job: Job | None = None) -> list[Finding]:

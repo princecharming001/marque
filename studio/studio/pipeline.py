@@ -12,6 +12,13 @@ the result is rendered at full quality and must pass the invariants (the Directo
 fix a failure); a critic sanity note is recorded, then the new render replaces the champion and is
 delivered.
 
+Tiers (docs/standard-tier-plan.md): the paragraphs above describe the ``director`` tier. ``edit(tier=...)`` /
+``--tier`` / ``STUDIO_TIER`` (default ``standard``) select the path; the ``standard`` tier is the deterministic
+engine + one planner call + one render + the invariants + code-only repair, shipped NOT REVIEWED, and is being built
+(:func:`_edit_standard` / :func:`_chat_standard` refuse until phase C lands). A job records its ``tier`` and
+``planner`` next to its ``director`` in ``job.json`` so a resume or a chat stays in the tier it was edited with;
+flags given now win.
+
 At most ``STUDIO_MAX_CONCURRENT_EDITS`` (default 2) edits/chats run machine-wide (file locks under
 ``STUDIO_SLOTS_DIR``, default the system temp dir); full-quality renders are slow and memory-hungry.
 All functions return small result dataclasses (paths only; never keys).
@@ -55,6 +62,8 @@ class EditResult:
     review_note: str = ""
     alternates: dict[str, Path] = field(default_factory=dict)  # label -> final of a delivered variant
     estimated_cost: str = ""  # model spend at list prices (studio.agent.cost); the report has the breakdown
+    #: the tier the edit ran in ("director": the reviewed champion loop; "standard": one planner call, code QA only)
+    tier: str = "director"
 
 
 @dataclass
@@ -218,6 +227,59 @@ def _house_director_record(settings: Settings) -> dict[str, Any]:
 def _recorded_effort(job: Job) -> str | None:
     d = _job_meta(job).get("director") or {}
     return d.get("effort") or None
+
+
+def _resolve_tier(tier: str | None, job: Job | None, settings: Settings) -> str:
+    """The tier an edit or chat runs in: the flag given now, else the tier ``job`` was edited with, else
+    ``Settings.tier`` (``STUDIO_TIER``). A job that recorded a Director but no tier was edited before tiers existed:
+    it is a Director job, so a resume or a chat never drops it into the standard path."""
+    from studio.config import TIERS
+
+    if tier is None and job is not None:
+        m = _job_meta(job)
+        tier = m.get("tier") or ("director" if m.get("director") else None)
+    tier = (tier or settings.tier).strip().lower()
+    if tier not in TIERS:
+        raise PipelineError(f"unknown tier {tier!r} (one of {', '.join(TIERS)})")
+    return tier
+
+
+def _planner_record(settings: Settings, model: str | None = None) -> dict[str, Any]:
+    """What a job records (``job.json`` ``planner``, next to ``director``): the standard tier's planner model and
+    effort, so a resume or a chat keeps them when the environment's ``STUDIO_PLANNER_MODEL``/``_EFFORT`` differ;
+    ``--planner-model`` given now wins. The key stays the house key: no key name is stored (``key_env`` None)."""
+    return {"provider": "anthropic", "model": model or settings.planner_model, "key_env": None,
+            "effort": settings.planner_effort, "house": True}
+
+
+def _recorded_planner(job: Job) -> dict[str, Any] | None:
+    rec = _job_meta(job).get("planner")
+    return dict(rec) if rec and rec.get("model") else None
+
+
+def planner_spec_for(model: str | None, settings: Settings, *, provider: str | None = None,
+                     key_env: str | None = None, effort: str | None = None) -> ModelSpec:
+    """The standard tier's planner :class:`ModelSpec`: the house planner (``Settings.planner_model`` at
+    ``planner_effort``) unless ``model`` (``--planner-model``, or a job's recorded planner) says otherwise. A recorded
+    ``effort`` wins over the environment's, like :func:`director_spec_for`; ``key_env`` names a creator's key (BYOK)."""
+    from studio.agent.providers import spec_from_cli
+
+    return spec_from_cli(provider or "anthropic", model or settings.planner_model, key_env, settings=settings,
+                         effort=effort or settings.planner_effort, role="planner")
+
+
+def _spec_from_planner_record(rec: dict[str, Any], settings: Settings) -> ModelSpec:
+    """The planner a job recorded (see :func:`_planner_record`), with its effort winning over the environment's."""
+    return planner_spec_for(rec.get("model"), settings, provider=rec.get("provider"), key_env=rec.get("key_env"),
+                            effort=rec.get("effort"))
+
+
+def _planner_spec(job: Job, planner_model: str | None, settings: Settings) -> ModelSpec:
+    """The planner for a chat on a standard job: ``--planner-model`` given now wins, else the job's recorded planner,
+    else the house planner."""
+    if planner_model is not None:
+        return planner_spec_for(planner_model, settings)
+    return _spec_from_planner_record(_recorded_planner(job) or {}, settings)
 
 
 def _director_flags(job: Job, provider: str | None, model: str | None, key_env: str | None,
@@ -390,15 +452,16 @@ def deliver(job: Job, render_dir: Path, doc: CutDocument, *, out: PathLike | Non
 def edit(video: PathLike, *, brief: str | None = None, style: str | None = None, platform: str | None = None,
          director_provider: str | None = None, director_model: str | None = None,
          director_key_env: str | None = None, house: bool = False, rounds: int | None = None,
-         max_usd: float | None = None,
+         max_usd: float | None = None, tier: str | None = None, planner_model: str | None = None,
          out: PathLike | None = None,
          settings: Settings | None = None, creator_media: Sequence[PathLike] = (),
          asr_provider: str | None = None, director_model_override: Any = None,
          panel: JudgePanel | None = None, loop_kwargs: dict[str, Any] | None = None,
          log: Callable[[str], None] | None = None) -> EditResult:
     """Edit ``video`` end to end (or resume the job directory ``video``). ``out`` receives copies of the
-    deliverables. ``director_model_override`` / ``panel`` / ``loop_kwargs`` inject models and loop callbacks
-    (tests)."""
+    deliverables. ``tier`` (``standard`` | ``director``) defaults to the job's recorded tier on a resume, else
+    ``Settings.tier``; ``planner_model`` overrides the standard tier's planner. ``director_model_override`` /
+    ``panel`` / ``loop_kwargs`` inject models and loop callbacks (tests)."""
     from studio import storage
     from studio.agent.director import Director
     from studio.agent.loop import ChampionLoop, clean_incomplete_renders, prune_overlay_cache, prune_render
@@ -422,6 +485,7 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
             platform = platform or m.get("platform")
             creator_media = list(creator_media) or list(m.get("creator_media") or [])
         platform = platform or "tiktok"
+        tier = _resolve_tier(tier, job if resumed else None, s)
         flags_given = director_provider is not None or house
         if resumed:
             director_provider, director_model, director_key_env = _director_flags(
@@ -436,10 +500,17 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
                                     "key_env": director_key_env, "effort": None}, None
         else:
             director_rec, effort = _house_director_record(s), None
+        # the planner is recorded the same way (the standard tier's one model): a resume keeps the job's planner
+        # unless --planner-model is given now
+        if planner_model is not None or not resumed:
+            planner_rec = _planner_record(s, planner_model)
+        else:
+            planner_rec = _recorded_planner(job) or _planner_record(s)
         job.update_meta(brief=brief, style=style, platform=platform,
-                        creator_media=[str(x) for x in creator_media], director=director_rec)
-        job.trace("stage", stage="pipeline.edit", resumed=resumed)
-        say(f"job {job.root}" + (" (resumed)" if resumed else ""))
+                        creator_media=[str(x) for x in creator_media], director=director_rec, tier=tier,
+                        planner=planner_rec)
+        job.trace("stage", stage="pipeline.edit", resumed=resumed, tier=tier)
+        say(f"job {job.root} ({tier} tier" + (", resumed)" if resumed else ")"))
 
         # 1 — ingest (a mezzanine reclaimed after an earlier run is rebuilt on its own)
         have_media = job.media_info_path.exists() and job.audio_path.exists()
@@ -468,6 +539,10 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
         storage.ensure_space(job.root, need, what="this edit's renders (checked before the Director starts)",
                              reclaim=lambda _short: storage.reclaim_job(job, reason="edit start"),
                              work_dir=job.root.parent, exclude=job.root)
+        if tier == "standard":
+            return _edit_standard(job, index, brief=brief, style=style, platform=platform,
+                                  planner=_spec_from_planner_record(planner_rec, s), settings=s, out=out, say=say,
+                                  resumed=resumed)
         # 3 — Director stages
         spec = _spec_or_refuse(director_provider, director_model, director_key_env, s, effort=effort)
         director = Director(job, index, spec=spec, settings=s, model=director_model_override, brief=brief,
@@ -507,7 +582,7 @@ def edit(video: PathLike, *, brief: str | None = None, style: str | None = None,
             say(f"NOT REVIEWED: the critics could not review the shipped version ({res.review_note})")
     return EditResult(job_dir=job.root, finals=finals, extras=extras, doc_version=res.champion_doc,
                       render=res.champion_render.name, rounds=len(res.rounds), stop_reason=res.stop_reason,
-                      estimated_cost=_cost_line(job),
+                      estimated_cost=_cost_line(job), tier=tier,
                       invariants_passed=res.champion_passed, reviewed=res.reviewed, review_note=res.review_note,
                       alternates={k.removeprefix("alt:"): v for k, v in extras.items() if k.startswith("alt:")})
 
@@ -523,6 +598,25 @@ def _spec_or_refuse(provider: str | None, model: str | None, key_env: str | None
                                 f"which is not available ({type(e).__name__}). Set ${key_env}, or pass --house to "
                                 "switch this job to the house Director explicitly.") from None
         raise
+
+
+def _edit_standard(job: Job, index: TakeIndex, *, brief: str | None, style: str | None, platform: str,
+                   planner: ModelSpec, settings: Settings, out: PathLike | None, say: Callable[[str], None],
+                   resumed: bool) -> EditResult:
+    """The standard tier after ingest and the Take Index (docs/standard-tier-interfaces.md, "Pipeline branch"):
+    ``build_digest`` → ``plan`` (one ``planner`` call) → ``code_plan`` → ``apply_ops`` → ``validate_document`` +
+    ``radio_blockers`` → compile → ``render_full(profile="standard")`` → ``evaluate_render`` → ``repair`` →
+    ``LoopState(reviewed=False, review_note="standard tier: code QA only")`` → report → deliver one final.
+    Phase C replaces this body; until then the tier refuses instead of pretending to have edited."""
+    raise PipelineError("standard tier: not built yet (phase C)")
+
+
+def _chat_standard(job: Job, instruction: str, *, planner: ModelSpec, settings: Settings,
+                   out: PathLike | None) -> ChatResult:
+    """A chat edit on a standard job (docs/standard-tier-interfaces.md, "Standard chat"): one ``planner`` call →
+    ``{ops, summary}`` → ``apply_ops`` → overlay+master-only or full standard render → invariants → repair →
+    deliver. Phase C replaces this body."""
+    raise PipelineError("standard tier: not built yet (phase C)")
 
 
 def _delete_uploads(director: Any) -> None:
@@ -602,12 +696,15 @@ def describe_change(before: CutDocument, after: CutDocument, index: TakeIndex) -
 
 def chat(job_dir: PathLike, instruction: str, *, director_provider: str | None = None,
          director_model: str | None = None, director_key_env: str | None = None, house: bool = False,
+         planner_model: str | None = None,
          settings: Settings | None = None, director_model_override: Any = None, panel: JudgePanel | None = None,
          renderer: Callable[[CutDocument], Path] | None = None, qa: Callable[[Path], Any] | None = None,
          critic: Callable[..., list[dict[str, Any]]] | None = None, out: PathLike | None = None,
          fix_attempts: int = 2) -> ChatResult:
     """Apply a creator instruction to the job's champion document, re-render at full quality, gate on the
-    invariants, record a critic sanity note and deliver. User intent wins: there is no pairwise veto."""
+    invariants, record a critic sanity note and deliver. User intent wins: there is no pairwise veto. A chat runs
+    in the tier the job was edited with (a standard job's chat is one planner call, ``planner_model`` given now
+    winning over the job's recorded planner)."""
     from studio.agent import critics as critics_mod
     from studio.agent.director import Director
     from studio.agent.loop import LoopState, prune_overlay_cache, prune_render, render_full
@@ -625,6 +722,8 @@ def chat(job_dir: PathLike, instruction: str, *, director_provider: str | None =
     base_version = loop_state.champion_doc if loop_state.champion_doc is not None else job.latest_doc_version()
     if base_version is None:
         raise PipelineError(f"job {job.id} has no document yet: run `studio edit` first")
+    if _resolve_tier(None, job, s) == "standard":  # chat reuses the job's tier
+        return _chat_standard(job, instruction, planner=_planner_spec(job, planner_model, s), settings=s, out=out)
     base = job.load_doc(base_version)
     flags_given = director_provider is not None or house
     director_provider, director_model, director_key_env = _director_flags(job, director_provider, director_model,
@@ -777,4 +876,4 @@ def qa(job_dir: PathLike, *, render: int | None = None, settings: Settings | Non
 
 __all__ = ["EditResult", "ChatResult", "IndexResult", "RenderResult", "QaResult", "PipelineError", "edit", "chat",
            "index", "render", "report", "qa", "deliver", "describe_change", "edit_slot", "director_spec_for",
-           "make_preview_callback", "make_critique_callback"]
+           "planner_spec_for", "make_preview_callback", "make_critique_callback"]

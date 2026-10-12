@@ -13,7 +13,9 @@ disk out of space mid-encode. This module makes the budget explicit:
   10-bit CRF 4 when VideoToolbox is unavailable): ~4-5x smaller than ProRes HQ and far below visible loss
   (measured on the d030 mezzanine: q80 56.8 dB / q90 63.3 dB PSNR, x264 CRF 2-8 57.8-62.0 dB, SSIM ≥ 0.9988), so
   the 8-bit 4:2:0 CRF 14-16 master cannot tell the difference. The choice is recorded in the render manifest and
-  the trace.
+  the trace. The standard tier takes the lean path by design rather than as a fallback: its ingest
+  (``ingest(max_height=, max_fps=)``) writes a lean 1080p mezzanine and its one render
+  (``render_full(profile="standard")``) a lean A-roll, which is where most of its compute budget goes.
 * **Reclaim before refusing** (:func:`reclaim_job`, :func:`reclaim_work_dir`): only *regenerable* files are ever
   removed — render intermediates (never finals, timelines, QA or critique files), overlay-cache entries no render
   links to, and the mezzanine of an idle job (rebuilt from ``media/original.*`` by :func:`ensure_mezz` when that

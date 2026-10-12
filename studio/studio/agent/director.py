@@ -1151,24 +1151,10 @@ class Director:
 
     # ---------------------------------------------------------------- radio test
     def _radio_blockers(self) -> list[str]:
-        doc, ix = self.session.doc, self.index
-        kept = doc.kept_word_ids(ix)
-        out = []
-        missing = [w for w in (*doc.pins.payoff_word_ids, *doc.pins.cta_word_ids) if w not in set(kept)]
-        if missing:
-            out.append(f"pinned payoff/CTA words are not in the story: {', '.join(missing)}")
-        from studio.doc.validate import cutoffs_at_joins, describe_cutoff_at_join
+        """What the listener hears as broken in the current story (shared with the standard tier's code plan)."""
+        from studio.doc.validate import radio_blockers
 
-        at_joins = cutoffs_at_joins(doc, ix)
-        out.extend(describe_cutoff_at_join(ix, c) for c in at_joins[:8])
-        joined = {c["word_id"] for c in at_joins}
-        chopped = [w for w in kept if ix.word(w).truncated and w not in joined]
-        if chopped:
-            out.append("words the recording itself chops (a digital-silence dropout) are kept: "
-                       + ", ".join(f"{w} {ix.word(w).display()!r}" for w in chopped[:8])
-                       + " — the listener hears a chopped word (invariant 1 fails): cut them, and move the seam to a "
-                         "clean clause edge nearby")
-        return out
+        return radio_blockers(self.session.doc, self.index)
 
     def t_radio_test(self) -> str:
         s = self.session
@@ -1904,43 +1890,16 @@ class Director:
 
     # ---------------------------------------------------------------- colour
     def t_measure_color(self, items: list[str]) -> str:
-        import numpy as np
+        from studio.compile.color import MAX_ITEMS, format_color_measurement, measure_color
 
-        from studio.perception import frames as fr
-
-        ix = self.index
-        refs = [str(x).strip() for x in (items or []) if str(x).strip()][:24]
+        refs = [str(x).strip() for x in (items or []) if str(x).strip()][:MAX_ITEMS]
         if not refs:
             return "ERROR: give word IDs, e.g. ['w0001', 'w0120']"
         try:
-            src = fr.resolve_source(self.job, "mezz")
-        except (FileNotFoundError, ValueError):
+            measured = measure_color(self.job, self.index, self.session.doc, refs)
+        except FileNotFoundError:
             return "ERROR: no mezzanine video for this job."
-        lines = ["Measured on the mezzanine (BT.709 Y' 0-255; a*/b* CIELAB of the face: + b* warmer/yellow, + a* "
-                 "magenta; clipped = Y' ≥ 250, crushed = Y' ≤ 6):"]
-        for r in refs:
-            w = ix.word(r.split(":")[0])
-            t = (w.start_us + w.end_us) // 2
-            img = fr.grab_frame(self.job, t, source=str(src), width=540).astype(np.float32) / 255.0
-            y = 0.2126 * img[..., 0] + 0.7152 * img[..., 1] + 0.0722 * img[..., 2]
-            box = ix.face_at(t)
-            face = ""
-            if box is not None:
-                h, wd = y.shape
-                x0, y0 = int(max(0, (box.cx - box.w / 2) * wd)), int(max(0, (box.cy - box.h / 2) * h))
-                x1, y1 = int(min(wd, (box.cx + box.w / 2) * wd)), int(min(h, (box.cy + box.h / 2) * h))
-                if x1 > x0 + 2 and y1 > y0 + 2:
-                    crop = img[y0:y1, x0:x1]
-                    lab = _rgb_to_lab(crop.reshape(-1, 3))
-                    face = (f"face Y' {float(y[y0:y1, x0:x1].mean()) * 255:.0f}, a* {float(lab[:, 1].mean()):+.1f}, "
-                            f"b* {float(lab[:, 2].mean()):+.1f}")
-            clipped = float((y >= 250 / 255).mean()) * 100
-            crushed = float((y <= 6 / 255).mean()) * 100
-            lines.append(f"  {w.id}: frame Y' mean {float(y.mean()) * 255:.0f}; {face or 'no face'}; clipped "
-                         f"{clipped:.1f}%, crushed {crushed:.1f}%")
-        lines.append("Skin usually reads natural with face Y' ≈ 150-190 (SDR) and a small positive a*/b*; judge "
-                     "differences between takes, not absolute numbers.")
-        return "\n".join(lines)
+        return format_color_measurement(measured)
 
     # ------------------------------------------------------------------ tool objects
     def _director_tools(self) -> list[Tool]:
@@ -2308,20 +2267,6 @@ def _caption_preview_sheet(job: Job, index: TakeIndex, tl: Any, pages: Sequence[
 
 
 # ============================================================================================ helpers
-def _rgb_to_lab(rgb: Any) -> Any:
-    """sRGB (0..1, BT.709 primaries) → CIELAB (D65)."""
-    import numpy as np
-
-    c = np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
-    m = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]])
-    xyz = c @ m.T / np.array([0.95047, 1.0, 1.08883])
-    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
-    L = 116 * f[:, 1] - 16
-    a = 500 * (f[:, 0] - f[:, 1])
-    b = 200 * (f[:, 1] - f[:, 2])
-    return np.stack([L, a, b], axis=1)
-
-
 def _is_provider_error(e: BaseException) -> bool:
     from pydantic_ai.exceptions import ContentFilterError
 

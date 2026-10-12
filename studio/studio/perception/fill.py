@@ -13,6 +13,12 @@ an isolated excerpt has no neighbouring duplicate to collapse into — and the w
 merged into the transcript (re-numbered in time order; refinement then runs once over the whole word list).
 Whatever still has no words (no key, the ASR hears nothing) is left for the gap stage to mark as untranscribed
 sound (``Gap.sound_us``, kind ``noise``), which pads and pause trims never keep and the Director sees.
+
+Each excerpt is a paid ASR call, traced on the job as an ``asr`` event with ``purpose="fill"`` and its audio
+seconds (:mod:`studio.agent.cost` prices it). ElevenLabs bills by the audio minute, so an excerpt shorter than
+``MIN_EXCERPT_S`` — a blip between two short words, with no neighbouring speech to carry it — is skipped rather
+than paid for: it holds at most a syllable, which an isolated pass would guess at anyway, and the gap stage
+marks it as untranscribed sound like any other region the ASR could not resolve.
 """
 
 from __future__ import annotations
@@ -30,9 +36,11 @@ if TYPE_CHECKING:  # pragma: no cover
     from studio.jobs import Job
     from studio.perception.index import Gap, Word
 
-__all__ = ["SpeechRegion", "untranscribed_speech", "fill_untranscribed", "mark_untranscribed", "MIN_SPEECH_MS"]
+__all__ = ["SpeechRegion", "untranscribed_speech", "fill_untranscribed", "mark_untranscribed", "MIN_SPEECH_MS",
+           "MIN_EXCERPT_S"]
 
 MIN_SPEECH_MS = 250.0  # speech-like activity inside a gap at least this long gets a second ASR pass
+MIN_EXCERPT_S = 1.0  # an excerpt (stretch + its context words) shorter than this is not worth an ASR call
 EDGE_GUARD_US = 30_000  # frames this close to a word edge belong to that word (decay / onset)
 BRIDGE_US = 200_000  # speech runs closer than this are one stretch
 PAD_US = 120_000  # excerpt padding around the stretch (clamped to the gap)
@@ -107,13 +115,16 @@ def _excerpt(job: Job, a_us: int, b_us: int, out: Path) -> float:
     """Write ``[a, b]`` of the dialogue track, with digital silence around it; returns the excerpt's time offset
     (seconds of source time at excerpt t=0)."""
     import soundfile as sf
+    from scipy.io import wavfile
 
     info = sf.info(str(job.audio_path))
     sr = info.samplerate
     a, b = max(0, round(a_us * sr / 1e6)), min(info.frames, round(b_us * sr / 1e6))
     x, _ = sf.read(str(job.audio_path), start=a, stop=b, dtype="float32", always_2d=True)
     pad = np.zeros((round(LEAD_SILENCE_S * sr), x.shape[1]), dtype=np.float32)
-    sf.write(str(out), np.concatenate([pad, x, pad]), sr, subtype="FLOAT", format="WAV")
+    # scipy, not libsndfile: its float-WAV PEAK chunk carries the wall-clock time, and the transcriber's raw-response
+    # cache keys on the file's SHA-256 (a re-run of the index would otherwise pay for every excerpt again)
+    wavfile.write(str(out), sr, np.concatenate([pad, x, pad]))
     return a / sr - LEAD_SILENCE_S
 
 
@@ -121,8 +132,10 @@ def fill_untranscribed(job: Job, words: list[Word], gaps: list[Gap], *, provider
                        settings: Settings | None = None) -> tuple[list[Word], list[dict[str, Any]]]:
     """Transcribe untranscribed speech inside ``gaps`` on its own and return ``(new words, report)``: the words
     (provisional IDs ``w9xxx``; the caller merges and re-numbers) that fall inside their gap, not overlapping any
-    existing word. The report lists every region and what came of it. Never raises: without a key or on an ASR
-    error the region is reported as untranscribed."""
+    existing word. The report lists every region and what came of it (``skipped`` names why one was not sent:
+    too quiet, not voiced, or an excerpt under :data:`MIN_EXCERPT_S`). Every ASR call is traced on ``job`` as an
+    ``asr`` event with ``purpose="fill"``. Never raises: without a key or on an ASR error the region is reported
+    as untranscribed."""
     from studio.perception import transcribe as T
     from studio.perception.index import word_id
 
@@ -154,11 +167,21 @@ def fill_untranscribed(job: Job, words: list[Word], gaps: list[Gap], *, provider
             ctx_a = max(by_id[g0.after_word_id].start_us, r.start_us - CONTEXT_US)
         if g0 is not None and g0.before_word_id in by_id:
             ctx_b = min(by_id[g0.before_word_id].end_us, r.end_us + CONTEXT_US)
+        rec["excerpt_s"] = round((ctx_b - ctx_a) / 1e6, 3)
+        if ctx_b - ctx_a < MIN_EXCERPT_S * 1e6:  # a syllable at most, and a billed call: not worth sending
+            rec["skipped"] = f"excerpt shorter than {MIN_EXCERPT_S:g} s"
+            report.append(rec)
+            continue
         key = hashlib.sha1(f"{ctx_a}-{ctx_b}".encode()).hexdigest()[:10]
         wav = fill_dir / f"excerpt_{key}.wav"
+
+        def on_event(event: str, _gap: str = r.gap_id, **fields: Any) -> None:
+            job.trace(event, stage="index", step="fill_untranscribed", gap_id=_gap, **fields)
+
         try:
             offset = _excerpt(job, ctx_a, ctx_b, wav)
-            res = T.transcribe_file(wav, provider=provider, settings=settings, cache_dir=fill_dir / key)
+            res = T.transcribe_file(wav, provider=provider, settings=settings, cache_dir=fill_dir / key,
+                                    purpose="fill", on_event=on_event)
         except Exception as e:  # no key, network, parse: the gap stage marks the sound instead
             rec["error"] = f"{type(e).__name__}: {str(e)[:200]}"
             report.append(rec)

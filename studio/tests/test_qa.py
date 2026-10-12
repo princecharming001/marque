@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Callable, Iterator
 from fractions import Fraction
 from pathlib import Path
@@ -149,7 +150,10 @@ def test_clean_render_metrics(env: SimpleNamespace, clean: SimpleNamespace) -> N
     assert p.pause_median_ms is not None and p.source_pause_median_ms is not None
     # the extras ran on the primary deliverable
     assert pk.intelligibility is not None and pk.intelligibility.estoi is not None and pk.intelligibility.estoi > 0.95
-    assert pk.banding is not None and pk.banding.frames > 0 and pk.banding.cambi_max is not None
+    if qm.cambi_available():
+        assert pk.banding is not None and pk.banding.frames > 0 and pk.banding.cambi_max is not None
+    else:  # a build without libvmaf: banding is advisory and reported as skipped, never as an error
+        assert pk.banding is None and any("libvmaf" in x for x in pk.skipped)
     assert pk.asr is not None and not pk.asr.ran and pk.asr.skipped_reason
     # saved + JSON round trip
     saved = clean.r["dir"] / "qa" / f"metrics_{clean.r['final'].stem}.json"
@@ -794,6 +798,54 @@ def test_asr_masking_is_not_seam_damage(env: SimpleNamespace, clean: SimpleNames
     assert calls == ["x"]
 
 
+def test_qa_round_trip_asr_calls_are_traced_for_the_cost_report(env: SimpleNamespace, clean: SimpleNamespace,
+                                                                 settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real transcriber (HTTP mocked) reports each QA call on the job as an ``asr`` event with purpose ``qa``
+    and the render's audio length; measuring the same render again re-parses the cache and is traced as free."""
+    import httpx
+
+    from studio.agent.cost import job_cost
+    from studio.perception import transcribe as tr
+
+    def route(request: httpx.Request) -> httpx.Response:
+        request.read()
+        assert request.url.host == "api.elevenlabs.io"
+        return httpx.Response(200, json={"language_code": "eng", "transcription_id": "tx-qa", "words": [
+            {"text": "keep", "start": 0.1, "end": 0.4, "type": "word", "speaker_id": "speaker_0", "logprob": -0.01}]})
+
+    monkeypatch.setattr(tr, "_sleep", lambda s: None)
+    monkeypatch.setattr(tr, "_make_client", lambda _s: httpx.Client(transport=httpx.MockTransport(route)))
+    keyed = settings.with_keys(elevenlabs="el-test-key-0123456789abcdef")
+    before = len([e for e in env.job.read_trace() if e.get("event") == "asr"])
+    kw = dict(doc=env.doc, index=env.index, render_dir=clean.r["dir"], asr=True, banding=False, estoi=False,
+              video_events=False, save=False, settings=keyed)
+    pk = qm.measure(env.job, env.timeline, clean.r["final"], **kw)
+    assert pk.asr is not None and pk.asr.ran and pk.asr.provider == "elevenlabs" and pk.asr.model == "scribe_v2"
+    events = [e for e in env.job.read_trace() if e.get("event") == "asr"][before:]
+    assert len(events) == 1
+    e = events[0]
+    assert e["purpose"] == "qa" and e["stage"] == "qa" and e["step"] == "asr_round_trip" and e["status"] == "ok"
+    assert e["provider"] == "elevenlabs" and e["model"] == "scribe_v2" and e["cached"] is False
+    heard = qm.decode_final_audio(clean.r["final"])
+    assert e["audio_seconds"] == pytest.approx(heard.shape[1] / qm.SR, abs=1e-3)
+    time.sleep(1.1)  # the input wav must be byte-identical across seconds (no wall-clock PEAK chunk) for the cache
+    qm.measure(env.job, env.timeline, clean.r["final"], **kw)
+    events = [e for e in env.job.read_trace() if e.get("event") == "asr"][before:]
+    assert len(events) == 2 and events[1]["cached"] is True and events[1]["audio_seconds"] == e["audio_seconds"]
+    cs = job_cost(events)
+    assert cs.asr_calls == 2 and cs.asr_cached_calls == 1 and cs.asr_seconds == pytest.approx(e["audio_seconds"])
+    assert cs.by_role == {"asr": pytest.approx(e["audio_seconds"] / 3600 * 0.22)} and list(cs.by_stage) == ["asr:qa"]
+
+
+def test_scripted_transcriber_is_not_traced_as_asr(env: SimpleNamespace, clean: SimpleNamespace) -> None:
+    """A scripted transcriber is not a provider call: nothing to bill, nothing traced."""
+    before = len([e for e in env.job.read_trace() if e.get("event") == "asr"])
+    qm.measure(env.job, env.timeline, clean.r["final"], doc=env.doc, index=env.index, render_dir=clean.r["dir"],
+               banding=False, estoi=False, video_events=False, save=False,
+               transcriber=_scripted_transcriber(env.timeline, env.index))
+    assert len([e for e in env.job.read_trace() if e.get("event") == "asr"]) == before
+
+
 # ============================================================================================ invariants 3–6
 def test_invariant_3_rejects_model_timestamps(env: SimpleNamespace, tmp_path: Path) -> None:
     job = Job.create("inv3", work_dir=tmp_path)
@@ -1033,6 +1085,33 @@ def test_story_lines(env: SimpleNamespace) -> None:
 # ============================================================================================ real ASR round trip
 D030 = Path("/Users/home/studio-testdata/qa-editor-d030-h264.mov")
 SCRIBE_D030 = Path(__file__).parent / "transcribe_scribe_v2_d030.json"
+
+
+def test_report_cost_section_shows_the_asr_line(tmp_path: Path) -> None:
+    """The cost section prices the traced ``asr`` events next to the model calls: seconds, dollars, by purpose."""
+    job = Job.create("cost-report", work_dir=tmp_path)
+    asr = dict(status="ok", provider="elevenlabs", model="scribe_v2", cached=False)
+    job.trace("asr", stage="index", step="transcribe", purpose="index", audio_seconds=60.0, **asr)
+    job.trace("asr", stage="index", step="fill_untranscribed", purpose="fill", audio_seconds=2.6, gap_id="g0003", **asr)
+    job.trace("asr", stage="qa", step="asr_round_trip", purpose="qa", audio_seconds=54.0, **asr)
+    job.trace("asr", stage="qa", step="asr_round_trip", purpose="qa", audio_seconds=54.0, **{**asr, "cached": True})
+    job.trace("asr", stage="index", step="transcribe", status="failed", provider="elevenlabs", purpose="index",
+              audio_seconds=60.0, error="HTTP 503")
+    job.trace("model_call", role="planner", stage="plan", provider="anthropic", model="claude-sonnet-5-5",
+              input_tokens=3500, output_tokens=2000, latency_ms=900)
+    text = "\n".join(qr._section_history(job, None))
+    # 116.6 s of Scribe at $0.22/h = $0.0071; the 503 and the cached re-parse are listed but never billed
+    assert ("**Estimated ASR cost: $0.007** (117 s of audio over 4 calls; 1 cached re-parse free; "
+            "index $0.004, qa $0.003, fill $0.0002; elevenlabs $0.22/h, assemblyai $0.15/h") in text
+    assert "**Estimated model cost: $0.03**" in text and "**Estimated total: $0.03**" in text
+    assert "| planner:plan | 0.03 |" in text and "| asr:index | 0.004 |" in text and "| asr:qa | 0.003 |" in text
+    assert "| asr:fill | 0.0002 |" in text
+    # ASR alone (no model calls yet) still gets its line
+    job2 = Job.create("asr-only", work_dir=tmp_path)
+    job2.trace("asr", stage="index", step="transcribe", purpose="index", audio_seconds=60.0, **asr)
+    text2 = "\n".join(qr._section_history(job2, None))
+    assert "**Estimated ASR cost: $0.004** (60 s of audio over 1 call; index $0.004;" in text2
+    assert "Estimated model cost" not in text2 and "Estimated total" not in text2 and "| asr:index | 0.004 |" in text2
 
 
 @pytest.mark.real

@@ -25,6 +25,8 @@ Quality choices
   content of its sources, fonts and lockfile, under a file lock, and reused by every render. Rendered
   layers are cached per job by the hash of their props, so champion-loop revisions that do not touch
   text re-use the previous file.
+* **Every core.** Frames are captured by ``STUDIO_REMOTION_CONCURRENCY`` browser tabs at once (default: the CPU
+  count); the A-roll and the master encode run before and after the overlay, never beside it.
 * **Verified output.** After every render the file is probed: ProRes 4444, a pixel format with alpha,
   exact frame count, size, frame rate and BT.709 tags, plus a decoded alpha plane that really contains
   transparency (an opaque "alpha" layer would black out the video in the master).
@@ -832,8 +834,16 @@ def verify_overlay(path: str | os.PathLike[str], *, frames: int | None = None, w
 
 
 def _concurrency() -> int:
-    n = os.cpu_count() or 4
-    return max(2, min(8, n - 2))
+    """Remotion's ``--concurrency`` (browser tabs rendering frames in parallel): ``STUDIO_REMOTION_CONCURRENCY``
+    when set to a positive integer, else the machine's CPU count. The overlay render is the one stage with no
+    other heavy writer beside it (the A-roll and the master run before and after it), so it may take every core;
+    the variable is for hosts that share the box with something else."""
+    v = (os.environ.get("STUDIO_REMOTION_CONCURRENCY") or "").strip()
+    if v:
+        with contextlib.suppress(ValueError):
+            if (n := int(v)) >= 1:
+                return n
+    return os.cpu_count() or 4
 
 
 def render_overlay_props(props: OverlayProps | dict[str, Any] | str | os.PathLike[str],

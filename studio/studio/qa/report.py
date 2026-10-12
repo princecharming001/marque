@@ -790,6 +790,7 @@ def _section_history(job: Job, doc: CutDocument | None) -> list[str]:
         L.append("")
     trace = job.read_trace()
     calls = [e for e in trace if e.get("event") == "model_call"]
+    asr_calls = [e for e in trace if e.get("event") == "asr" and e.get("status") != "failed"]
     if calls:
         agg: dict[tuple[str, str], dict[str, float]] = defaultdict(lambda: defaultdict(float))
         for e in calls:
@@ -804,16 +805,31 @@ def _section_history(job: Job, doc: CutDocument | None) -> list[str]:
                     [[r, m, f"{a['calls']:.0f}", f"{a['input_tokens']:.0f}", f"{a['output_tokens']:.0f}",
                       f"{a['latency_ms'] / 1000:.0f} s"] for (r, m), a in sorted(agg.items())])
         L.append("")
-        from studio.agent.cost import PRICES_AS_OF, job_cost
+    if calls or asr_calls:
+        # ---- cost: model calls at list prices, ASR by the audio hour (studio.agent.cost)
+        from studio.agent.cost import ASR_PRICES_PER_HOUR, PRICES_AS_OF, format_usd, job_cost
 
-        cs = job_cost(calls)
+        cs = job_cost([*calls, *asr_calls])
         if cs.priced_calls:
             t = cs.tokens
-            L += [f"**Estimated model cost: ${cs.total_usd:.2f}** (Anthropic list prices as of {PRICES_AS_OF}; "
+            model_usd = sum(v for r, v in cs.by_role.items() if r != "asr")
+            L += [f"**Estimated model cost: ${model_usd:.2f}** (Anthropic list prices as of {PRICES_AS_OF}; "
                   f"{t.get('output', 0):,} output, {t.get('cache_read', 0):,} cache-read, "
                   f"{t.get('cache_write', 0):,} cache-write and {t.get('uncached_input', 0):,} uncached input tokens"
                   + (f"; unpriced: {', '.join(cs.unpriced_models)}" if cs.unpriced_models else "") + ")", ""]
-            L += _table(["Role: stage", "USD"], [[k, f"{v:.2f}"] for k, v in cs.by_stage.items()])
+        if cs.asr_calls:
+            prices = ", ".join(f"{p} ${v:.2f}/h" for p, v in ASR_PRICES_PER_HOUR.items())
+            cached = (f"; {cs.asr_cached_calls} cached re-parse{'s' if cs.asr_cached_calls != 1 else ''} free"
+                      if cs.asr_cached_calls else "")
+            purposes = ", ".join(f"{k.split(':', 1)[1]} {format_usd(v)}" for k, v in cs.by_stage.items()
+                                 if k.startswith("asr:"))
+            L += [f"**Estimated ASR cost: {format_usd(cs.by_role.get('asr', 0.0))}** "
+                  f"({cs.asr_seconds:.0f} s of audio over {cs.asr_calls} call{'s' if cs.asr_calls != 1 else ''}"
+                  f"{cached}; {purposes}; {prices}, exact seconds, as of {PRICES_AS_OF})", ""]
+        if cs.priced_calls or cs.asr_calls:
+            if cs.priced_calls and cs.asr_calls:
+                L += [f"**Estimated total: ${cs.total_usd:.2f}**", ""]
+            L += _table(["Role: stage", "USD"], [[k, format_usd(v).lstrip("$")] for k, v in cs.by_stage.items()])
             L.append("")
     return L
 

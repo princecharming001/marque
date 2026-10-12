@@ -183,3 +183,54 @@ def test_redact_defaults_to_configured_secrets(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", FAKE_ANTHROPIC)
     reset_settings()
     assert redact(f"boom {FAKE_ANTHROPIC}") == "boom <redacted>"
+
+
+# ============================================================================================ tiers + planner
+def test_tier_and_planner_defaults_and_overrides():
+    """The default tier is the cheap one (a plain ``studio edit`` can never run up a Director bill by accident); the
+    planner is Sonnet 5.5 at ``low`` (docs/standard-tier-plan.md §2)."""
+    s = Settings.load(env={})
+    assert s.tier == config.DEFAULT_TIER == "standard"
+    assert s.planner_model == config.PLANNER_MODEL == "claude-sonnet-5-5"
+    assert s.planner_effort == config.PLANNER_EFFORT == "low"
+    assert config.TIERS == ("standard", "director")
+    s2 = Settings.load(env={"STUDIO_TIER": "Director", "STUDIO_PLANNER_MODEL": "claude-haiku-5-5",
+                            "STUDIO_PLANNER_EFFORT": "MEDIUM"})
+    assert s2.tier == "director" and s2.planner_model == "claude-haiku-5-5" and s2.planner_effort == "medium"
+    assert Settings.load(env={"STUDIO_TIER": "  "}).tier == "standard"  # blank = unset
+    pub = s2.public_dict()
+    assert pub["tier"] == "director" and pub["planner_model"] == "claude-haiku-5-5"
+    assert s.with_overrides(tier="director").tier == "director"
+
+
+def test_unknown_tier_refuses_to_load(tmp_path: Path):
+    """A typo must never silently pick a tier (the two differ by two orders of magnitude in cost)."""
+    with pytest.raises(ValueError, match="STUDIO_TIER must be one of standard, director"):
+        Settings.load(env={"STUDIO_TIER": "pro"})
+    f = tmp_path / "t.env"
+    f.write_text("STUDIO_TIER=directer\n")
+    with pytest.raises(ValueError, match="directer"):
+        Settings.load(env={"STUDIO_ENV_FILE": str(f)})
+    # the process env wins over the file, as for every other name
+    assert Settings.load(env={"STUDIO_ENV_FILE": str(f), "STUDIO_TIER": "director"}).tier == "director"
+
+
+def test_redact_survives_settings_that_refuse_to_load(monkeypatch: pytest.MonkeyPatch):
+    """The CLI redacts every error message through the configured secrets; when the settings themselves are the
+    error (a bad STUDIO_TIER) redaction must still return, not raise again."""
+    monkeypatch.setenv("STUDIO_TIER", "bogus")
+    reset_settings()
+    with pytest.raises(ValueError):
+        get_settings()
+    assert redact("STUDIO_TIER must be one of standard, director, got 'bogus'").startswith("STUDIO_TIER")
+
+
+def test_suite_runs_in_the_director_tier_and_tests_can_override(monkeypatch: pytest.MonkeyPatch):
+    """conftest sets STUDIO_TIER=director for the whole suite and get_settings() sees it (the cache is reset per
+    test); a standard-tier test overrides the env and resets the cache."""
+    assert os.environ["STUDIO_TIER"] == "director"
+    assert get_settings().tier == "director"
+    monkeypatch.setenv("STUDIO_TIER", "standard")
+    assert get_settings().tier == "director"  # cached until reset
+    reset_settings()
+    assert get_settings().tier == "standard"

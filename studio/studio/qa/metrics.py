@@ -67,7 +67,9 @@ What is measured, and why this way
   word ID and flags those adjacent to a seam (*seam damage*: the clipped-phoneme signature). Music hits
   and SFX sit on seams by design and can mask a word for the ASR, so when the mix carries them the
   render's dialogue stem is transcribed too and only a word lost in both counts; one heard in the
-  dialogue alone is reported as *masked* (a balance note, not a clipped phoneme).
+  dialogue alone is reported as *masked* (a balance note, not a clipped phoneme). Each provider call is
+  traced on the job as an ``asr`` event with ``purpose="qa"`` and its audio seconds, so the cost report
+  carries the QA ASR line (:mod:`studio.agent.cost`).
 * **Intelligibility** — ESTOI (pystoi) of the dialogue stem vs the final mix, full band and through a
   phone-speaker high-pass (music masking), when ``stems/dialogue.wav`` exists.
 * **Banding** — CAMBI (libvmaf) on frames sampled twice a second.
@@ -79,6 +81,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as _dt
+import functools
 import itertools
 import json
 import math
@@ -388,6 +391,7 @@ class MetricsPacket(_M):
     asr: AsrRoundTrip | None = None
     intelligibility: Intelligibility | None = None
     banding: Banding | None = None
+    skipped: list[str] = Field(default_factory=list)  # advisory metrics this host cannot measure (no libvmaf)
     advice: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 
@@ -1855,11 +1859,19 @@ def align_tokens(ref: Sequence[str], hyp: Sequence[str]) -> list[tuple[str, int 
 Transcriber = Callable[[Path], "AsrResult"]
 
 
-def _default_transcriber(settings: Settings | None, provider: str | None, cache_dir: Path | None = None) -> Transcriber:
+def _default_transcriber(settings: Settings | None, provider: str | None, cache_dir: Path | None = None, *,
+                         job: Job | None = None) -> Transcriber:
+    """The real ASR (Scribe v2, AssemblyAI fallback); with ``job``, every call is traced as an ``asr`` event
+    (``purpose="qa"``, ``stage="qa"``) so :func:`studio.agent.cost.job_cost` can price the round trip."""
     from studio.perception.transcribe import transcribe_file
 
+    def on_event(event: str, **fields: Any) -> None:
+        if job is not None:
+            job.trace(event, stage="qa", step="asr_round_trip", **fields)
+
     def run(wav: Path) -> AsrResult:  # raw responses cached next to each input (one cache per audio)
-        return transcribe_file(wav, provider=provider, settings=settings, cache_dir=cache_dir or wav.parent)
+        return transcribe_file(wav, provider=provider, settings=settings, cache_dir=cache_dir or wav.parent,
+                               purpose="qa", on_event=on_event)
 
     return run
 
@@ -1879,11 +1891,15 @@ def _expected_tokens(timeline: Timeline, index: TakeIndex) -> tuple[list[str], l
 
 
 def _hear(run: Transcriber, audio: np.ndarray, sr: int, wav: Path) -> tuple[AsrResult, list[str], list[float]]:
-    """Transcribe mono float32 ``audio`` written to ``wav``: (result, tokens, token start times in s)."""
-    import soundfile as sf
+    """Transcribe mono float32 ``audio`` written to ``wav``: (result, tokens, token start times in s).
+
+    The wav is written with scipy, not libsndfile: libsndfile stamps float WAVs with a PEAK chunk holding the
+    wall-clock time, and the transcriber's raw-response cache keys on the file's SHA-256, so a re-measure of the
+    same render one second later would pay for a second provider call instead of re-parsing the first."""
+    from scipy.io import wavfile
 
     wav.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(str(wav), _mono(audio).astype(np.float32), sr, subtype="FLOAT")
+    wavfile.write(str(wav), sr, _mono(audio).astype(np.float32))
     asr = run(wav)
     toks: list[str] = []
     times: list[float] = []
@@ -1911,14 +1927,16 @@ def _lost_words(exp_ids: Sequence[str], exp_tokens: Sequence[str], hyp_tokens: S
 def asr_round_trip(timeline: Timeline, index: TakeIndex, audio: np.ndarray, *, sr: int = SR,
                    transcriber: Transcriber | None = None, settings: Settings | None = None,
                    work_dir: Path | None = None, provider: str | None = None, cuts: Sequence[CutCheck] = (),
-                   pinned: Iterable[str] = (), confirm_audio: np.ndarray | None = None) -> AsrRoundTrip:
+                   pinned: Iterable[str] = (), confirm_audio: np.ndarray | None = None,
+                   job: Job | None = None) -> AsrRoundTrip:
     """Transcribe the final's audio and diff it against the expected kept words (by word ID).
 
     A confidently recognised source word next to a seam that the render's ASR loses is *seam damage*
     (the clipped-phoneme signature). Music hits and SFX are often placed on seams and can mask a word
     for the ASR without anything being clipped, so when ``confirm_audio`` (the render's dialogue stem,
     sample-aligned with the final) is given, each candidate is re-checked on the dialogue alone: lost
-    there too → seam damage; heard there → ``masked`` (a mix-balance note, not a clipped phoneme)."""
+    there too → seam damage; heard there → ``masked`` (a mix-balance note, not a clipped phoneme).
+    With ``job`` (and no scripted ``transcriber``) each real ASR call is traced on it for the cost report."""
     import jiwer
     from rapidfuzz.distance import Levenshtein
 
@@ -1928,7 +1946,7 @@ def asr_round_trip(timeline: Timeline, index: TakeIndex, audio: np.ndarray, *, s
     res.expected_text = " ".join(exp_tokens)
     wd = Path(work_dir) if work_dir is not None else Path(tempfile.mkdtemp(prefix="qa_asr_"))
     wd.mkdir(parents=True, exist_ok=True)
-    run = transcriber or _default_transcriber(settings, provider)
+    run = transcriber or _default_transcriber(settings, provider, job=job)
     asr, hyp_tokens, hyp_times = _hear(run, audio, sr, wd / "asr_input.wav")
     res.ran = True
     res.provider = asr.asr.provider
@@ -2008,6 +2026,16 @@ def intelligibility(clean: np.ndarray, mix: np.ndarray, sr: int = SR, *, phone_h
         sos = _sos(sr, phone_hp_hz)
         out.estoi_phone = _r(float(stoi(sps.sosfilt(sos, c), sps.sosfilt(sos, m), sr, extended=True)), 4)
     return out
+
+
+@functools.lru_cache(maxsize=1)
+def cambi_available() -> bool:
+    """Whether this ffmpeg has the ``libvmaf`` filter (CAMBI is advisory: a build without it skips banding)."""
+    try:
+        out = subprocess.run([_ffmpeg(), "-hide_banner", "-filters"], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return " libvmaf " in out
 
 
 def cambi(path: str | os.PathLike[str], *, per_second: float = 2.0, fps: Fraction | None = None,
@@ -2364,7 +2392,7 @@ def measure(job: Job | None, timeline: Timeline, final_path: str | os.PathLike[s
         pk.asr = attempt("asr", lambda: asr_round_trip(
             timeline, index, audio, transcriber=transcriber, settings=settings,
             work_dir=rd / "qa" / f"asr_{final.stem}",
-            provider=asr_provider, cuts=pk.cuts, pinned=pins, confirm_audio=confirm)) or AsrRoundTrip(
+            provider=asr_provider, cuts=pk.cuts, pinned=pins, confirm_audio=confirm, job=job)) or AsrRoundTrip(
             skipped_reason="asr failed")
     # ---- intelligibility
     stem = rd / "stems" / "dialogue.wav"
@@ -2372,7 +2400,10 @@ def measure(job: Job | None, timeline: Timeline, final_path: str | os.PathLike[s
         pk.intelligibility = attempt("estoi", lambda: intelligibility(_read_wav_mono(stem), audio, SR))
     # ---- banding
     if banding if banding is not None else not light:
-        pk.banding = attempt("cambi", lambda: cambi(final, fps=to_fraction(timeline.fps)))
+        if cambi_available():
+            pk.banding = attempt("cambi", lambda: cambi(final, fps=to_fraction(timeline.fps)))
+        else:
+            pk.skipped.append("cambi: ffmpeg has no libvmaf filter (banding not measured)")
     pk.advice = _advice(pk, priors, doc, height=timeline.height)
     if save:
         with contextlib.suppress(OSError):

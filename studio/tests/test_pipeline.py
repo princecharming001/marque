@@ -447,3 +447,115 @@ def test_house_director_is_recorded_and_reused_on_resume(job: Job, monkeypatch: 
     assert spec.api_key == "sk-ant-test-0000000000"
     # flags given now win (an explicit switch)
     assert pipeline._director_flags(job, None, None, None, True) == (None, None, None)
+
+
+# ============================================================================================ tiers
+def test_edit_records_tier_and_planner_and_a_resume_reuses_them(ready_job: Job,
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    """A job records the tier and the planner it was edited with next to its Director; a resume keeps them when the
+    environment moved on (STUDIO_TIER / STUDIO_PLANNER_MODEL), and flags given now win."""
+    from studio.config import reset_settings
+
+    sc = ScriptedDirector(_plan())
+    res = pipeline.edit(ready_job.root, director_model_override=sc.model(), loop_kwargs=LoopFakes(ready_job).kwargs())
+    assert res.tier == "director"
+    meta = ready_job.meta["meta"]
+    assert meta["tier"] == "director" and meta["director"]["house"]
+    assert meta["planner"] == {"provider": "anthropic", "model": "claude-sonnet-5-5", "key_env": None,
+                               "effort": "low", "house": True}
+    assert next(e for e in ready_job.read_trace() if e["event"] == "stage")["tier"] == "director"
+    # the environment now says standard tier and another planner: the finished job resumes as it was edited
+    monkeypatch.setenv("STUDIO_TIER", "standard")
+    monkeypatch.setenv("STUDIO_PLANNER_MODEL", "claude-haiku-5-5")
+    reset_settings()
+    res2 = pipeline.edit(ready_job.root, director_model_override=sc.model(), loop_kwargs=LoopFakes(ready_job).kwargs())
+    assert res2.tier == "director" and res2.doc_version == res.doc_version
+    meta2 = ready_job.meta["meta"]
+    assert meta2["tier"] == "director" and meta2["planner"]["model"] == "claude-sonnet-5-5"
+    # --planner-model given now wins and is recorded
+    pipeline.edit(ready_job.root, planner_model="claude-haiku-5-5", director_model_override=sc.model(),
+                  loop_kwargs=LoopFakes(ready_job).kwargs())
+    assert ready_job.meta["meta"]["planner"]["model"] == "claude-haiku-5-5"
+    assert ready_job.meta["meta"]["tier"] == "director"
+
+
+def test_standard_tier_is_a_refusing_stub_until_phase_c(ready_job: Job, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--tier standard`` (or STUDIO_TIER=standard on a new job) reaches ``_edit_standard`` after ingest and the Take
+    Index and refuses clearly; the job has recorded its tier and planner by then. A chat on a standard job goes to
+    ``_chat_standard`` and refuses the same way."""
+    from studio.config import reset_settings
+
+    with pytest.raises(pipeline.PipelineError, match=r"standard tier: not built yet \(phase C\)"):
+        pipeline.edit(ready_job.root, tier="standard", planner_model="claude-haiku-5-5")
+    meta = ready_job.meta["meta"]
+    assert meta["tier"] == "standard" and meta["planner"]["model"] == "claude-haiku-5-5"
+    assert not (ready_job.root / "logs" / "director_state.json").exists()
+    # a resume of a standard job stays standard without a flag …
+    with pytest.raises(pipeline.PipelineError, match="phase C"):
+        pipeline.edit(ready_job.root)
+    # … and a chat on it runs in its tier (no Director, no model call)
+    ready_job.save_doc(CutDocument(job_id=ready_job.id))
+    with pytest.raises(pipeline.PipelineError, match="phase C"):
+        pipeline.chat(ready_job.root, "shorter")
+    # the job's own tier can be switched back explicitly
+    ready_job.update_meta(tier="standard")
+    sc = ScriptedDirector(_plan())
+    res = pipeline.edit(ready_job.root, tier="director", director_model_override=sc.model(),
+                        loop_kwargs=LoopFakes(ready_job).kwargs())
+    assert res.tier == "director" and ready_job.meta["meta"]["tier"] == "director"
+    # a NEW job takes STUDIO_TIER (the default is standard) when no flag is given
+    monkeypatch.setenv("STUDIO_TIER", "standard")
+    reset_settings()
+    fresh = Job.create("fresh", work_dir=ready_job.root.parent)
+    shutil.copy(ready_job.mezz_path, fresh.mezz_path)
+    shutil.copy(ready_job.proxy_path, fresh.proxy_path)
+    shutil.copy(ready_job.audio_path, fresh.audio_path)
+    fresh.save_media_info(ready_job.load_media_info())
+    fresh.save_index(ready_job.load_index())
+    with pytest.raises(pipeline.PipelineError, match="phase C"):
+        pipeline.edit(fresh.root)
+    assert fresh.meta["meta"]["tier"] == "standard" and fresh.meta["meta"]["planner"]["model"] == "claude-sonnet-5-5"
+
+
+def test_resolve_tier_rules(job: Job) -> None:
+    from studio.config import Settings
+
+    std = Settings.load(env={})
+    dirs = Settings.load(env={"STUDIO_TIER": "director"})
+    assert std.tier == "standard"
+    # a flag wins over everything; else the job's record; else the settings
+    assert pipeline._resolve_tier("director", job, std) == "director"
+    assert pipeline._resolve_tier("Standard", job, dirs) == "standard"
+    assert pipeline._resolve_tier(None, job, std) == "standard"
+    assert pipeline._resolve_tier(None, job, dirs) == "director"
+    assert pipeline._resolve_tier(None, None, dirs) == "director"
+    # a job edited before tiers existed recorded a Director and no tier: it is a Director job
+    job.update_meta(director=pipeline._house_director_record(std))
+    assert pipeline._resolve_tier(None, job, std) == "director"
+    job.update_meta(tier="standard")
+    assert pipeline._resolve_tier(None, job, dirs) == "standard"
+    with pytest.raises(pipeline.PipelineError, match="unknown tier 'pro'"):
+        pipeline._resolve_tier("pro", job, std)
+
+
+def test_planner_spec_for(monkeypatch: pytest.MonkeyPatch) -> None:
+    from studio.config import Settings
+
+    s = Settings.load(env={"ANTHROPIC_API_KEY": "sk-ant-test-0000000000"})
+    house = pipeline.planner_spec_for(None, s)
+    assert (house.provider, house.model, house.effort) == ("anthropic", "claude-sonnet-5-5", "low")
+    assert house.api_key == "sk-ant-test-0000000000" and not house.byok
+    assert pipeline.planner_spec_for("claude-haiku-5-5", s).model == "claude-haiku-5-5"
+    # a job's recorded effort wins over the environment's, like the Director's
+    s2 = Settings.load(env={"ANTHROPIC_API_KEY": "sk-ant-test-0000000000", "STUDIO_PLANNER_EFFORT": "medium"})
+    assert pipeline.planner_spec_for(None, s2).effort == "medium"
+    assert pipeline.planner_spec_for(None, s2, effort="low").effort == "low"
+    rec = pipeline._planner_record(s2, "claude-haiku-5-5")
+    assert rec == {"provider": "anthropic", "model": "claude-haiku-5-5", "key_env": None, "effort": "medium",
+                   "house": True}
+    spec = pipeline._spec_from_planner_record(rec, s)
+    assert (spec.model, spec.effort) == ("claude-haiku-5-5", "medium") and not spec.byok
+    # BYOK for the planner: the key's env var NAME, never the key
+    monkeypatch.setenv("CREATOR_ANT_KEY", "sk-ant-creator-0000000000")
+    byok = pipeline.planner_spec_for("claude-haiku-5-5", s, key_env="CREATOR_ANT_KEY")
+    assert byok.byok and byok.api_key == "sk-ant-creator-0000000000" and byok.effort == "low"

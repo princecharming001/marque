@@ -580,3 +580,24 @@ def test_revise_and_chat_start_in_a_fresh_context(job: Job, take_index: TakeInde
     kept = len(d4.history)
     d4.revise("[P2 taste] maybe music", base_version=champion, round_no=2)
     assert "fresh context" not in sc4.prompts[0][1] and len(d4.history) > kept
+
+
+def test_radio_blockers_and_measure_color_are_the_shared_functions(media_job: Job, take_index: TakeIndex) -> None:
+    """The Director delegates to the functions both tiers use; the tool text is unchanged (A5 refactor)."""
+    from studio.compile.color import format_color_measurement, measure_color
+    from studio.doc.validate import radio_blockers
+
+    d, _ = make_director(media_job, take_index)
+    d.session.set_stage("story")
+    d.session.apply_ops([{"op": "set_story", "segments": [{"from_word": "w0001", "to_word": "w0013"}]}])
+    blockers = d._radio_blockers()
+    assert blockers == radio_blockers(d.session.doc, d.index) and "cut-off word w0013" in blockers[0]
+    out = d.t_measure_color(["w0001", "w0030:payoff"])
+    assert out == format_color_measurement(measure_color(media_job, take_index, d.session.doc, ["w0001", "w0030"]))
+    assert d.t_measure_color([]) == "ERROR: give word IDs, e.g. ['w0001', 'w0120']"
+    assert d.t_measure_color([" "]) == "ERROR: give word IDs, e.g. ['w0001', 'w0120']"
+
+
+def test_measure_color_without_a_mezzanine_reports_it(job: Job, take_index: TakeIndex) -> None:
+    d, _ = make_director(job, take_index)
+    assert d.t_measure_color(["w0001"]) == "ERROR: no mezzanine video for this job."

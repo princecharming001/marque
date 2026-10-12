@@ -33,7 +33,9 @@ Design choices (quality first; verified against the current Anthropic docs on 20
   partial, mid-stream refusal, whose output must be discarded) and :func:`map_provider_error` reports
   it as ``kind="refusal"``.
 * **Prompt caching with a 1 h TTL** on instructions, tools and the growing history: identical outputs,
-  and a Director turn often outlasts the 5-minute default TTL.
+  and a Director turn often outlasts the 5-minute default TTL. The standard tier's **planner** is the exception
+  (:data:`PLANNER_CACHE_TTL`, 5 m): one call, at most one retry seconds later, and a 1 h write costs 2x the input
+  price against 1.25x at 5 m, so the long TTL would only make the cheap tier dearer.
 * **Images** (verified against the vision docs): Claude 4.7+ reads images up to 2576 px on the long edge
   and 4784 visual tokens (``ceil(w/28)·ceil(h/28)``; 1568 px / 1568 tokens on older models) and downscales
   anything larger; above 20 images in one request (history included) every image must be ≤ 2000 px or the
@@ -81,7 +83,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
 __all__ = [
     "Provider", "Role", "EFFORTS", "PROVIDERS", "PROVIDER_ALIASES", "ROLE_EFFORT", "DEFAULT_WATCHER_MODEL",
-    "OPENROUTER_BASE_URL", "SERVER_FALLBACK_BETA", "FILE_EXPIRY_S", "Capabilities", "ModelSpec", "ProviderError",
+    "CACHE_TTL", "PLANNER_CACHE_TTL", "cache_ttl_for", "OPENROUTER_BASE_URL", "SERVER_FALLBACK_BETA",
+    "FILE_EXPIRY_S", "Capabilities", "ModelSpec", "ProviderError",
     "KeyCheck", "TracedModel", "StreamingRequestModel", "ImageUploader", "normalize_provider", "normalize_effort",
     "capabilities_for", "house_spec", "director_fallback_spec", "spec_from_cli", "model_settings", "build_model",
     "make_image_uploader", "map_provider_error", "validate_key", "validate_key_sync", "register_secret",
@@ -90,7 +93,7 @@ __all__ = [
 ]
 
 Provider = Literal["anthropic", "openai", "google", "openai_compat"]
-Role = Literal["director", "critic", "watcher", "helper"]
+Role = Literal["director", "critic", "watcher", "helper", "planner"]
 
 PROVIDERS: tuple[str, ...] = ("anthropic", "openai", "google", "openai_compat")
 PROVIDER_ALIASES: dict[str, str] = {
@@ -110,13 +113,23 @@ _EFFORT_RANK = {e: i for i, e in enumerate(EFFORTS)}
 
 #: Default effort per role when a spec leaves it unset. The Director's comes from Settings
 #: (``STUDIO_DIRECTOR_EFFORT``, default ``max``). Quality is the only goal, so judges also run at ``max``;
-#: the watcher and helpers do perception/lookup work where ``high`` avoids overthinking.
-ROLE_EFFORT: dict[str, str] = {"director": "max", "critic": "high", "watcher": "high", "helper": "high"}
+#: the watcher and helpers do perception/lookup work where ``high`` avoids overthinking. The standard tier's
+#: planner (``STUDIO_PLANNER_EFFORT``) names IDs from a measured digest in one structured call: ``low`` is the
+#: measured sweet spot (docs/standard-tier-plan.md §2) and keeps the call near $0.03.
+ROLE_EFFORT: dict[str, str] = {"director": "max", "critic": "high", "watcher": "high", "helper": "high",
+                               "planner": "low"}
 
-#: Anthropic prompt-cache TTL for every role. Written tokens cost 2x the input price at 1h (1.25x at 5m); reads are
-#: cheap. 1h keeps the Director's conversation warm across the caption previews and seam checks inside a stage.
-#: Cost accounting (:mod:`studio.agent.cost`) prices writes at this TTL.
+#: Anthropic prompt-cache TTL for the Director, critics, watcher and helpers. Written tokens cost 2x the input price
+#: at 1h (1.25x at 5m); reads are cheap. 1h keeps the Director's conversation warm across the caption previews and
+#: seam checks inside a stage. Cost accounting (:mod:`studio.agent.cost`) prices writes at this TTL.
 CACHE_TTL = "1h"
+#: The planner's TTL: its prefix is re-read only by its own retry, seconds later, so the 5m write price applies.
+PLANNER_CACHE_TTL = "5m"
+
+
+def cache_ttl_for(role: str | None) -> str:
+    """The Anthropic prompt-cache TTL a role's calls are written with (see :data:`CACHE_TTL`)."""
+    return PLANNER_CACHE_TTL if role == "planner" else CACHE_TTL
 
 #: Watcher default when a Google key exists (plan §4: Gemini is the only frontier family that watches
 #: and hears video; the bake-off between Flash and Pro is configurable via ``STUDIO_WATCHER_MODEL``).
@@ -454,7 +467,9 @@ def house_spec(role: Role, *, settings: Settings | None = None) -> ModelSpec:
       they are shown; at ``max`` they spent ~100k thinking tokens per answer for no measured gain;
     * watcher: Gemini (``Settings.watcher_model`` or :data:`DEFAULT_WATCHER_MODEL`) with video input when a
       Google key exists, else the house critic model watching burned-ID frames;
-    * helper: the Director's model at ``high``.
+    * helper: the Director's model at ``high``;
+    * planner: Anthropic ``Settings.planner_model`` at ``Settings.planner_effort`` (default ``claude-sonnet-5-5`` at
+      ``low``): the standard tier's one structured-output call over the Take Index digest.
     """
     s = _settings(settings)
     if role == "director":
@@ -474,6 +489,9 @@ def house_spec(role: Role, *, settings: Settings | None = None) -> ModelSpec:
         prov = normalize_provider(s.director_provider)
         return ModelSpec(provider=prov, model=s.director_model, api_key=s.key(_key_name(prov)),
                          effort=ROLE_EFFORT["helper"])
+    if role == "planner":
+        return ModelSpec(provider="anthropic", model=s.planner_model, api_key=s.key("anthropic"),
+                         effort=s.planner_effort or ROLE_EFFORT["planner"])
     raise ValueError(f"unknown role {role!r}")
 
 
@@ -490,20 +508,23 @@ def _key_name(provider: str) -> str:
 
 
 def spec_from_cli(provider: str, model: str, key_env: str | None, *, settings: Settings | None = None,
-                  base_url: str | None = None, effort: str | None = None) -> ModelSpec:
-    """BYOK Director spec from CLI flags; the key is read from env var ``key_env`` (process env first,
-    then the ``STUDIO_ENV_FILE`` values, in memory). Never logged: errors name the variable, not the value.
+                  base_url: str | None = None, effort: str | None = None, role: str = "director") -> ModelSpec:
+    """BYOK spec from CLI flags for the Director (default) or the standard tier's planner (``role="planner"``);
+    the key is read from env var ``key_env`` (process env first, then the ``STUDIO_ENV_FILE`` values, in memory).
+    Never logged: errors name the variable, not the value.
 
-    ``key_env=None`` uses the house key for that provider (not BYOK). ``openrouter`` implies its base URL.
+    ``key_env=None`` uses the house key for that provider (not BYOK). ``openrouter`` implies its base URL. An unset
+    ``effort`` falls back to the role's configured default (``Settings.director_effort`` / ``planner_effort``, then
+    :data:`ROLE_EFFORT`).
     """
     s = _settings(settings)
     raw_provider = (provider or "").strip().lower()
     prov = normalize_provider(raw_provider)
+    base_url_env = "STUDIO_PLANNER_BASE_URL" if role == "planner" else "STUDIO_DIRECTOR_BASE_URL"
     if prov == "openai_compat" and base_url is None:
-        base_url = OPENROUTER_BASE_URL if raw_provider == "openrouter" else (os.environ.get("STUDIO_DIRECTOR_BASE_URL")
-                                                                            or None)
+        base_url = OPENROUTER_BASE_URL if raw_provider == "openrouter" else (os.environ.get(base_url_env) or None)
         if base_url is None:
-            raise ValueError("openai_compat needs a base URL (set STUDIO_DIRECTOR_BASE_URL or pass base_url)")
+            raise ValueError(f"openai_compat needs a base URL (set {base_url_env} or pass base_url)")
     key: str | None
     byok = key_env is not None
     if key_env is not None:
@@ -519,8 +540,9 @@ def spec_from_cli(provider: str, model: str, key_env: str | None, *, settings: S
             raise MissingKeyError(f"{prov} key not found: environment variable {name} is unset or empty")
     else:
         key = s.key(_key_name(prov)) if prov != "openai_compat" else None
+    configured = s.planner_effort if role == "planner" else s.director_effort
     return ModelSpec(provider=prov, model=model, api_key=key, base_url=base_url,
-                     effort=effort or s.director_effort or ROLE_EFFORT["director"], byok=byok)
+                     effort=effort or configured or ROLE_EFFORT.get(role, ROLE_EFFORT["director"]), byok=byok)
 
 
 # ============================================================================================ settings
@@ -572,9 +594,10 @@ def model_settings(spec: ModelSpec, role: str | None = None) -> dict[str, Any]:
             budget = {"medium": 10_000, "high": 16_384, "xhigh": 32_768, "max": 48_000}.get(effort, 10_000)
             budget = max(1024, min(budget, caps.max_output_tokens - 8_192))
             out["anthropic_thinking"] = {"type": "enabled", "budget_tokens": budget}
-        out["anthropic_cache_instructions"] = CACHE_TTL
-        out["anthropic_cache_tool_definitions"] = CACHE_TTL
-        out["anthropic_cache"] = CACHE_TTL
+        ttl = cache_ttl_for(role)
+        out["anthropic_cache_instructions"] = ttl
+        out["anthropic_cache_tool_definitions"] = ttl
+        out["anthropic_cache"] = ttl
         if spec.uses_server_fallbacks():
             out["anthropic_betas"] = [SERVER_FALLBACK_BETA]
             out["extra_body"] = {"fallbacks": "default"}
@@ -809,6 +832,7 @@ class TracedModel(WrapperModel):
             "fallback_model": self.fallback_spec.model if self.fallback_spec else None,
             "server_fallbacks": bool(spec.uses_server_fallbacks()) if spec else False,
             "sse": isinstance(self.wrapped, StreamingRequestModel),
+            "cache_ttl": cache_ttl_for(self.role) if (spec is None or spec.provider == "anthropic") else None,
         }
 
     def _trace_ok(self, resp: ModelResponse, t0: float, facts: dict[str, Any], streamed: bool) -> None:

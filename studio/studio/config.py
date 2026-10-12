@@ -16,6 +16,7 @@ Usage::
     s.work_dir               # Path("/Users/home/studio-work") by default
     s.key("anthropic")       # the Anthropic key or None
     s.require_key("elevenlabs")  # raises MissingKeyError (message names the env var, never a value)
+    s.tier                   # "standard" (one planner call, one render, code QA) or "director" (the review loop)
 
 Tests build isolated settings with ``Settings.load(env={...})`` or call :func:`reset_settings`.
 """
@@ -28,15 +29,20 @@ import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import dotenv_values
 
 __all__ = [
     "DEFAULT_WORK_DIR",
+    "DEFAULT_TIER",
+    "TIERS",
+    "Tier",
     "DIRECTOR_MODEL",
     "DIRECTOR_FALLBACK_MODEL",
     "CRITIC_MODEL",
+    "PLANNER_MODEL",
+    "PLANNER_EFFORT",
     "KEY_ENV_NAMES",
     "MissingKeyError",
     "Settings",
@@ -58,6 +64,17 @@ DIRECTOR_MODEL = "claude-fable-5-1"
 DIRECTOR_FALLBACK_MODEL = "claude-opus-5-5"
 DIRECTOR_EFFORT = "max"
 CRITIC_MODEL = "claude-opus-5-5"
+
+#: Edit tiers (docs/standard-tier-plan.md §2). ``standard``: the deterministic engine + one structured-output planner
+#: call + one render + the invariants + code-only repair, shipped NOT REVIEWED (under $0.20 a video). ``director``:
+#: the Director/critic champion loop (the reviewed edit, dollars a video). The default is the cheap tier so a plain
+#: ``studio edit`` can never run up a Director bill by accident; ``STUDIO_TIER=director`` or ``--tier`` opts in.
+Tier = Literal["standard", "director"]
+TIERS: tuple[str, ...] = ("standard", "director")
+DEFAULT_TIER: Tier = "standard"
+#: The standard tier's planner: Sonnet 5.5 at effort ``low`` (~$0.03 a call; Haiku 5.5 is the free-tier candidate).
+PLANNER_MODEL = "claude-sonnet-5-5"
+PLANNER_EFFORT = "low"
 
 #: Logical key name -> accepted env var names (first non-empty wins).
 KEY_ENV_NAMES: dict[str, tuple[str, ...]] = {
@@ -110,6 +127,11 @@ class Settings:
     critic_model: str = CRITIC_MODEL
     watcher_model: str | None = None
 
+    #: which edit path ``studio edit`` runs by default (``STUDIO_TIER``); a job records the tier it was edited with
+    tier: Tier = DEFAULT_TIER
+    planner_model: str = PLANNER_MODEL
+    planner_effort: str = PLANNER_EFFORT
+
     # logical name -> secret value; never shown in repr
     _keys: Mapping[str, str] = field(default_factory=dict, repr=False)
 
@@ -155,6 +177,10 @@ class Settings:
             v = get(name)
             return Path(v).expanduser() if v else default
 
+        tier = (get("STUDIO_TIER") or DEFAULT_TIER).lower()
+        if tier not in TIERS:
+            raise ValueError(f"STUDIO_TIER must be one of {', '.join(TIERS)}, got {tier!r}")
+
         return cls(
             work_dir=path("STUDIO_WORK_DIR", DEFAULT_WORK_DIR),
             models_dir=path("STUDIO_MODELS_DIR", STUDIO_ROOT / "models"),
@@ -172,6 +198,9 @@ class Settings:
             director_effort=get("STUDIO_DIRECTOR_EFFORT") or DIRECTOR_EFFORT,
             critic_model=get("STUDIO_CRITIC_MODEL") or CRITIC_MODEL,
             watcher_model=get("STUDIO_WATCHER_MODEL"),
+            tier=tier,  # type: ignore[arg-type]
+            planner_model=get("STUDIO_PLANNER_MODEL") or PLANNER_MODEL,
+            planner_effort=(get("STUDIO_PLANNER_EFFORT") or PLANNER_EFFORT).lower(),
             _keys=keys,
         )
 
@@ -274,7 +303,10 @@ def redact(obj: Any, secrets: Iterable[str] | None = None) -> Any:
     characters are ignored for substring replacement (too collision-prone) but still masked by key name.
     """
     if secrets is None:
-        secrets = get_settings().secret_values()
+        try:
+            secrets = get_settings().secret_values()
+        except ValueError:  # settings refuse to load (a bad STUDIO_TIER): nothing is configured, so nothing to redact
+            secrets = []
     vals = sorted({s for s in secrets if s and len(s) >= 6}, key=len, reverse=True)
     return _redact(obj, vals)
 

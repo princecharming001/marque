@@ -19,7 +19,12 @@ Documents (function-scoped, fresh objects each test):
 * ``cut_doc``     version-1 CutDocument over ``take_index``: 4 segments (false start and filler removed),
   payoff/CTA pins, caption pages, a hook title, a card insert and one SFX cue.
 * ``work_dir`` / ``job``  an isolated work dir and a created Job (with media_info + index saved).
-* ``settings``    Settings loaded from an empty env with ``work_dir`` = the temp work dir.
+* ``settings``    Settings loaded from an empty env with ``work_dir`` = the temp work dir (tier ``director``).
+
+Tier: the suite runs in the ``director`` tier (``_director_tier`` sets ``STUDIO_TIER=director`` before settings are
+loaded) because the Director/critic path is what these fixtures and scripted models exercise; the standard tier's
+own tests override it per test (``monkeypatch.setenv("STUDIO_TIER", "standard")`` + ``reset_settings()``, or
+``pipeline.edit(..., tier="standard")``).
 
 Helper builders are also exposed as fixtures (``make_take_index``, ``make_cut_doc``) so other tests can
 build variants without importing this module.
@@ -89,8 +94,15 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 @pytest.fixture(autouse=True)
+def _director_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whole suite edits in the ``director`` tier (the default ``STUDIO_TIER`` is ``standard``, which refuses until
+    phase C lands). ``_isolate_settings`` depends on this so the env var is set before settings are reloaded."""
+    monkeypatch.setenv("STUDIO_TIER", "director")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_settings(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
-                      tmp_path_factory: pytest.TempPathFactory):
+                      tmp_path_factory: pytest.TempPathFactory, _director_tier: None):
     """Never let keyless tests read the developer's env file or write to the real work dir. Tests marked
     ``real`` keep ``STUDIO_ENV_FILE`` so :func:`studio.config.get_settings` can load keys."""
     if request.node.get_closest_marker("real") is None:
@@ -117,7 +129,7 @@ def work_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def settings(work_dir: Path) -> Settings:
-    return Settings.load(env={"STUDIO_WORK_DIR": str(work_dir)})
+    return Settings.load(env={"STUDIO_WORK_DIR": str(work_dir), "STUDIO_TIER": "director"})
 
 
 # ============================================================================================ media

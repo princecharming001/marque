@@ -3,9 +3,10 @@
 ::
 
     studio edit <video | job_dir> [--brief TEXT] [--style NAME] [--platform tiktok|reels|shorts]
+                [--tier standard|director] [--planner-model M]
                 [--media FILE …] [--director-provider P --director-model M --director-key-env VAR]
                 [--rounds N] [--out DIR] [--asr-provider elevenlabs|assemblyai]
-    studio chat <job_dir> "<instruction>" [--director-…] [--out DIR]
+    studio chat <job_dir> "<instruction>" [--planner-model M] [--director-…] [--out DIR]
     studio index <video> [--asr-provider elevenlabs|assemblyai]
     studio render <job_dir> [--version N] [--preview]
     studio report <job_dir>
@@ -15,6 +16,8 @@ Global options: ``--work-dir DIR`` (overrides ``STUDIO_WORK_DIR``), ``--json`` (
 output). Keys are never read here: ``--director-key-env`` passes the *name* of an env var.
 
 ``studio edit <job_dir>`` resumes an interrupted edit (finished steps are skipped). Progress goes to stderr.
+``--tier`` picks the edit path (default ``STUDIO_TIER``, ``standard``); a resume and ``studio chat`` reuse the tier
+the job was edited with, and the flags given now win.
 
 Exit codes: 0 ok · 1 error (including too little free disk for a render) · 2 usage · 3 stage not implemented yet.
 """
@@ -33,6 +36,7 @@ from studio import __version__
 
 PLATFORMS = ("tiktok", "reels", "shorts")
 PROVIDERS = ("anthropic", "openai", "google", "openai_compat")
+TIERS = ("standard", "director")
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_NOT_IMPLEMENTED = 0, 1, 2, 3
 
@@ -72,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--brief", metavar="TEXT", help="Creator intent (goal, CTA, audience, vibe)")
     p.add_argument("--style", metavar="NAME", help="Style name, e.g. educational, storytime, comedy")
     p.add_argument("--platform", choices=PLATFORMS, default=None, help="Destination (default tiktok)")
+    p.add_argument("--tier", choices=TIERS, default=None,
+                   help="standard: one planner call, one render, code QA, NOT REVIEWED (under $0.20); director: the "
+                        "reviewed Director/critic loop (default: the job's tier on a resume, else STUDIO_TIER)")
+    p.add_argument("--planner-model", metavar="M", help="Standard-tier planner model (default STUDIO_PLANNER_MODEL)")
     p.add_argument("--media", type=Path, action="append", default=[], metavar="FILE",
                    help="Creator b-roll (video or still) the Director may use; repeatable")
     _add_director_flags(p)
@@ -81,9 +89,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", type=Path, metavar="DIR", help="Copy deliverables into DIR")
     p.add_argument("--asr-provider", choices=("elevenlabs", "assemblyai"))
 
-    p = sub.add_parser("chat", help="Apply an instruction to an edited job")
+    p = sub.add_parser("chat", help="Apply an instruction to an edited job (in the tier it was edited with)")
     p.add_argument("job_dir", type=Path)
     p.add_argument("instruction")
+    p.add_argument("--planner-model", metavar="M", help="Planner model for a standard job (default: the job's)")
     _add_director_flags(p)
     p.add_argument("--out", type=Path, metavar="DIR", help="Copy the new deliverables into DIR")
 
@@ -177,6 +186,7 @@ def _dispatch(args: argparse.Namespace) -> Any:
             platform=args.platform or (None if resume else "tiktok"),
             director_provider=args.director_provider, director_model=args.director_model,
             director_key_env=args.director_key_env, house=args.house, rounds=args.rounds, max_usd=args.max_usd,
+            tier=args.tier, planner_model=args.planner_model,
             out=args.out, settings=settings, log=_progress, **kw,
         )
     if cmd == "chat":
@@ -184,7 +194,7 @@ def _dispatch(args: argparse.Namespace) -> Any:
         return pipeline.chat(
             args.job_dir, args.instruction, director_provider=args.director_provider,
             director_model=args.director_model, director_key_env=args.director_key_env, house=args.house,
-            settings=settings, **kw,
+            planner_model=args.planner_model, settings=settings, **kw,
         )
     if cmd == "index":
         return pipeline.index(args.video, asr_provider=args.asr_provider, settings=settings)

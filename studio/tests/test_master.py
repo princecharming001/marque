@@ -17,12 +17,16 @@ from studio.compile import overlays as overlays_mod
 from studio.compile.audio import AudioRender
 from studio.compile.master import (
     PLATFORM_PROFILES,
+    RENDER_PROFILES,
+    MasterResult,
+    _x264_args,
     aac_encoder,
     aac_priming,
     choose_cover_time,
     encode_settings,
     master,
     render_document,
+    render_profile,
     write_srt,
 )
 from studio.compile.timeline import compile
@@ -369,3 +373,123 @@ def test_render_document_end_to_end(job, take_index, cut_doc, monkeypatch):
     assert (v["width"], v["height"], int(v["nb_frames"])) == (1080, 1920, tl.frame_count)
     assert any(e.get("stage") == "master" for e in job.read_trace())
     shutil.rmtree(rd, ignore_errors=True)  # full-resolution intermediates are large; free the disk
+
+
+# ============================================================================================ render profiles
+def test_encode_settings_profiles():
+    """``standard`` differs from ``final`` only in preset and CRF: GOP, B-frames, VBV cap and bufsize (invariant 10's
+    knobs) are identical; ``preview`` is the fast uncapped preset and ``preview=True`` is its alias."""
+    final = encode_settings("reels", 600.0, F(30))
+    std = encode_settings("reels", 600.0, F(30), profile="standard")
+    assert (std["profile"], std["preset"], std["crf"]) == ("standard", "medium", 16)
+    assert (final["profile"], final["preset"], final["crf"]) == ("final", "veryslow", 15)
+    for k in ("keyint", "bframes", "maxrate", "bufsize"):
+        assert std[k] == final[k], k
+    assert std["maxrate"] == int(0.9 * 300_000_000 * 8 / 600) and std["bufsize"] == 2 * std["maxrate"]
+    assert encode_settings("shorts", 10, F(60000, 1001), profile="standard")["keyint"] == 30
+    assert encode_settings("tiktok", 30.0, F(30), profile="standard")["maxrate"] == 25_000_000
+    pv = encode_settings("reels", 30.0, F(30), profile="preview")
+    assert (pv["profile"], pv["preset"], pv["crf"], pv["maxrate"]) == ("preview", "faster", 20, None)
+    assert encode_settings("reels", 30.0, F(30), preview=True) == pv
+    assert encode_settings("reels", 30.0, F(30), profile="standard", preview=True) == pv  # the alias wins
+    assert encode_settings("tiktok", 30.0, F(30), profile="final") == encode_settings("tiktok", 30.0, F(30))
+    assert set(RENDER_PROFILES) == {"final", "standard", "preview"}
+    assert (render_profile(), render_profile("standard"), render_profile(None, preview=True)) == \
+        ("final", "standard", "preview")
+    with pytest.raises(ValueError, match="render profile"):
+        encode_settings("tiktok", 30.0, F(30), profile="draft")
+    # the x264 command line carries the profile's preset/CRF and the shared tags unchanged
+    args_std, args_final = _x264_args(std), _x264_args(final)
+    assert args_std[args_std.index("-preset") + 1] == "medium" and args_std[args_std.index("-crf") + 1] == "16"
+    params = args_std[args_std.index("-x264-params") + 1]
+    assert params == args_final[args_final.index("-x264-params") + 1]
+    assert "keyint=15:min-keyint=15:scenecut=0:bframes=2:open-gop=0" in params and "colorprim=bt709" in params
+
+
+def test_master_standard_profile_delivers_and_records(setup, job):
+    doc, tl, rd, aroll, ovl, audio = setup
+    res = master(job, aroll, ovl, audio.mix, None, "tiktok", timeline=tl, profile="standard")
+    final = res.finals["tiktok"]
+    v = next(s for s in _streams(final) if s["codec_type"] == "video")
+    assert (v["codec_name"], v["pix_fmt"], v["color_space"], v["color_range"]) == ("h264", "yuv420p", "bt709", "tv")
+    assert (int(v["width"]), int(v["height"]), int(v["nb_frames"])) == (W, H, tl.frame_count)  # not a preview size
+    rows = _frames_info(final)
+    assert rows[0] == (1, "I") and [i for i, (k, _) in enumerate(rows) if k][:3] == [0, 15, 30]  # fps/2 closed GOP
+    ev = [e for e in job.read_trace() if e.get("stage") == "master"][-1]
+    assert ev["profile"] == "standard" and ev["preview"] is False
+    assert res.nomusic is None
+
+
+def _patch_render_stages(monkeypatch, captured: dict):
+    """Stub the heavy render stages so render_document/render_full only exercise their plumbing."""
+    from studio.compile import master as master_mod
+    from studio.compile import video as video_mod
+
+    def fake_aroll(job_, timeline, out_dir, *, preview=False, codec="prores_hq", **kw):
+        captured["aroll_codec"] = codec
+        p = Path(out_dir) / ("aroll_preview.mp4" if preview else "aroll.mov")
+        p.write_bytes(b"aroll")
+        return p
+
+    def fake_overlays(job_, timeline, out_dir, *, preview=False, **kw):
+        return None
+
+    def fake_audio(job_, doc_, timeline, out_dir, *, preview=False, **kw):
+        m = Path(out_dir) / "mix.wav"
+        m.write_bytes(b"mix")
+        return AudioRender(mix=m, mix_nomusic=None)
+
+    def fake_master(job_, aroll, overlays, mix, mix_nomusic=None, platform="tiktok", *, render_dir=None, **kw):
+        captured["master_kwargs"] = dict(kw)
+        rd = Path(render_dir)
+        final = rd / "final_tiktok.mp4"
+        final.write_bytes(b"mp4")
+        return MasterResult(render_dir=rd, finals={"tiktok": final})
+
+    monkeypatch.setattr(video_mod, "render_aroll", fake_aroll)
+    monkeypatch.setattr(overlays_mod, "render_overlays", fake_overlays)
+    monkeypatch.setattr(audio_mod, "render_audio", fake_audio)
+    monkeypatch.setattr(master_mod, "master", fake_master)
+
+
+@pytest.mark.parametrize(("kwargs", "profile", "preview"), [
+    ({}, "final", False), ({"profile": "standard"}, "standard", False), ({"preview": True}, "preview", True),
+    ({"profile": "standard", "preview": True}, "preview", True)])
+def test_render_document_records_profile(job, take_index, cut_doc, monkeypatch, kwargs, profile, preview):
+    captured: dict = {}
+    _patch_render_stages(monkeypatch, captured)
+    doc = cut_doc.model_copy(update={"inserts": [], "texts": []})
+    res = render_document(job, doc, take_index, **kwargs)
+    man = json.loads((res.render_dir / "render.json").read_text())
+    assert man["profile"] == profile and man["preview"] is preview
+    assert captured["master_kwargs"]["profile"] == profile and "preview" not in captured["master_kwargs"]
+    assert man["aroll_codec"] == (None if preview else "prores_hq")
+
+
+def test_render_full_threads_profile_and_lean_aroll(job, take_index, cut_doc, monkeypatch):
+    """The standard tier's render: lean A-roll by design, profile recorded in the trace and render.json;
+    ``final`` keeps the disk-driven codec choice and ``preview=True`` still works."""
+    from studio.agent import loop as lp
+
+    monkeypatch.delenv("STUDIO_AROLL_CODEC", raising=False)
+    captured: dict = {}
+    _patch_render_stages(monkeypatch, captured)
+    doc = cut_doc.model_copy(update={"inserts": [], "texts": []})
+    rd = lp.render_full(job, doc, take_index, profile="standard")
+    man = json.loads((rd / "render.json").read_text())
+    assert man["profile"] == "standard" and man["aroll_codec"] == "lean" and captured["aroll_codec"] == "lean"
+    done = [e for e in job.read_trace() if e["event"] == "render_done"][-1]
+    assert (done["profile"], done["aroll_codec"], done["preview"]) == ("standard", "lean", False)
+    rd2 = lp.render_full(job, doc, take_index)
+    man2 = json.loads((rd2 / "render.json").read_text())
+    assert man2["profile"] == "final" and man2["aroll_codec"] == "prores_hq"  # plenty of disk in a test tmp dir
+    rd3 = lp.render_full(job, doc, take_index, preview=True)
+    man3 = json.loads((rd3 / "render.json").read_text())
+    assert man3["profile"] == "preview" and man3["preview"] is True and man3["aroll_codec"] is None
+    assert captured["master_kwargs"]["profile"] == "preview"
+    # STUDIO_AROLL_CODEC still wins over the profile's choice
+    monkeypatch.setenv("STUDIO_AROLL_CODEC", "prores_hq")
+    rd4 = lp.render_full(job, doc, take_index, profile="standard")
+    assert json.loads((rd4 / "render.json").read_text())["aroll_codec"] == "prores_hq"
+    with pytest.raises(ValueError, match="render profile"):
+        lp.render_full(job, doc, take_index, profile="fast")

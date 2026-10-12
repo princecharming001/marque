@@ -337,3 +337,44 @@ def test_render_boundary_page_stays_in_the_band(tmp_path: Path):
     a = np.frombuffer(raw, np.uint8).reshape(1920, 1080)
     ys, _xs = np.nonzero(a > 64)
     assert ys.min() >= 200 - 2 and ys.max() <= 330  # one line under the band top, not two lines above it
+
+
+# ============================================================================================== concurrency
+def test_remotion_concurrency_env(monkeypatch):
+    """``STUDIO_REMOTION_CONCURRENCY`` sets Remotion's tab count; unset or invalid falls back to the CPU count."""
+    monkeypatch.delenv("STUDIO_REMOTION_CONCURRENCY", raising=False)
+    monkeypatch.setattr(O.os, "cpu_count", lambda: 6)
+    assert O._concurrency() == 6
+    monkeypatch.setenv("STUDIO_REMOTION_CONCURRENCY", "3")
+    assert O._concurrency() == 3
+    for bad in ("0", "-2", "two", " "):
+        monkeypatch.setenv("STUDIO_REMOTION_CONCURRENCY", bad)
+        assert O._concurrency() == 6, bad
+    monkeypatch.setattr(O.os, "cpu_count", lambda: None)
+    monkeypatch.setenv("STUDIO_REMOTION_CONCURRENCY", "")
+    assert O._concurrency() == 4
+
+
+def test_render_overlay_props_passes_concurrency(monkeypatch, tmp_path: Path):
+    """The env value reaches the ``remotion render`` command line (an explicit ``concurrency=`` still wins)."""
+    cmds: list[list[str]] = []
+
+    def fake_run(cmd, cwd, *, timeout, log=None):
+        cmds.append(list(cmd))
+        Path(cmd[cmd.index("render") + 3]).write_bytes(b"mov")  # the temporary output remotion would write
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(O, "bundle_overlay", lambda settings=None, **kw: tmp_path / "bundle")
+    monkeypatch.setattr(O, "_browser_executable", lambda settings: None)
+    monkeypatch.setattr(O, "_run", fake_run)
+    props = O.build_overlay_props(small_timeline())
+    monkeypatch.setenv("STUDIO_REMOTION_CONCURRENCY", "5")
+    out = O.render_overlay_props(props, tmp_path / "a" / "overlays.mov", verify=False)
+    assert out.exists() and "--concurrency=5" in cmds[-1]
+    O.render_overlay_props(props, tmp_path / "b" / "overlays.mov", verify=False, concurrency=2)
+    assert "--concurrency=2" in cmds[-1]
+    monkeypatch.delenv("STUDIO_REMOTION_CONCURRENCY")
+    monkeypatch.setattr(O.os, "cpu_count", lambda: 7)
+    O.render_overlay_props(props, tmp_path / "c" / "overlays.mov", verify=False)
+    assert "--concurrency=7" in cmds[-1]
+    assert cmds[-1][cmds[-1].index("render") + 1] == str(tmp_path / "bundle")

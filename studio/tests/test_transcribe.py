@@ -547,6 +547,64 @@ def test_result_feeds_a_valid_take_index(asr_job: Job, keyed: Settings, mock_htt
     assert "{Um}" in ix.render_transcript("full") and "(laughs)" in ix.render_transcript("full")
 
 
+# ---------------------------------------------------------------------------------------------- accounting
+def test_asr_trace_carries_purpose_audio_seconds_and_cache_state(asr_job: Job, keyed: Settings, mock_http):
+    """Every provider call is traced for the cost report (studio.agent.cost): what it was for, how much audio
+    it sent, which provider/model answered, and whether it was a free re-parse of the raw cache."""
+    rec = mock_http(el_ok())
+    transcribe(asr_job, settings=keyed)
+    transcribe(asr_job, settings=keyed)  # same audio + params: the cache answers, still traced
+    events = [t for t in asr_job.read_trace() if t["event"] == "asr"]
+    assert len(events) == 2 and len(rec.requests) == 1
+    first, second = events
+    assert first["purpose"] == "index" and first["stage"] == "index" and first["step"] == "transcribe"
+    assert first["status"] == "ok" and first["provider"] == "elevenlabs" and first["model"] == "scribe_v2"
+    assert first["audio_seconds"] == pytest.approx(1.5) and first["cached"] is False
+    assert second["cached"] is True and second["audio_seconds"] == pytest.approx(1.5)
+    from studio.agent.cost import job_cost
+
+    cs = job_cost(events)
+    assert cs.asr_calls == 2 and cs.asr_cached_calls == 1 and cs.asr_seconds == pytest.approx(1.5)
+    assert cs.by_stage == {"asr:index": pytest.approx(1.5 / 3600 * 0.22)}
+
+
+def test_transcribe_file_reports_its_purpose_and_failed_attempts(tmp_path: Path, keyed: Settings, mock_http):
+    seen: list[dict[str, Any]] = []
+
+    def on_event(event: str, **fields: Any) -> None:
+        seen.append({"event": event, **fields})
+
+    mock_http(el_ok())
+    src = wav(tmp_path / "x.wav", tone(2.0))
+    tr.transcribe_file(src, settings=keyed, provider="elevenlabs", purpose="qa", on_event=on_event)
+    assert len(seen) == 1 and seen[0]["event"] == "asr" and seen[0]["status"] == "ok"
+    assert seen[0]["purpose"] == "qa" and seen[0]["audio_seconds"] == pytest.approx(2.0)
+    assert seen[0]["provider"] == "elevenlabs" and seen[0]["model"] == "scribe_v2" and seen[0]["cached"] is False
+    with pytest.raises(ValueError, match="unknown ASR purpose"):
+        tr.transcribe_file(src, settings=keyed, provider="elevenlabs", purpose="broll", on_event=on_event)
+    # a failed attempt is traced as failed (the cost module never bills it) with the same purpose and length
+    seen.clear()
+    mock_http(lambda req, n: httpx.Response(401, json={"detail": {"status": "invalid_api_key"}}))
+    with pytest.raises(AsrError):
+        tr.transcribe_file(src, settings=keyed, provider="elevenlabs", purpose="fill", on_event=on_event)
+    assert len(seen) == 1 and seen[0]["status"] == "failed" and seen[0]["purpose"] == "fill"
+    assert seen[0]["audio_seconds"] == pytest.approx(2.0) and seen[0]["provider"] == "elevenlabs"
+    assert FAKE_EL_KEY not in json.dumps(seen)
+
+
+def test_fallback_traces_the_failed_attempt_and_the_billed_call(asr_job: Job, keyed: Settings, mock_http):
+    mock_http(aai_route())
+    transcribe(asr_job, settings=keyed)
+    events = [t for t in asr_job.read_trace() if t["event"] == "asr"]
+    assert [(e["status"], e["provider"]) for e in events] == [("failed", "elevenlabs"), ("ok", "assemblyai")]
+    assert events[1]["model"] == "universal-3-5-pro" and events[1]["audio_seconds"] == pytest.approx(1.5)
+    assert events[0]["audio_seconds"] == pytest.approx(1.5) and {e["purpose"] for e in events} == {"index"}
+    from studio.agent.cost import job_cost
+
+    cs = job_cost(events)
+    assert cs.asr_calls == 1 and cs.by_stage == {"asr:index": pytest.approx(1.5 / 3600 * 0.15)}
+
+
 # ---------------------------------------------------------------------------------------------- real API
 TESTDATA = Path("/Users/home/studio-testdata")
 D030 = TESTDATA / "qa-editor-d030-h264.mov"

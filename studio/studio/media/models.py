@@ -7,6 +7,12 @@
 Geometry is **display** geometry: ``width``/``height`` are after applying ``rotation`` (a 1920x1080
 coded iPhone portrait take with rotation 90 reports width=1080, height=1920). ``coded_width``/
 ``coded_height`` keep the stored dimensions.
+
+``width``/``height``/``fps`` describe the **mezzanine** every later stage reads. They equal the source's display
+geometry and rate except when ingest was asked to conform the picture (the standard tier's
+``ingest(max_height=, max_fps=)``: a 4K60 upload becomes a 1080p30 mezzanine); then :class:`ConformInfo` under
+``conform`` records what the source was, so a report can say "2160x3840@60 downscaled to 1080x1920@30" and a
+Pro re-ingest knows there is more picture to go back to.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from studio.timebase import Rational, frame_count, us_to_seconds
 
-__all__ = ["ColorInfo", "AudioInfo", "MediaInfo", "HDR_TRANSFERS"]
+__all__ = ["ColorInfo", "AudioInfo", "ConformInfo", "MediaInfo", "HDR_TRANSFERS"]
 
 #: ffprobe ``color_transfer`` values that mean HDR.
 HDR_TRANSFERS: dict[str, str] = {"arib-std-b67": "hlg", "smpte2084": "pq"}
@@ -62,8 +68,37 @@ class AudioInfo(_Model):
     priming_samples: int | None = None  # AAC encoder delay if known
 
 
+class ConformInfo(_Model):
+    """How the mezzanine differs from the source when ingest downscaled or decimated it (standard tier).
+
+    ``source_*`` is the source's display geometry and CFR rate; ``width``/``height``/``fps`` repeat the mezzanine's
+    (the same values as the enclosing :class:`MediaInfo`), so the record reads on its own in a report or trace.
+    """
+
+    source_width: int = Field(gt=0)
+    source_height: int = Field(gt=0)
+    source_fps: Rational
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    fps: Rational
+    max_height: int | None = None  # the caps that were asked for
+    max_fps: Rational | None = None
+
+    @property
+    def downscaled(self) -> bool:
+        return (self.width, self.height) != (self.source_width, self.source_height)
+
+    @property
+    def decimated(self) -> bool:
+        return Fraction(self.fps) != Fraction(self.source_fps)
+
+    def describe(self) -> str:
+        return (f"{self.source_width}x{self.source_height}@{float(self.source_fps):g} → "
+                f"{self.width}x{self.height}@{float(self.fps):g}")
+
+
 class MediaInfo(_Model):
-    """Everything later stages need to know about a source file."""
+    """Everything later stages need to know about a source file (geometry and rate are the mezzanine's)."""
 
     path: str  # absolute path of the original as ingested
     container: str | None = None  # ffprobe format_name
@@ -87,6 +122,7 @@ class MediaInfo(_Model):
     color: ColorInfo = Field(default_factory=ColorInfo)
     audio: AudioInfo | None = None
     edit_list: bool = False  # MOV edit list present / honoured
+    conform: ConformInfo | None = None  # set when the mezzanine is smaller or slower than the source
     notes: list[str] = Field(default_factory=list)  # edit-list, priming, APAC, VFR … remarks
 
     @property
@@ -116,3 +152,8 @@ class MediaInfo(_Model):
     def frame_count(self) -> int:
         """Frames at the CFR rate ``fps`` over ``duration_us``."""
         return frame_count(self.duration_s, self.fps)
+
+    @property
+    def conformed(self) -> bool:
+        """True when the mezzanine was downscaled or frame-rate decimated at ingest (see :class:`ConformInfo`)."""
+        return self.conform is not None and (self.conform.downscaled or self.conform.decimated)

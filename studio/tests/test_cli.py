@@ -177,3 +177,46 @@ def test_console_script_entry_point():
 def test_module_invocation():
     out = subprocess.run([sys.executable, "-m", "studio.cli", "--help"], capture_output=True, text=True)
     assert out.returncode == 0 and "edit" in out.stdout
+
+
+# ============================================================================================ tiers
+def test_edit_tier_and_planner_flags(calls, video: Path):
+    assert cli.main(["edit", str(video), "--tier", "standard", "--planner-model", "claude-haiku-5-5"]) == 0
+    kw = calls[0][2]
+    assert kw["tier"] == "standard" and kw["planner_model"] == "claude-haiku-5-5"
+    assert cli.main(["edit", str(video), "--tier", "director"]) == 0
+    assert calls[1][2]["tier"] == "director" and calls[1][2]["planner_model"] is None
+    # no flag: the pipeline resolves the job's tier, else STUDIO_TIER
+    assert cli.main(["edit", str(video)]) == 0
+    assert calls[2][2]["tier"] is None and calls[2][2]["planner_model"] is None
+
+
+def test_chat_reuses_the_jobs_tier_and_takes_a_planner_model(calls, video: Path, tmp_path: Path):
+    jd = tmp_path / "some_job"
+    jd.mkdir()
+    assert cli.main(["chat", str(jd), "shorter", "--planner-model", "claude-haiku-5-5"]) == 0
+    name, args, kw = calls[0]
+    assert name == "chat" and args == (jd, "shorter") and kw["planner_model"] == "claude-haiku-5-5"
+    assert "tier" not in kw  # there is no --tier on chat: a chat runs in the tier the job was edited with
+    assert cli.main(["chat", str(jd), "shorter", "--tier", "director"]) == 2
+
+
+def test_unknown_tier_is_a_usage_error(calls, video: Path, capsys):
+    assert cli.main(["edit", str(video), "--tier", "pro"]) == 2
+    assert "standard" in capsys.readouterr().err and calls == []
+
+
+def test_bad_studio_tier_env_is_a_clean_error(video: Path, capsys, monkeypatch):
+    """Settings refuse an unknown STUDIO_TIER; the CLI reports it (exit 1) instead of tracebacking while redacting."""
+    from studio.config import reset_settings
+
+    monkeypatch.setenv("STUDIO_TIER", "bogus")
+    reset_settings()
+    assert cli.main(["edit", str(video)]) == 1
+    err = capsys.readouterr().err
+    assert "STUDIO_TIER must be one of standard, director" in err and "Traceback" not in err
+
+
+def test_edit_result_prints_its_tier(calls, video: Path, capsys):
+    assert cli.main(["edit", str(video)]) == 0
+    assert "tier: director" in capsys.readouterr().out

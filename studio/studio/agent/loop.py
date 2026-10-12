@@ -137,23 +137,38 @@ def _reclaim_own(job: Job) -> Callable[[int], int]:
 
 
 def render_full(job: Job, doc: CutDocument, index: TakeIndex | None = None, *, preview: bool = False,
-                min_free: int | None = None, on_wait: Callable[[], None] | None = None) -> Path:
-    """Render ``doc`` into a new ``renders/r{n}/`` (full quality unless ``preview``) inside the machine-wide render
-    slot, after a disk budget check (reclaim first; the lean A-roll intermediate when ProRes HQ does not fit); a
-    failed render's directory is removed."""
-    from studio.compile.master import render_document
+                min_free: int | None = None, on_wait: Callable[[], None] | None = None,
+                profile: str = "final") -> Path:
+    """Render ``doc`` into a new ``renders/r{n}/`` inside the machine-wide render slot, after a disk budget check
+    (reclaim first; the lean A-roll intermediate when ProRes HQ does not fit); a failed render's directory is
+    removed.
 
+    ``profile`` is the render profile (``studio.compile.master.RENDER_PROFILES``): ``final`` (the reviewed edit:
+    ProRes HQ A-roll when it fits, x264 veryslow CRF 15), ``standard`` (the standard tier's one render: the lean
+    A-roll intermediate by design, not only when disk is short, and x264 medium CRF 16 with the same GOP/VBV/colour
+    tags) or ``preview`` (the 540x960 proxy render). ``preview=True`` is kept as the alias for
+    ``profile="preview"``. The profile is threaded to the master encode and recorded in ``render.json``."""
+    from studio.compile.master import render_document, render_profile
+
+    profile = render_profile(profile, preview=preview)
+    preview = profile == "preview"
     index = index or job.load_index()
     try:
         dur_s = max(0.5, doc.estimated_duration_us(index) / 1e6)
     except Exception:
         dur_s = max(0.5, index.media.duration_us / 1e6)
     fps = float(index.media.fps) if index.media.fps else 30.0
-    what = "a preview render" if preview else "a full-quality render"
+    what = {"preview": "a preview render", "standard": "a standard-tier render"}.get(profile, "a full-quality render")
     with storage.render_slot(on_wait=on_wait):
         codec: str | None = None
         if preview:
             need = storage.render_need_bytes(dur_s, fps=fps, preview=True)
+            storage.ensure_space(job.root, need, what=what, reclaim=_reclaim_own(job), work_dir=job.root.parent,
+                                 exclude=job.root, floor=min_free)
+        elif profile == "standard" and not _forced_aroll_codec():
+            # the standard tier never writes ProRes intermediates: the lean A-roll is its budget, not a fallback
+            codec = "lean"
+            need = storage.render_need_bytes(dur_s, fps=fps, aroll=codec)
             storage.ensure_space(job.root, need, what=what, reclaim=_reclaim_own(job), work_dir=job.root.parent,
                                  exclude=job.root, floor=min_free)
         else:
@@ -167,14 +182,21 @@ def render_full(job: Job, doc: CutDocument, index: TakeIndex | None = None, *, p
         before = set(job.render_numbers())
         t0 = time.monotonic()
         try:
-            res = render_document(job, doc, index, preview=preview, aroll_codec=codec)
+            res = render_document(job, doc, index, profile=profile, aroll_codec=codec)
         except BaseException:
             for n in set(job.render_numbers()) - before:
                 shutil.rmtree(job.render_dir(n), ignore_errors=True)
             raise
     trace_event(job, "render_done", render=res.render_dir.name, doc_version=doc.version, preview=preview,
-                seconds=round(time.monotonic() - t0, 1), aroll_codec=codec)
+                profile=profile, seconds=round(time.monotonic() - t0, 1), aroll_codec=codec)
     return res.render_dir
+
+
+def _forced_aroll_codec() -> str | None:
+    """``STUDIO_AROLL_CODEC`` when it names a codec: it then wins over the profile's choice, as it does in
+    :func:`studio.storage.choose_aroll_codec`."""
+    forced = (os.environ.get("STUDIO_AROLL_CODEC") or "").strip().lower()
+    return forced if forced in ("prores_hq", "lean") else None
 
 
 # ============================================================================================ state
@@ -563,7 +585,8 @@ class ChampionLoop:
             return None
         from studio.agent.cost import job_cost
 
-        spent = job_cost(self.job).total_usd
+        cs = job_cost(self.job)
+        spent = cs.total_usd - cs.by_role.get("asr", 0.0)  # model calls only; ASR is tenths of a cent
         if spent >= cap:
             return f"model spend cap ${cap:.2f} reached (${spent:.2f} at list prices)"
         return None

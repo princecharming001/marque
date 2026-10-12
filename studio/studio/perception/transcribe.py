@@ -47,6 +47,14 @@ Quality choices (the only goal is the final cut)
 
 Keys come only from :class:`studio.config.Settings`; they are sent in headers and never logged, cached
 or put in error messages (error bodies are passed through :func:`studio.config.redact`).
+
+Accounting
+----------
+ASR is billed by the audio hour (Scribe v2 $0.22, AssemblyAI $0.15), so every provider call — the index pass,
+the :mod:`studio.perception.fill` excerpts and the QA round trips — reports itself through ``on_event`` as an
+``"asr"`` event carrying ``provider``, ``model``, ``audio_seconds`` (the file's length), ``purpose``
+(``index`` | ``fill`` | ``qa``) and ``cached`` (a re-parse of the raw cache costs nothing). Callers trace the
+event on the job (``Job.trace``) and :func:`studio.agent.cost.job_cost` prices it under role ``asr``.
 """
 
 from __future__ import annotations
@@ -78,7 +86,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 __all__ = [
     "ELEVENLABS_URL", "ELEVENLABS_MODEL", "ASSEMBLYAI_BASE", "ASSEMBLYAI_MODELS", "ASSEMBLYAI_VERBATIM_PROMPT",
-    "PROVIDERS", "FILLER_WORDS", "MULTIWORD_FILLERS",
+    "PROVIDERS", "ASR_PURPOSES", "FILLER_WORDS", "MULTIWORD_FILLERS",
     "AsrError", "RawToken",
     "transcribe", "transcribe_file", "prepare_upload_audio", "sanitize_keyterms",
     "parse_elevenlabs", "parse_assemblyai", "build_words",
@@ -100,6 +108,8 @@ ASSEMBLYAI_POLL_S = 3.0
 ASSEMBLYAI_MAX_WAIT_S = 3600.0
 
 PROVIDERS = ("elevenlabs", "assemblyai")
+#: Why a call was made, as traced on its ``asr`` event: the Take Index pass, a fill excerpt, a QA round trip.
+ASR_PURPOSES = ("index", "fill", "qa")
 
 #: Tokens that are always fillers (compared after :func:`normalize_token`).
 FILLER_WORDS: frozenset[str] = frozenset({
@@ -780,13 +790,19 @@ def transcribe_file(
     refresh: bool = False,
     duration_us: int | None = None,
     on_event: Callable[..., Any] | None = None,
+    purpose: str = "index",
 ) -> AsrResult:
-    """Transcribe any audio file (the job-level :func:`transcribe` and the QA round-trip use this).
+    """Transcribe any audio file (the job-level :func:`transcribe`, the fill pass and the QA round-trip use this).
 
     ``provider``: ``None``/``"auto"`` (Scribe v2, then AssemblyAI on failure), ``"elevenlabs"`` or
-    ``"assemblyai"`` (no fallback). Raw responses are cached in ``cache_dir`` when given.
+    ``"assemblyai"`` (no fallback). Raw responses are cached in ``cache_dir`` when given. Every provider
+    attempt is reported to ``on_event("asr", ...)`` with ``purpose`` (one of :data:`ASR_PURPOSES`),
+    ``audio_seconds``, ``provider``, ``model``, ``cached`` and ``status`` (``ok`` | ``failed``) so the job's
+    trace can be priced (see the module docstring, *Accounting*).
     """
     settings = settings or get_settings()
+    if purpose not in ASR_PURPOSES:
+        raise ValueError(f"unknown ASR purpose {purpose!r} (use one of {', '.join(ASR_PURPOSES)})")
     audio = Path(audio_path)
     if not audio.is_file():
         raise AsrError(f"audio file not found: {audio}")
@@ -796,6 +812,7 @@ def transcribe_file(
             duration_us = round(inf.frames * 1_000_000 / inf.samplerate) if inf.samplerate else None
         except RuntimeError:
             duration_us = None
+    audio_seconds = round(duration_us / 1e6, 3) if duration_us is not None else None
     order, fallthrough = _provider_order(provider, settings)
     terms = sanitize_keyterms(keyterms)
     cdir = Path(cache_dir) if cache_dir is not None else None
@@ -813,7 +830,8 @@ def transcribe_file(
                 msg = str(redact(str(e), settings.secret_values()))[:600]
                 failures.append({"provider": name, "error": msg})
                 if on_event:
-                    on_event("asr", provider=name, status="failed", error=msg)
+                    on_event("asr", provider=name, status="failed", purpose=purpose, audio_seconds=audio_seconds,
+                             error=msg)
                 if not fallthrough:
                     if isinstance(e, MissingKeyError):
                         raise
@@ -822,7 +840,7 @@ def transcribe_file(
             if failures:
                 info.params["fallback_from"] = failures
             if on_event:
-                on_event("asr", status="ok", **trace)
+                on_event("asr", status="ok", purpose=purpose, audio_seconds=audio_seconds, **trace)
             return AsrResult(words=words, asr=info, language=info.language)
     finally:
         f = flac_holder.get("flac")
@@ -874,7 +892,7 @@ def transcribe(
     # times are clamped to the dialogue track's own length (the clock the ASR saw)
     res = transcribe_file(
         audio, provider=provider, keyterms=keyterms, settings=settings, language=language,
-        num_speakers=num_speakers, cache_dir=job.index_dir, refresh=refresh, on_event=on_event,
+        num_speakers=num_speakers, cache_dir=job.index_dir, refresh=refresh, on_event=on_event, purpose="index",
     )
     if res.asr.raw_path:
         try:

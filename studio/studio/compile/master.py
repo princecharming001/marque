@@ -10,12 +10,16 @@ render stages' outputs into the delivery files in the render dir (the timeline i
 * **One 8-bit conversion** — 10-bit 4:4:4 → 8-bit 4:2:0 with zscale (spline36 chroma filter, MPEG-2
   "left" chroma siting, error-diffusion dither), which keeps gradients (skies, walls, soft backgrounds)
   from banding after the platform re-encode.
-* **Video encode** — x264 High, yuv420p, BT.709 primaries/transfer/matrix, TV range, CRF 15, preset
-  ``veryslow`` (previews: ``faster``), closed GOP with ``keyint = min-keyint = fps/2`` and no scene-cut
-  keyframes (YouTube's spec: "closed GOP, GOP of half the frame rate, 2 consecutive B-frames"),
-  ``bframes=2``, ``aq-mode=3`` (variance AQ biased to dark areas: less banding in shadows at 8-bit), VBV
-  capped at 25 Mbps — and for Reels at ``0.9 x 300 MB / duration`` so long takes stay under Instagram's
-  300 MB API limit. Platforms whose caps coincide share one encode.
+* **Video encode** — x264 High, yuv420p, BT.709 primaries/transfer/matrix, TV range, closed GOP with
+  ``keyint = min-keyint = fps/2`` and no scene-cut keyframes (YouTube's spec: "closed GOP, GOP of half the
+  frame rate, 2 consecutive B-frames"), ``bframes=2``, ``aq-mode=3`` (variance AQ biased to dark areas: less
+  banding in shadows at 8-bit), VBV capped at 25 Mbps — and for Reels at ``0.9 x 300 MB / duration`` so long
+  takes stay under Instagram's 300 MB API limit. Platforms whose caps coincide share one encode. Three
+  **render profiles** pick the quality/compute point and nothing else (the GOP, VBV and colour tags above are
+  invariant 10's and never change): ``final`` = CRF 15 preset ``veryslow`` (the reviewed Director/Pro edit);
+  ``standard`` = CRF 16 preset ``medium`` (the standard tier: ~5.8 CPU-s per output second against 33.4 for
+  ``veryslow``, measured on the QA edits, at a difference the platform re-encode cannot show); ``preview`` =
+  CRF 20 preset ``faster`` with no VBV cap (the Director's working previews).
 * **Mux without edit lists** — Instagram requires "no edit lists" and YouTube advises against them, so
   files are written with ``-use_editlist 0``. The two things an edit list would normally hide are
   handled explicitly: B-frame reordering uses ISO/IEC 14496-12 version-1 ``ctts`` (negative composition
@@ -48,7 +52,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
@@ -62,8 +66,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from studio.jobs import Job
     from studio.perception.index import TakeIndex
 
-__all__ = ["MasterResult", "master", "render_document", "PLATFORM_PROFILES", "aac_encoder", "aac_priming",
-           "encode_settings", "choose_cover_time", "write_srt"]
+__all__ = ["MasterResult", "master", "render_document", "PLATFORM_PROFILES", "RENDER_PROFILES", "RenderProfile",
+           "aac_encoder", "aac_priming", "encode_settings", "render_profile", "choose_cover_time", "write_srt"]
 
 #: Delivery profiles (``skills/editing/platforms.md``): 25 Mbps VBV everywhere; Reels also 0.9 x 300 MB.
 PLATFORM_PROFILES: dict[str, dict[str, Any]] = {
@@ -71,8 +75,13 @@ PLATFORM_PROFILES: dict[str, dict[str, Any]] = {
     "reels": {"maxrate_bps": 25_000_000, "file_cap_bytes": 300_000_000},
     "shorts": {"maxrate_bps": 25_000_000, "file_cap_bytes": None},
 }
-CRF_FINAL = 15
-CRF_PREVIEW = 20
+RenderProfile = Literal["final", "standard", "preview"]
+#: render profile -> (x264 preset, CRF); see the module docstring. Everything else in the encode is shared.
+RENDER_PROFILES: dict[str, tuple[str, int]] = {"final": ("veryslow", 15), "standard": ("medium", 16),
+                                               "preview": ("faster", 20)}
+CRF_FINAL = RENDER_PROFILES["final"][1]
+CRF_STANDARD = RENDER_PROFILES["standard"][1]
+CRF_PREVIEW = RENDER_PROFILES["preview"][1]
 AUDIO_BITRATE = "320k"
 _KNOWN_PRIMING = {"aac": 1024, "aac_at": 2112, "libfdk_aac": 2048}
 
@@ -176,15 +185,33 @@ def _keyint(fps: Fraction) -> int:
     return max(1, round_fraction(fps / 2))
 
 
-def encode_settings(platform: str, duration_s: float, fps: Fraction, *, preview: bool = False) -> dict[str, Any]:
-    """x264 settings for a deliverable (see module docstring)."""
+def render_profile(profile: str | None = None, *, preview: bool = False) -> str:
+    """The render profile name from the two spellings callers use: ``profile=`` (``final`` | ``standard`` |
+    ``preview``) and the older ``preview=True`` flag, which is an alias for ``profile="preview"`` and wins when both
+    are given. Raises ``ValueError`` on an unknown name."""
+    if preview:
+        return "preview"
+    name = (profile or "final").strip().lower()
+    if name not in RENDER_PROFILES:
+        raise ValueError(f"unknown render profile {profile!r} (one of {', '.join(RENDER_PROFILES)})")
+    return name
+
+
+def encode_settings(platform: str, duration_s: float, fps: Fraction, *, profile: str = "final",
+                    preview: bool = False) -> dict[str, Any]:
+    """x264 settings for a deliverable (see module docstring). ``profile`` picks preset and CRF
+    (:data:`RENDER_PROFILES`); the GOP, B-frames and VBV cap are the platform's and identical for ``final`` and
+    ``standard`` (``preview`` drops the cap). ``preview=True`` is kept as an alias for ``profile="preview"``."""
+    name = render_profile(profile, preview=preview)
+    preset, crf = RENDER_PROFILES[name]
     k = _keyint(fps)
     prof = PLATFORM_PROFILES.get(platform, PLATFORM_PROFILES["tiktok"])
-    maxrate = None if preview else int(prof["maxrate_bps"])
-    if not preview and prof.get("file_cap_bytes") and duration_s > 0:
+    capped = name != "preview"
+    maxrate = int(prof["maxrate_bps"]) if capped else None
+    if capped and prof.get("file_cap_bytes") and duration_s > 0:
         maxrate = min(maxrate or 10**12, int(0.9 * prof["file_cap_bytes"] * 8 / duration_s))
-    return {"preset": "faster" if preview else "veryslow", "crf": CRF_PREVIEW if preview else CRF_FINAL,
-            "keyint": k, "bframes": 2, "maxrate": maxrate, "bufsize": (2 * maxrate) if maxrate else None}
+    return {"profile": name, "preset": preset, "crf": crf, "keyint": k, "bframes": 2, "maxrate": maxrate,
+            "bufsize": (2 * maxrate) if maxrate else None}
 
 
 def _x264_args(st: dict[str, Any]) -> list[str]:
@@ -445,16 +472,19 @@ PathLike = str | os.PathLike[str]
 def master(job: Job | None, aroll: PathLike, overlays: PathLike | None, mix: PathLike | AudioRender,
            mix_nomusic: PathLike | None = None, platform: str | Sequence[str] = "tiktok", *,
            timeline: Timeline | None = None, render_dir: PathLike | None = None, preview: bool = False,
-           index: TakeIndex | None = None) -> MasterResult:
+           index: TakeIndex | None = None, profile: str = "final") -> MasterResult:
     """Composite ``overlays`` (ProRes 4444 + alpha, or None) onto ``aroll`` once and encode
     ``final_<platform>.mp4`` for every platform in ``platform`` (a name or a list), plus
     ``final_nomusic.mp4`` (from ``mix_nomusic``), ``cover.jpg`` and ``captions.srt``.
 
     ``mix`` is ``mix.wav`` (or the :class:`~studio.compile.audio.AudioRender`, which also supplies
     ``mix_nomusic``). ``timeline`` defaults to ``timeline.json`` next to the A-roll and ``render_dir`` to
-    the A-roll's directory. ``preview`` keeps the A-roll's (preview) size and uses the fast preset.
-    Returns the paths as a :class:`MasterResult`."""
+    the A-roll's directory. ``profile`` (``final`` | ``standard`` | ``preview``, see :func:`encode_settings`)
+    picks the encode's preset and CRF; ``preview`` (an alias for ``profile="preview"``) also keeps the A-roll's
+    (preview) size and skips the caption-free cover layer. Returns the paths as a :class:`MasterResult`."""
     t0 = time.monotonic()
+    profile = render_profile(profile, preview=preview)
+    preview = profile == "preview"
     aroll = Path(aroll)
     overlays = Path(overlays) if overlays is not None else None
     if not isinstance(mix, (str, os.PathLike)):  # an AudioRender
@@ -497,7 +527,7 @@ def master(job: Job | None, aroll: PathLike, overlays: PathLike | None, mix: Pat
     encodes: dict[tuple[Any, ...], Path] = {}
     per_platform: dict[str, Path] = {}
     for plat in platforms:
-        st = encode_settings(plat, dur_s, fps, preview=preview)
+        st = encode_settings(plat, dur_s, fps, profile=profile)
         key = (st["preset"], st["crf"], st["keyint"], st["maxrate"])
         if key not in encodes:
             vid = rd / f"_video_{len(encodes)}.mp4"
@@ -573,7 +603,7 @@ def master(job: Job | None, aroll: PathLike, overlays: PathLike | None, mix: Pat
     if overlays is not None:
         result.extras["overlays"] = overlays
     if job is not None:
-        job.trace("render", stage="master", preview=preview, platforms=platforms,
+        job.trace("render", stage="master", preview=preview, profile=profile, platforms=platforms,
                   seconds=round(time.monotonic() - t0, 2), aac=enc, priming=priming,
                   finals={k: str(v) for k, v in result.finals.items()})
     return result
@@ -612,15 +642,19 @@ def _verify_delivery(path: Path, timeline: Timeline, size: tuple[int, int]) -> N
 
 # ============================================================================================ render_document
 def render_document(job: Job, doc: CutDocument, index: TakeIndex, *, preview: bool = False,
-                    aroll_codec: str | None = None) -> MasterResult:
+                    aroll_codec: str | None = None, profile: str = "final") -> MasterResult:
     """Full render of one document version into a new ``renders/r{n}/`` (compile → A-roll → overlays →
-    audio → master). ``aroll_codec``: ``prores_hq`` (default) or ``lean`` (the disk-budget intermediate)."""
+    audio → master). ``aroll_codec``: ``prores_hq`` (default) or ``lean`` (the disk-budget intermediate).
+    ``profile`` (``final`` | ``standard`` | ``preview``) is threaded to the master encode and recorded in
+    ``render.json``; ``preview=True`` is the alias for ``profile="preview"`` (the 540x960 proxy render)."""
     from studio.compile import audio as audio_mod
     from studio.compile import overlays as overlays_mod
     from studio.compile import timeline as timeline_mod
     from studio.compile import video as video_mod
 
     t0 = time.monotonic()
+    profile = render_profile(profile, preview=preview)
+    preview = profile == "preview"
     rd = job.new_render_dir()
     # The compiler places captions once (captions.build_caption_pages: the strictest safe zone over all the
     # document's deliverables, honouring the Director's per-page positions). A second placement pass here
@@ -633,10 +667,11 @@ def render_document(job: Job, doc: CutDocument, index: TakeIndex, *, preview: bo
     ovl = overlays_mod.render_overlays(job, timeline, rd, preview=preview, index=index, platforms=platforms)
     aud = audio_mod.render_audio(job, doc, timeline, rd, preview=preview, index=index)
     result = master(job, aroll, ovl, aud.mix, aud.mix_nomusic, platforms, timeline=timeline, render_dir=rd,
-                    preview=preview, index=index)
+                    profile=profile, index=index)
     result.extras["timeline"] = tl_path
     manifest = {
-        "doc_version": doc.version, "job_id": job.id, "preview": preview, "frames": timeline.frame_count,
+        "doc_version": doc.version, "job_id": job.id, "preview": preview, "profile": profile,
+        "frames": timeline.frame_count,
         "fps": f"{timeline.fps.numerator}/{timeline.fps.denominator}", "duration": float(timeline.duration),
         "finals": {k: v.name for k, v in result.finals.items()},
         "nomusic": result.nomusic.name if result.nomusic else None,

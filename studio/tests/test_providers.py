@@ -698,3 +698,75 @@ def test_haiku_and_sonnet_5_5_capabilities_follow_the_api_not_the_stale_profile(
     assert "budget_tokens" not in str(ms)
     s = pv.capabilities_for("anthropic", "claude-sonnet-5-5")
     assert not s.forced_tool_choice and s.server_fallbacks and s.adaptive_thinking
+
+
+# ============================================================================================ planner role
+def test_planner_role_house_spec_and_byok(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The standard tier's planner is a role like the others: house Sonnet 5.5 at ``low`` (Settings), BYOK through
+    ``spec_from_cli(role="planner")`` with the planner's effort default, never the Director's ``max``."""
+    assert pv.ROLE_EFFORT["planner"] == "low"
+    s = _settings(tmp_path, ANTHROPIC_API_KEY=FAKE_ANT)
+    p = pv.house_spec("planner", settings=s)
+    assert (p.provider, p.model, p.effort) == ("anthropic", "claude-sonnet-5-5", "low")
+    assert p.api_key == FAKE_ANT and not p.byok and p.capabilities.adaptive_thinking
+    s2 = _settings(tmp_path, ANTHROPIC_API_KEY=FAKE_ANT, STUDIO_PLANNER_MODEL="claude-haiku-5-5",
+                   STUDIO_PLANNER_EFFORT="medium")
+    p2 = pv.house_spec("planner", settings=s2)
+    assert (p2.model, p2.effort) == ("claude-haiku-5-5", "medium")
+    # the Director's settings are untouched by the planner's
+    assert pv.house_spec("director", settings=s2).effort == "max"
+    # BYOK: the key comes from the named env var, the effort from the planner's default (not the Director's)
+    monkeypatch.setenv("CREATOR_KEY", FAKE_ANT)
+    byok = pv.spec_from_cli("anthropic", "claude-haiku-5-5", "CREATOR_KEY", settings=s, role="planner")
+    assert byok.byok and byok.effort == "low" and byok.api_key == FAKE_ANT and not byok.uses_server_fallbacks()
+    assert pv.spec_from_cli("anthropic", "claude-haiku-5-5", None, settings=s2, role="planner").effort == "medium"
+    assert pv.spec_from_cli("anthropic", "m", None, settings=s2, role="planner", effort="high").effort == "high"
+    assert pv.spec_from_cli("anthropic", "m", None, settings=s).effort == "max"  # the Director default is unchanged
+    with pytest.raises(ValueError, match="STUDIO_PLANNER_BASE_URL"):
+        pv.spec_from_cli("openai_compat", "m", None, settings=s, role="planner")
+
+
+def test_planner_calls_use_a_5m_cache_ttl_and_effort_low_without_budget_tokens() -> None:
+    """One call and at most one retry seconds later: a 1h cache write (2x input) would only make the cheap tier dearer,
+    so the planner writes at 5m (1.25x). Every other role keeps CACHE_TTL. Sonnet/Haiku 5.5 think adaptively, so the
+    settings carry ``output_config.effort`` and never ``budget_tokens`` (a 400)."""
+    assert pv.CACHE_TTL == "1h" and pv.PLANNER_CACHE_TTL == "5m"
+    assert pv.cache_ttl_for("planner") == "5m"
+    assert all(pv.cache_ttl_for(r) == "1h" for r in ("director", "critic", "watcher", "helper", None))
+    for model in ("claude-sonnet-5-5", "claude-haiku-5-5"):
+        spec = ModelSpec(provider="anthropic", model=model, effort="low")
+        ms = pv.model_settings(spec, "planner")
+        assert ms["anthropic_cache_instructions"] == "5m" and ms["anthropic_cache_tool_definitions"] == "5m"
+        assert ms["anthropic_cache"] == "5m"
+        assert ms["anthropic_effort"] == "low" and ms["anthropic_thinking"] == {"type": "adaptive",
+                                                                                 "display": "summarized"}
+        assert "budget_tokens" not in str(ms) and ms["timeout"] == 600.0
+        # the same spec for another role is written at 1h
+        assert pv.model_settings(spec, "critic")["anthropic_cache"] == "1h"
+    # an unset effort takes the role default
+    unset = pv.model_settings(ModelSpec(provider="anthropic", model="claude-sonnet-5-5"), "planner")
+    assert unset["anthropic_effort"] == "low" and unset["anthropic_cache"] == "5m"
+    assert pv.model_settings(ModelSpec(provider="anthropic", model="claude-opus-5-5"), "director")["anthropic_cache"] \
+        == "1h"
+
+
+def test_traced_planner_call_records_its_cache_ttl(tmp_path: Path) -> None:
+    """Cost accounting prices cache writes by TTL: the trace says which TTL a call was written with, so planner
+    writes can be priced at 1.25x and the Director's at 2x."""
+    job = _job(tmp_path)
+
+    def fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart("ok")], usage=RequestUsage(input_tokens=9, output_tokens=2))
+
+    spec = ModelSpec(provider="anthropic", model="claude-sonnet-5-5", effort="low", api_key=FAKE_ANT)
+    planner = pv.TracedModel(FunctionModel(fn), job=job, role="planner", spec=spec, stage="plan")
+    Agent(planner).run_sync("plan")
+    director = pv.TracedModel(FunctionModel(fn), job=job, role="director", spec=spec, stage="story")
+    Agent(director).run_sync("story")
+    recs = [r for r in job.read_trace() if r["event"] == "model_call"]
+    assert [(r["role"], r["cache_ttl"], r["effort"]) for r in recs] == [("planner", "5m", "low"),
+                                                                        ("director", "1h", "low")]
+    other = pv.TracedModel(FunctionModel(fn), job=job, role="planner",
+                           spec=ModelSpec(provider="openai", model="gpt-5.5", api_key=FAKE_OAI))
+    Agent(other).run_sync("x")
+    assert [r for r in job.read_trace() if r["event"] == "model_call"][-1]["cache_ttl"] is None

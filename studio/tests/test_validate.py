@@ -207,3 +207,76 @@ def test_never_raises_on_unknown_ids(cut_doc: CutDocument, take_index: TakeIndex
     d.inserts[0].anchor_from_word = "w7777"
     fs = validate_document(d, take_index)
     assert has_errors(fs)
+
+
+# ---------------------------------------------------------------------------------------------- radio blockers
+# The listener-level story gate the Director's radio_test and story exit test use, shared with the standard tier.
+# Cases mirror tests/test_cutoff_joins.py and tests/test_director.py::test_story_radio_test_blockers.
+def _cut(ix: TakeIndex, *ids: str, truncated: str | None = None) -> TakeIndex:
+    words = [w.model_copy(update={"kind": "cutoff", "truncated": truncated}) if w.id in ids else w for w in ix.words]
+    return ix.model_copy(update={"words": words})
+
+
+def _story(ix: TakeIndex, *ranges: tuple[str, str]) -> CutDocument:
+    return CutDocument(segments=[Segment(id=f"seg{k:03d}", from_word=a, to_word=b)
+                                 for k, (a, b) in enumerate(ranges, start=1)])
+
+
+def test_radio_blockers_is_public(cut_doc: CutDocument, take_index: TakeIndex):
+    from studio.doc import validate
+
+    assert "radio_blockers" in validate.__all__ and "describe_cutoff_at_join" in validate.__all__
+    assert validate.radio_blockers(cut_doc, take_index) == []  # the fixture document passes
+
+
+def test_radio_blockers_name_a_cutoff_at_a_seam(cut_doc: CutDocument, take_index: TakeIndex):
+    from studio.doc.validate import radio_blockers
+
+    ix = _cut(take_index, "w0008")  # seg001 ends on it, seg002 starts at w0014: a true seam
+    [b] = radio_blockers(cut_doc, ix)
+    assert b.startswith("cut-off word w0008") and "seg001 ends on it" in b and "jumps to w0014" in b
+    assert "cut_words w0008 w0008" in b and "w0007" in b and "invariant 1" in b
+    ix = _cut(take_index, "w0014")
+    [b] = radio_blockers(cut_doc, ix)
+    assert "w0014" in b and "seg002 starts on it" in b and "after the jump from w0008" in b
+
+
+def test_radio_blockers_name_a_cutoff_at_the_story_edge(take_index: TakeIndex):
+    from studio.doc.validate import radio_blockers
+
+    # the story ends on the false start's cut-off word (fixture w0013 'restr-')
+    out = radio_blockers(_story(take_index, ("w0001", "w0013")), take_index)
+    assert len(out) == 1 and "cut-off word w0013 'restr-'" in out[0] and "at the edge of the story" in out[0]
+    # the same fragment inside continuous kept speech is a judgment call, not a blocker
+    assert radio_blockers(_story(take_index, ("w0001", "w0018")), take_index) == []
+
+
+def test_radio_blockers_name_missing_pins(cut_doc: CutDocument, take_index: TakeIndex):
+    from studio.doc.validate import radio_blockers
+
+    d = cut_doc.model_copy(deep=True)
+    d.segments = [s for s in d.segments if s.id != "seg002"]  # drops the payoff w0018
+    assert radio_blockers(d, take_index) == ["pinned payoff/CTA words are not in the story: w0018"]
+    d.segments = [s for s in d.segments if s.id != "seg004"]  # and the CTA w0032 w0033
+    assert radio_blockers(d, take_index) == ["pinned payoff/CTA words are not in the story: w0018, w0032, w0033"]
+
+
+def test_radio_blockers_name_chopped_words_once(cut_doc: CutDocument, take_index: TakeIndex):
+    from studio.doc.validate import radio_blockers
+
+    # a dropout-chopped word inside continuous speech is still a blocker (the chopped audio plays)
+    [b] = radio_blockers(cut_doc, _cut(take_index, "w0005", truncated="end"))
+    assert b.startswith("words the recording itself chops") and "w0005 'videos-'" in b and "invariant 1" in b
+    # chopped at a join: named as the cut-off at the join, not again as a chopped word
+    out = radio_blockers(cut_doc, _cut(take_index, "w0008", truncated="end"))
+    assert len(out) == 1 and out[0].startswith("cut-off word w0008") and "chops" not in out[0]
+    # a chopped word that is not kept is nobody's problem
+    assert radio_blockers(cut_doc, _cut(take_index, "w0010", truncated="start")) == []
+
+
+def test_radio_blockers_list_at_most_eight_words_per_kind(cut_doc: CutDocument, take_index: TakeIndex):
+    from studio.doc.validate import radio_blockers
+
+    ids = [f"w{n:04d}" for n in range(21, 31)]  # ten kept words inside seg003/seg004, none at a join
+    [b] = radio_blockers(cut_doc, _cut(take_index, *ids, truncated="both"))
+    assert all(w in b for w in ids[:8]) and ids[8] not in b and ids[9] not in b

@@ -7,6 +7,7 @@ and a pause target trimmed it to "cui- … -two".
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import numpy as np
@@ -138,6 +139,58 @@ def test_quiet_sound_is_never_sent_to_asr(fill_job, monkeypatch) -> None:
     monkeypatch.setattr(T, "transcribe_file", boom)
     extra, report = F.fill_untranscribed(job, refined, gaps)
     assert extra == [] and all(r.get("skipped") for r in report)
+
+
+def test_fill_excerpts_are_traced_as_asr_events_with_purpose_fill(fill_job, monkeypatch) -> None:
+    """Each excerpt is a billed call: the fill pass hands the job's tracer to the transcriber with purpose ``fill``
+    so the cost report can price the second pass (studio.agent.cost)."""
+    job, words = fill_job
+    refined = G.refine_word_boundaries(job, words)
+    gaps = G.detect_gaps(job, refined)
+    import studio.perception.transcribe as T
+
+    def fake_transcribe_file(path, **kw):
+        assert kw["purpose"] == "fill" and kw["on_event"] is not None
+        info = sf.info(str(path))
+        kw["on_event"]("asr", status="ok", provider="elevenlabs", model="scribe_v2", cached=False,
+                       purpose=kw["purpose"], audio_seconds=round(info.frames / info.samplerate, 3), words=0)
+        return AsrResult(words=[], asr=AsrInfo(provider="elevenlabs", model="scribe_v2"))
+
+    monkeypatch.setattr(T, "transcribe_file", fake_transcribe_file)
+    _extra, report = F.fill_untranscribed(job, refined, gaps)
+    sent = [r for r in report if "skipped" not in r]
+    events = [e for e in job.read_trace() if e.get("event") == "asr"]
+    assert len(events) == len(sent) == 2
+    assert all(e["purpose"] == "fill" and e["stage"] == "index" and e["step"] == "fill_untranscribed" for e in events)
+    assert [e["gap_id"] for e in events] == [r["gap_id"] for r in sent]
+    # the excerpt is the stretch, its context words and the lead/tail silence: seconds, never the whole take
+    assert [e["audio_seconds"] for e in events] == pytest.approx([r["excerpt_s"] + 2 * F.LEAD_SILENCE_S for r in sent],
+                                                                 abs=0.01)
+    assert all(F.MIN_EXCERPT_S <= e["audio_seconds"] < 5.0 for e in events)
+    # the excerpt file is byte-identical across seconds (no wall-clock PEAK chunk): the transcriber's raw-response
+    # cache keys on its SHA-256, so a re-run of the index re-parses instead of paying for the excerpt again
+    out = job.index_dir / "fill" / "determinism.wav"
+    F._excerpt(job, sent[0]["start_us"], sent[0]["end_us"], out)
+    first = out.read_bytes()
+    time.sleep(1.1)
+    F._excerpt(job, sent[0]["start_us"], sent[0]["end_us"], out)
+    assert out.read_bytes() == first and sf.info(str(out)).subtype == "FLOAT"
+
+
+def test_sub_second_excerpts_are_not_sent_to_asr(fill_job, monkeypatch) -> None:
+    """Without neighbouring words to carry it, a short stretch would be a sub-second call billed as a minute of
+    audio for at most a syllable: skipped, reported, left to the gap stage to mark."""
+    job, words = fill_job
+    refined = G.refine_word_boundaries(job, words)
+    gaps = G.detect_gaps(job, refined)
+    monkeypatch.setattr(F, "CONTEXT_US", 0)  # no context words: the excerpt is the stretch alone (0.5-0.7 s here)
+    import studio.perception.transcribe as T
+
+    monkeypatch.setattr(T, "transcribe_file", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no ASR")))
+    extra, report = F.fill_untranscribed(job, refined, gaps)
+    assert extra == [] and len(report) == 2
+    assert all(r["skipped"] == "excerpt shorter than 1 s" and r["excerpt_s"] < F.MIN_EXCERPT_S for r in report)
+    assert not [e for e in job.read_trace() if e.get("event") == "asr"]
 
 
 def test_unvoiced_sound_is_never_sent_to_asr(fill_job, monkeypatch) -> None:

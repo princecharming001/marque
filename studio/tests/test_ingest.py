@@ -25,9 +25,13 @@ from studio.config import Settings
 from studio.jobs import Job
 from studio.media import ingest as ingest_mod
 from studio.media.ingest import (
+    FLAG_CONFORM,
     IngestError,
     IngestOptions,
     ToneMapConfig,
+    conform_fps,
+    conform_media_info,
+    conform_size,
     dialogue_downmix,
     estimate_mezz_bytes,
     ingest,
@@ -559,7 +563,8 @@ def ingested(mod_settings: Settings):
         if name not in cache:
             job = Job.create(name, work_dir=mod_settings.work_dir)
             opts.setdefault("min_free_bytes", 64 << 20)  # the shared test machine runs close to a full disk
-            info = ingest(src, job, settings=mod_settings, options=IngestOptions(**opts))
+            caps = {k: opts.pop(k) for k in ("max_height", "max_fps") if k in opts}  # ingest()'s own keywords
+            info = ingest(src, job, settings=mod_settings, options=IngestOptions(**opts), **caps)
             cache[name] = (job, info)
         return cache[name]
 
@@ -1036,3 +1041,168 @@ def test_preroll_when_speech_starts_on_the_first_frame(tmp_path: Path, mod_setti
     off = ingest(src, Job.create("no-preroll", work_dir=tmp_path / "work"), settings=mod_settings,
                  options=IngestOptions(mezz_codec="prores", proxy=False, preroll_s=0.0, min_free_bytes=64 << 20))
     assert off.frame_count == 120 and not has_flag(off, FLAG_PREROLL)
+
+
+# ============================================================================================ conform (standard tier)
+class TestConform:
+    """``ingest(max_height=, max_fps=)``: the standard tier's smaller mezzanine, computed on MediaInfo alone."""
+
+    @pytest.mark.parametrize(("w", "h", "cap", "exp"), [
+        (2160, 3840, 1920, (1080, 1920)),  # 4K portrait → the delivery canvas
+        (3840, 2160, 1080, (1920, 1080)),  # 4K landscape, capped at the canvas width
+        (3024, 4032, 1920, (1440, 1920)),  # 4:3 portrait keeps its aspect
+        (1080, 1920, 1920, (1080, 1920)),  # already at the cap: untouched
+        (720, 1280, 1920, (720, 1280)),  # never upscaled
+        (1080, 1920, None, (1080, 1920)),
+        (1081, 1921, 1920, (1080, 1920)),  # even dimensions
+    ])
+    def test_conform_size(self, w, h, cap, exp):
+        assert conform_size(w, h, cap) == exp
+
+    @pytest.mark.parametrize(("fps", "cap", "exp"), [
+        (Fraction(60), 30, Fraction(30)), (Fraction(60000, 1001), 30, Fraction(30000, 1001)),
+        (Fraction(50), 30, Fraction(25)), (Fraction(120), 30, Fraction(30)), (Fraction(48), 30, Fraction(24)),
+        (Fraction(30000, 1001), 30, Fraction(30000, 1001)), (Fraction(24), 30, Fraction(24)),
+        (Fraction(25), 30, Fraction(25)), (Fraction(60), None, Fraction(60)), (Fraction(60), Fraction(30), 30),
+    ])
+    def test_conform_fps_drops_whole_frames(self, fps, cap, exp):
+        assert conform_fps(fps, cap) == exp
+
+    def test_conform_errors(self):
+        with pytest.raises(ValueError):
+            conform_size(0, 10, 1920)
+        with pytest.raises(ValueError):
+            conform_size(100, 200, 1)
+        with pytest.raises(ValueError):
+            conform_fps(Fraction(60), 0)
+
+    def test_conform_media_info_records_source_and_keeps_duration(self):
+        mi = _mi(width=2160, height=3840, coded_width=2160, coded_height=3840, fps=Fraction(60),
+                 display_aspect=Fraction(9, 16), duration_us=2_016_667, nb_frames=121)
+        assert mi.frame_count == 121
+        c = conform_media_info(mi, max_height=1920, max_fps=30)
+        assert (c.width, c.height, c.fps, c.duration_us) == (1080, 1920, Fraction(30), 2_016_667)
+        assert c.frame_count == 61 and c.conformed and c.display_aspect == Fraction(9, 16)
+        rec = c.conform
+        assert rec is not None and (rec.source_width, rec.source_height, rec.source_fps) == (2160, 3840, 60)
+        assert (rec.width, rec.height, rec.fps, rec.max_height, rec.max_fps) == (1080, 1920, 30, 1920, 30)
+        assert rec.downscaled and rec.decimated and rec.describe() == "2160x3840@60 → 1080x1920@30"
+        # json round trip (media_info.json, the Take Index)
+        again = MediaInfo.model_validate_json(c.model_dump_json())
+        assert again == c and again.conform is not None and again.conform.fps == Fraction(30)
+        # only one cap biting
+        fps_only = conform_media_info(mi, max_fps=30)
+        assert (fps_only.width, fps_only.height, fps_only.fps) == (2160, 3840, 30)
+        assert fps_only.conform is not None and not fps_only.conform.downscaled and fps_only.conform.decimated
+        size_only = conform_media_info(mi, max_height=1920)
+        assert (size_only.width, size_only.fps) == (1080, 60) and size_only.conform.downscaled
+        assert not size_only.conform.decimated
+
+    def test_conform_media_info_is_identity_when_nothing_bites(self):
+        mi = _mi(width=1080, height=1920, fps=Fraction(30))
+        assert conform_media_info(mi) is mi
+        assert conform_media_info(mi, max_height=1920, max_fps=30) is mi
+        assert conform_media_info(mi, max_height=2160, max_fps=Fraction(60)) is mi
+        assert mi.conform is None and not mi.conformed
+        # an old media_info.json without the field still loads
+        d = json.loads(mi.model_dump_json())
+        d.pop("conform")
+        assert MediaInfo.model_validate(d).conform is None
+
+    def test_filter_resizes_once_in_zscale(self):
+        mi = conform_media_info(_mi(width=2160, height=3840, fps=Fraction(60)), max_height=1920, max_fps=30)
+        vf = mezz_video_filter(mi)
+        parts = vf.split(",")
+        assert "fps=fps=30/1:round=near" in parts and parts.count("setsar=1") == 1
+        zs = [p for p in parts if p.startswith("zscale=")]
+        assert len(zs) == 1 and zs[0].endswith(":w=1080:h=1920") and "f=spline36" in zs[0]
+        assert vf.count(":w=") == 1 and "scale=" not in vf.replace("zscale=", "")
+        # the untouched default graph has no resize at all
+        assert ":w=" not in mezz_video_filter(_mi()) and "setsar" not in mezz_video_filter(_mi())
+        # fps-only conform: no resize, only the rate
+        f2 = mezz_video_filter(conform_media_info(_mi(fps=Fraction(60)), max_fps=30))
+        assert "fps=fps=30/1" in f2 and ":w=" not in f2
+
+    def test_hdr_conform_still_tonemaps_once(self):
+        hdr = _mi(width=2160, height=3840, fps=Fraction(60),
+                  color=ColorInfo(primaries="bt2020", transfer="arib-std-b67", matrix="bt2020nc", range="tv",
+                                  pix_fmt="yuv420p10le", bit_depth=10, hdr=True, hdr_format="hlg"))
+        vf = mezz_video_filter(conform_media_info(hdr, max_height=1920, max_fps=30), peak_nits=1000.0)
+        parts = vf.split(",")
+        assert sum(p.startswith("tonemap=") for p in parts) == 1
+        zs = [p for p in parts if p.startswith("zscale=")]
+        assert len(zs) == 2 and ":w=1080:h=1920" in zs[0] and "t=linear" in zs[0]  # resized in linear light
+        assert ":w=" not in zs[1] and "dither=error_diffusion" in zs[1]
+        assert parts.index(zs[0]) < parts.index(next(p for p in parts if p.startswith("tonemap="))) < parts.index(zs[1])
+
+
+@needs_ffmpeg
+class TestIngestConform:
+    def test_caps_that_do_not_bite_still_take_the_lean_path(self, ingested, landscape_src: Path):
+        job, info = ingested("landscape_caps", landscape_src, max_height=1080, max_fps=30)
+        assert (info.width, info.height, info.fps) == (640, 360, Fraction(25)) and info.conform is None
+        assert not has_flag(info, FLAG_CONFORM) and not has_flag(info, FLAG_MEZZ_FALLBACK)
+        v = _vstream(job.mezz_path)
+        assert v["codec_name"] in ("h264", "hevc") and v["pix_fmt"] in ("yuv422p10le", "yuv422p10")
+        assert (int(v["width"]), int(v["height"]), v["r_frame_rate"]) == (640, 360, "25/1")
+        meta = job.meta["meta"]["ingest"]
+        assert meta["mezz"]["codec"] == "lean" and meta["conform"] is None and meta["verify"]["ok"] is True
+
+    def test_hlg_downscaled_and_decimated_is_tonemapped_once(self, ingested, hlg_roundtrip: Path):
+        job, info = ingested("hlg_conform", hlg_roundtrip, max_height=960, max_fps=15)
+        assert (info.width, info.height, info.fps, info.frame_count) == (540, 960, Fraction(15), 15)
+        assert info.conform is not None and info.conform.describe() == "1080x1920@30 → 540x960@15"
+        assert has_flag(info, FLAG_CONFORM) and has_flag(info, FLAG_HDR_TONEMAPPED) and info.color.hdr
+        assert job.load_media_info() == info
+        v = _vstream(job.mezz_path)
+        assert (int(v["width"]), int(v["height"]), v["r_frame_rate"], int(v["nb_frames"])) == (540, 960, "15/1", 15)
+        assert (v["color_primaries"], v["color_transfer"], v["color_space"]) == ("bt709", "bt709", "bt709")
+        assert v["codec_name"] in ("h264", "hevc")
+        meta = job.meta["meta"]["ingest"]
+        assert meta["mezz"]["codec"] == "lean" and meta["mezz"]["filter"].count(",tonemap=") == 1
+        assert ":w=540:h=960" in meta["mezz"]["filter"] and meta["mezz"]["tonemap"]["effective_param"] == 0.6
+        assert meta["conform"] == {"source_width": 1080, "source_height": 1920, "source_fps": "30/1", "width": 540,
+                                   "height": 960, "fps": "15/1", "max_height": 960, "max_fps": "15/1"}
+        assert sf.info(str(job.audio_path)).frames == frame_to_sample(15, Fraction(15)) == 48_000
+        pv = _vstream(job.proxy_path)
+        assert (int(pv["width"]), int(pv["height"]), int(pv["nb_frames"])) == (540, 960, 15)
+        # the tone map still lands on SDR values (diffuse white rolled off below clipping, mid-tones kept)
+        out = _rgb_frame(job.mezz_path, 5, 540, 960)
+        assert np.isfinite(out).all() and 0.80 * 255 < out[40:120, 40:120].mean() < 0.97 * 255
+        ev = [e for e in job.read_trace() if e["event"] == "ingest"][-1]
+        assert ev["conform"] == "1080x1920@30 → 540x960@15" and ev["mezz_codec"] == "lean"
+
+
+@needs_ffmpeg
+@pytest.mark.slow
+def test_uhd60_portrait_downscaled_to_1080p30(ingested, src_dir: Path):
+    """The standard tier's headline case: a 2160x3840@60 upload becomes a 1080x1920@30 lean mezzanine, the
+    dialogue WAV and proxy follow the conformed grid, and MediaInfo records what the source was."""
+    if not _enough_disk(0.4):
+        pytest.skip("disk nearly full")
+    src = src_dir / "uhd60.mp4"
+    _ff(["-f", "lavfi", "-i", "testsrc2=size=2160x3840:rate=60:duration=2", "-f", "lavfi", "-i",
+         "sine=frequency=500:sample_rate=48000:duration=2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt",
+         "yuv420p", "-c:a", "aac", "-shortest", str(src)])
+    job, info = ingested("uhd60_conform", src, max_height=1920, max_fps=Fraction(30))
+    assert (info.width, info.height, info.fps, info.frame_count, info.duration_us) == (1080, 1920, Fraction(30), 60,
+                                                                                       2_000_000)
+    assert info.conform is not None and (info.conform.source_width, info.conform.source_height,
+                                         info.conform.source_fps) == (2160, 3840, Fraction(60))
+    assert info.conformed and has_flag(info, FLAG_CONFORM) and not has_flag(info, FLAG_MEZZ_FALLBACK)
+    assert job.load_media_info() == info and (info.coded_width, info.coded_height) == (2160, 3840)
+    v = _vstream(job.mezz_path)
+    assert (int(v["width"]), int(v["height"]), v["r_frame_rate"], int(v["nb_frames"])) == (1080, 1920, "30/1", 60)
+    assert v["codec_name"] in ("h264", "hevc") and v["pix_fmt"] in ("yuv422p10le", "yuv422p10")
+    assert (v["color_primaries"], v["color_transfer"], v["color_space"]) == ("bt709", "bt709", "bt709")
+    a = sf.info(str(job.audio_path))
+    assert a.frames == frame_to_sample(60, Fraction(30)) == 96_000 and a.channels == 1
+    pv = _vstream(job.proxy_path)
+    assert (int(pv["width"]), int(pv["height"]), int(pv["nb_frames"])) == (540, 960, 60)
+    meta = job.meta["meta"]["ingest"]
+    assert meta["mezz"]["codec"] == "lean" and meta["verify"]["ok"] is True
+    assert meta["conform"]["source_width"] == 2160 and meta["conform"]["fps"] == "30/1"
+    # the mezzanine is the source's picture, smaller: a frame matches the source frame downscaled
+    ref = _gray_frame(src, 30, 1080, 1920, vf_extra=",scale=1080:1920:flags=spline")  # t = 0.5 s in both
+    got = _gray_frame(job.mezz_path, 15, 1080, 1920)
+    assert np.abs(ref - got).mean() < 6.0
