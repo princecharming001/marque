@@ -656,6 +656,25 @@ def test_structure_markers_become_labels_on_kept_words(take_index: TakeIndex) ->
     assert names.index("add_text") < names.index("set_captions")
 
 
+def test_a_numbered_label_set_holds_each_label_for_its_whole_item(take_index: TakeIndex) -> None:
+    """Regression (real take40, standard tier): the planner anchored "1/3, 2/3, 3/3" on the ordinal word alone, so
+    each white label flashed for 0.8 s on a light wall. A numbered set now holds each label until the next item opens
+    and the last until the spoken CTA, on a dark pill, as the Director did (1/3 on w0025-w0058, ...)."""
+    one_word = [{"anchor_from_word": "w0014", "anchor_to_word": "w0014", "label": "1/2"},
+                {"anchor_from_word": "w0020", "anchor_to_word": "w0020", "label": "2/2"}]
+    doc, _ops, _note = plan(take_index, decision(structure_markers=one_word))
+    texts = {t.text: t for t in doc.texts}
+    assert (texts["1/2"].anchor_from_word, texts["1/2"].anchor_to_word) == ("w0014", "w0018")  # w0019 filler is cut
+    assert (texts["2/2"].anchor_from_word, texts["2/2"].anchor_to_word) == ("w0020", "w0028")  # stops at the CTA
+    assert all(t.style.background == "#1F1F1F" and t.style.size_px == 56 for t in doc.texts)
+    # the planner's CTA range wins over the lexicon's sentence; a longer range the planner named is kept
+    longer = [one_word[0], {**one_word[1], "anchor_to_word": "w0041"}]
+    doc2, _o, _n = plan(take_index, decision(structure_markers=longer, cta=rng("w0032", "w0033")))
+    assert {t.text: t.anchor_to_word for t in doc2.texts} == {"1/2": "w0018", "2/2": "w0041"}
+    doc3, _o, _n = plan(take_index, decision(structure_markers=one_word, cta=rng("w0032", "w0033")))
+    assert {t.text: t.anchor_to_word for t in doc3.texts}["2/2"] == "w0031"
+
+
 # ============================================================================================ voice / colour
 def _with_audio(ix: TakeIndex, *, duration_s: float | None = None, **audio: Any) -> TakeIndex:
     upd: dict[str, Any] = {"audio": (ix.audio or AudioMetrics()).model_copy(update=audio)}

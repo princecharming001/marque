@@ -41,7 +41,8 @@ applied with :func:`studio.doc.ops.apply_ops`; IDs only, never times):
   scale allows it and the anchor is past the hook's first seconds; it holds to the end of the anchor's sentence (at
   least ``framing.punch_hold_min_s``) and returns to base there or at the next seam, never mid-sentence.
 * ``add_text`` labels for the decision's structure markers (before the captions: the caption placer steers around
-  on-screen text, so the size check below must see them).
+  on-screen text, so the size check below must see them); a numbered set holds each label for its whole item, short
+  labels on a dark pill beside the face.
 * ``set_captions`` at one uniform size, the largest in :data:`CAPTION_SIZE_LADDER` at which every page renders on one
   line at full size, the placer's ``auto`` ladder shrinks no page, and the paging needs no more one-word pages,
   phrases broken mid-unit or pages on screen under ``min_page_s`` than at the floor size (bigger text only while it
@@ -132,6 +133,11 @@ _MIN_TRIM_MS = 100.0
 _SIDE_LABEL_MAX_CHARS = 5
 _SIDE_LABEL_POINT = Point(x=0.15, y=0.5)
 _SIDE_LABEL_PX = 56
+#: The side label's pill (the Director's take40 counters; the listicle doctrine's "counter pill"): white text on a
+#: dark fill stays legible on a light wall, where bare white text vanished.
+_SIDE_LABEL_PILL = "#1F1F1F"
+#: A numbered item label ("1/3", "Step 2", "#4"): in a numbered set each holds until the next item opens.
+_NUMBERED_LABEL = re.compile(r"(?:\d+\s*/\s*\d+|(?:step|tip|rule|#|no\.?|number)\s*\d+)", re.IGNORECASE)
 #: A page break with at least this :func:`~studio.compile.captions.line_break_cost` splits a syntactic unit
 #: (after a determiner, preposition, auxiliary, subject pronoun or conjunction; inside a number or a name).
 _BROKEN_PHRASE_COST = 2.0
@@ -838,11 +844,18 @@ def _framing_op(sc: _Scratch, decision: PlanDecision | None, consts: dict[str, A
 
 # ============================================================================================ markers
 def _marker_ops(sc: _Scratch, decision: PlanDecision | None) -> int:
+    """``add_text`` labels for the decision's structure markers, on their kept words. A numbered set ("1/3, 2/3,
+    3/3") is the listicle's item counter (``styles/educational-tutorial-listicle.md``: one identical marker per item,
+    entering on each ordinal, for the muted or re-watching viewer): each label holds from its item's first word to
+    the word before the next item opens, the last to the word before the spoken CTA (else the story's end), whatever
+    shorter range the planner named ("the words opening each item" lasted 0.8 s on take40). Short labels sit beside
+    the face on a dark pill."""
     if decision is None:
         return 0
     ix = sc.ix
     pos = sc.doc.output_positions(ix)
-    n = 0
+    order = sorted(pos, key=pos.__getitem__)
+    marks: list[tuple[str, str, str]] = []  # (label, first kept word, last kept word)
     for mk in decision.structure_markers:
         label = " ".join(mk.label.split())
         if not label or not (ix.has_word(mk.anchor_from_word) and ix.has_word(mk.anchor_to_word)):
@@ -855,11 +868,28 @@ def _marker_ops(sc: _Scratch, decision: PlanDecision | None) -> int:
         if not kept:
             sc.notes.append(f"marker {label!r} skipped: its words are not in the story")
             continue
-        op: dict[str, Any] = {"op": "add_text", "kind": "label", "text": label, "anchor_from_word": kept[0],
-                              "anchor_to_word": kept[-1], "job": "structure marker from the plan"}
+        marks.append((label, kept[0], kept[-1]))
+    if len(marks) >= 2 and all(_NUMBERED_LABEL.fullmatch(m[0]) for m in marks):
+        marks.sort(key=lambda m: pos[m[1]])
+        cta = [w for w in ((decision.cta.from_word,) if decision.cta is not None else ()) if w in pos] \
+            or [w for w in sc.doc.pins.cta_word_ids if w in pos]
+        held: list[tuple[str, str, str]] = []
+        for i, (label, first, last) in enumerate(marks):
+            if i + 1 < len(marks):
+                stop = pos[marks[i + 1][1]] - 1
+            elif cta and pos[cta[0]] > pos[first]:
+                stop = pos[cta[0]] - 1
+            else:
+                stop = len(order) - 1
+            held.append((label, first, order[stop] if stop > pos[last] else last))
+        marks = held
+    n = 0
+    for label, first, last in marks:
+        op: dict[str, Any] = {"op": "add_text", "kind": "label", "text": label, "anchor_from_word": first,
+                              "anchor_to_word": last, "job": "structure marker from the plan"}
         if len(label) <= _SIDE_LABEL_MAX_CHARS:
-            op.update(position=_SIDE_LABEL_POINT.model_dump(), style=TextStyle(size_px=_SIDE_LABEL_PX).model_dump(),
-                      animation="fade")
+            op.update(position=_SIDE_LABEL_POINT.model_dump(), animation="fade",
+                      style=TextStyle(size_px=_SIDE_LABEL_PX, background=_SIDE_LABEL_PILL).model_dump())
         if sc.push(op):
             n += 1
     return n
