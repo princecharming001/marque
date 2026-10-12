@@ -394,3 +394,11 @@ def test_a_hook_restated_in_a_kept_sentence_may_lose_either_copy(monkeypatch: py
     assert not rejections(ix, "carries the hook", hook_promise=hook, drop_sentences=drops(("s004", "repeats_hook")))
     assert rejections(ix, "carries the hook", hook_promise=hook,
                       drop_sentences=drops(("s001", "preamble"), ("s004", "repeats_hook")))
+
+
+def test_style_verbs_from_the_checklist_map_to_style_names() -> None:
+    """Real take40 and var-silences answers named the style by the checklist's verb ("understand")."""
+    d = decision(style_primary="understand", style_secondary="Hot take")
+    assert (d.style_primary, d.style_secondary) == ("explainer", "hot_take")
+    assert decision(style_primary="Listicle").style_primary == "listicle"
+    assert decision(style_primary="vlog").style_primary == "vlog"  # unknown names pass through for the default window

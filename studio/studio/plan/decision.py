@@ -28,12 +28,12 @@ import json
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from studio.perception.index import Cluster, TakeIndex
 
 __all__ = [
-    "CTA_LEXICON", "HOOK_MIN_OVERLAP", "MAX_DROP_SHARE", "MAX_EMPHASIS_WORDS", "PLAN_SCHEMA_JSON",
+    "CTA_LEXICON", "HOOK_MIN_OVERLAP", "MAX_DROP_SHARE", "MAX_EMPHASIS_WORDS", "PLAN_SCHEMA_JSON", "STYLE_ALIASES",
     "TRIM_SEAM_MIN_PAUSE_MS", "PlanDecision", "PunchIn", "Reason", "SentenceDrop", "StructureMarker", "TakeChoice",
     "TextFix", "TrimReason", "WordRange", "WordTrim", "hook_sentence_id", "is_cta_sentence", "kept_word_ids",
     "trim_problem", "validate_decision",
@@ -50,6 +50,17 @@ TRIM_SEAM_MIN_PAUSE_MS = 200.0
 HOOK_MIN_OVERLAP = 0.5
 #: A kept sentence also carries the hook when it scores at least this share of the best match (a restated hook).
 _HOOK_ALSO_CARRIED = 0.6
+
+#: The checklist's style picker explains each style by what the viewer should do; a model sometimes answers with the
+#: verb. Mapped back to the style names ``constants.yaml`` and the style files use.
+STYLE_ALIASES: dict[str, str] = {
+    "understand": "explainer", "do": "tutorial", "choose": "listicle", "feel a story": "storytime",
+    "feel": "storytime", "laugh": "comedy", "argue": "hot_take", "hot take": "hot_take", "hear an exchange":
+    "podcast_clip", "podcast clip": "podcast_clip", "buy": "sales_ugc", "sales ugc": "sales_ugc",
+    "trust a company": "founder_brand", "trust": "founder_brand", "founder brand": "founder_brand",
+}
+
+_STYLE_NAMES = frozenset(STYLE_ALIASES.values())
 
 #: Drops may remove at most this share of the take's spoken words (the planner trims, it does not rewrite).
 MAX_DROP_SHARE = 0.5
@@ -151,6 +162,18 @@ class PlanDecision(_Model):
     caption_text_fixes: list[TextFix] = Field(default_factory=list)
     structure_markers: list[StructureMarker] = Field(default_factory=list)
     notes: str = ""
+
+    @field_validator("style_primary", "style_secondary")
+    @classmethod
+    def _style_name(cls, v: str | None) -> str | None:
+        """The style's name for a verb the checklist uses to explain it ("understand" -> explainer; seen on real
+        take40 and var-silences answers): the length window and the document's style read the name."""
+        if v is None:
+            return None
+        key = " ".join(v.strip().lower().replace("_", " ").split())
+        if key.replace(" ", "_") in _STYLE_NAMES:
+            return key.replace(" ", "_")
+        return STYLE_ALIASES.get(key, v.strip())
 
 
 def _compact(node: Any) -> Any:
