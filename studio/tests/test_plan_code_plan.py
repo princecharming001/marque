@@ -841,3 +841,46 @@ def test_a_trim_cuts_the_series_label_and_the_cut_opens_on_the_claim() -> None:
     doc2, _ops2, note2 = plan(ix, bad)
     assert kept(doc2, ix)[:4] == wids(1, 4)
     assert "trim w0001-w0003 skipped" in note2 and "ends mid-clause" in note2
+
+
+def test_a_spoken_list_keeps_its_count_and_its_labels_have_no_gap() -> None:
+    """Regression (real take40, standard tier): the planner dropped the spoken "One," (its own sentence before a
+    retake) as preamble and labelled only 2/3 and 3/3, so the list ran "Two," then "Three," with no "One". The
+    validator rejects both; the Director kept "One," and labelled 1/3, 2/3, 3/3."""
+    from studio.plan.decision import _list_number, validate_decision
+
+    ix = build(S(words("I have three rules for every edit.")), S(words("One,")),
+               S(words("cut the dead air between your lines.")), S(words("Two, keep every breath you take.")),
+               S(words("Three, end on the line that lands.")), S(words("One of my favourites is that last rule.")))
+    assert [(s.id, _list_number(ix, s.id)) for s in ix.sentences if _list_number(ix, s.id)] == [
+        ("s002", (1, ["w0008"])), ("s004", (2, ["w0016"])), ("s005", (3, ["w0022"]))]  # "One of my..." is content
+
+    def rej(**over: Any) -> list[str]:
+        return validate_decision(decision(hook_promise="three rules for every edit", **over), ix)
+
+    out = rej(drop_sentences=[{"sentence_id": "s002", "reason": "preamble"}])
+    assert len(out) == 1 and out[0].startswith("drop_sentences: s002 opens list item 1") and "count breaks" in out[0]
+    # the last number goes the same way (the real take40 retry dropped "Three, the one you skip." as repeats_hook)
+    last = rej(drop_sentences=[{"sentence_id": "s005", "reason": "after_payoff"}])
+    assert len(last) == 1 and last[0].startswith("drop_sentences: s005 opens list item 3")
+    assert rej(drop_sentences=[{"sentence_id": "s006", "reason": "after_payoff"}]) == []  # not a list item
+    labels = [("w0008", "1/3"), ("w0016", "2/3"), ("w0022", "3/3")]
+
+    def marks(*pick: int) -> list[dict[str, str]]:
+        return [{"anchor_from_word": labels[i][0], "anchor_to_word": labels[i][0], "label": labels[i][1]} for i in pick]
+
+    assert rej(structure_markers=marks(0, 1, 2)) == []
+    gap = rej(structure_markers=marks(1, 2))
+    assert len(gap) == 1 and "skip 1/3" in gap[0]
+    steps = rej(structure_markers=[{"anchor_from_word": "w0016", "anchor_to_word": "w0016", "label": "Step 2"}])
+    assert len(steps) == 1 and "step 1" in steps[0]
+    # a trim of the number words breaks the count the same way
+    merged = build(S(words("I have two rules.")), S(words("One, cut the dead air.")),
+                   S(words("Two, keep the breaths.")))
+    cut = validate_decision(decision(hook_promise="two rules", trim_words=[
+        {"from_word": "w0005", "to_word": "w0005", "reason": "label"}]), merged)
+    assert len(cut) == 1 and cut[0].startswith("trim_words: s002 opens list item 1")
+    # a lone number is not a list
+    lone = build(S(words("Here is the one rule I follow on every single edit.")), S(words("One, cut the dead air.")))
+    assert validate_decision(decision(hook_promise="the rule", drop_sentences=[
+        {"sentence_id": "s002", "reason": "tangent"}]), lone) == []

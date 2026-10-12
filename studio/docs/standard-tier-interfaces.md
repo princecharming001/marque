@@ -465,6 +465,17 @@ The video opened on "They're wrong." with its setup gone. Two changes:
 On the same d030 index the real planner then answered `trim_words w0001-w0002 (label)` on attempt 1, and the cut opens
 "Everyone says you need an authentic brand story. They're wrong."
 
+## Spoken lists keep their count (2026-10-12, as built)
+
+The first real take40 standard run dropped the spoken "One," (its own sentence before a retake) as preamble and
+labelled only 2/3 and 3/3. A retry under a narrower rule then dropped "Three, the one you skip." as `repeats_hook`.
+Both break the count the listener hears. `validate_decision` now rejects a drop or trim that removes a spoken list
+number while another number of the same list stays. A list number is an ordinal or digit followed by punctuation
+("One,", "Second:", "3.") or after an item noun ("Step two"), never "Part"; a list needs two or more numbered items.
+It also rejects numbered labels with a gap ("2/3" and "3/3" without "1/3", "Step 2" without "Step 1"). The checklist
+says "keep every spoken list number". On the same take40 index the real planner then dropped only the false start and
+labelled 1/3, 2/3 and 3/3, matching the Director.
+
 ## Review fixes (2026-10-12, as built)
 
 A review of phases A-C found these; each has a keyless regression test.

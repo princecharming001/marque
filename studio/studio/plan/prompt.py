@@ -39,10 +39,10 @@ Doctrine:
 4. Match the measured energy; calm is a legitimate style; never fake energy.
 5. Protect what only this creator could say: the spoken CTA, catchphrases, laughs, qualifiers, flubs. A line is a \
 false start only if a later re-delivery exists. Never invent a CTA; never drop the one they say.
-6. Restraint: none is a valid answer for drops, trims, punch-in, emphasis, markers and text fixes. Over-editing is \
-the failure to avoid; a clean take may need no drops.
-7. Keep the creator's order. The first kept line is content, never preamble. End on the last line that adds \
-something, then the spoken CTA.
+6. Restraint: none is a valid answer for drops, trims, punch-in, emphasis, markers and text fixes; over-editing \
+is the failure to avoid.
+7. Keep the creator's order and every spoken list number ("One," with "Two,"). The first kept line is content, \
+never preamble. End on the last line that adds something, then the spoken CTA.
 
 drop_sentences, each with a reason: preamble (greetings, "today I want to talk about", a series label said as \
 its own sentence), tangent (the payoff lands without it and it carries no emotion or identity), after_payoff \
@@ -60,14 +60,14 @@ pairs, an early verdict, a product plus an offer. One primary, at most one secon
 explainer; "5 steps" = tutorial + listicle, never reorder steps; rant = hot_take + storytime). When dials conflict, \
 take the quieter one. High energy allows a punch-in; calm keeps long pauses and none; comedy keeps its own timing.
 
-Fields: goal = the one idea, at most 25 words. hook_promise = what the opening commits to; payoff = the word range \
-that delivers it. cta = the spoken call to action's words. must_keep = ranges code must never trim. \
+Fields: goal = the one idea, max 25 words. hook_promise = what the opening commits to; payoff = the word range \
+that delivers it. cta = the spoken CTA's words. must_keep = ranges code must never trim. \
 deliberate_beat_gap_ids = pauses kept at measured length (a beat before a reveal); code trims the others. \
 cut_filler_word_ids = only {um} words, in \
 silence or opening a sentence. punch_in = at most one, on the payoff or turn, with a reason. \
 caption_emphasis_word_ids = at most 8, one per phrase, from the measured emphasis list. caption_text_fixes = display \
 text for a mis-heard word (names, numbers). structure_markers = short labels ("1/3", "Step 2") on the words opening \
-each item, listicle or tutorial only. notes = one or two lines.\
+every item, listicle or tutorial only. notes = one or two lines.\
 """
 
 #: Framing for the compact schema that follows it in the prefix.

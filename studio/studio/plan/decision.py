@@ -17,7 +17,8 @@ rejections are plain text the retry carries back to the model.
 or what the doctrine forbids outright (unknown IDs; drops and trims past half the spoken words; a ``repeat`` drop
 with no later take; the payoff/CTA inside removed words; dropping the spoken CTA; dropping the sentence that carries
 the hook while no kept sentence does; a trim that is not at a sentence edge, ends mid-clause or leaves under two
-words; a filler cut that would remove a lexical word; more than one punch-in; more than eight emphasis words).
+words; removing a spoken list number while another stays; numbered labels with a gap; a filler cut that would remove
+a lexical word; more than one punch-in; more than eight emphasis words).
 Anything it rejects is listed so the one retry can fix it; after that the pure-code plan ships.
 """
 
@@ -327,6 +328,90 @@ def _label_before_hook(hook_promise: str, index: TakeIndex, sid: str) -> tuple[s
     return (t.from_word, t.to_word) if trim_problem(t, index) is None else None
 
 
+# ---------------------------------------------------------------------------------------------- spoken lists
+_ORDINALS = {
+    "one": 1, "first": 1, "firstly": 1, "two": 2, "second": 2, "secondly": 2, "three": 3, "third": 3, "thirdly": 3,
+    "four": 4, "fourth": 4, "five": 5, "fifth": 5, "six": 6, "sixth": 6, "seven": 7, "seventh": 7, "eight": 8,
+    "eighth": 8, "nine": 9, "ninth": 9, "ten": 10, "tenth": 10,
+}
+#: Nouns that make "<noun> <number>" a list item ("Step two", "Number one", "Tip 3"); not "part" (a series label).
+_ITEM_NOUNS = frozenset({"number", "step", "tip", "rule", "reason", "mistake", "lesson", "way", "question", "point"})
+_ITEM_PUNCT = re.compile(r"[,;:.)!?—–]+[\"'”’]*$")
+
+
+def _list_number(index: TakeIndex, sid: str) -> tuple[int, list[str]] | None:
+    """The list position a sentence opens with and the words that say it: an ordinal or number followed by
+    punctuation ("One," / "Second:" / "3.") or after an item noun ("Step two", "Number one"). Plain content that
+    starts with a number ("One of my favourites", "Two weeks later") is not a list item."""
+    lex = [w for w in index.sentence_map[sid].word_ids if index.word(w).kind == "word"][:2]
+    if not lex:
+        return None
+    toks = [re.sub(r"[^\w]", "", index.word(w).text.lower()) for w in lex]
+
+    def value(tok: str) -> int | None:
+        return int(tok) if tok.isdigit() and 0 < int(tok) <= 20 else _ORDINALS.get(tok)
+
+    first = value(toks[0])
+    if first is not None and _ITEM_PUNCT.search(index.word(lex[0]).text.strip()):
+        return first, lex[:1]
+    if len(toks) == 2 and toks[0] in _ITEM_NOUNS and (second := value(toks[1])) is not None:
+        return second, lex
+    return None
+
+
+def _list_breaks(d: PlanDecision, index: TakeIndex, kept: set[str]) -> list[str]:
+    """Rejections for a spoken list item number the decision removes while another number of the list stays ("Two,"
+    and "Three," kept, "One," dropped; or "Three," dropped after "One," and "Two,"): the spoken count breaks, and a
+    label cannot fix what the listener hears. Only in a real list (at least two numbered items)."""
+    items = [(s.id, n) for s in index.sentences if (n := _list_number(index, s.id)) is not None]
+    if len({v for _sid, (v, _w) in items}) < 2:
+        return []
+    kept_values = {v for _sid, (v, words) in items if all(w in kept for w in words)}
+    explicit = {x.sentence_id for x in d.drop_sentences}
+    trimmed = _trimmed_word_ids(d, index)
+    out: list[str] = []
+    for sid, (v, words) in items:
+        if all(w in kept for w in words) or v in kept_values:
+            continue
+        if sid in explicit:
+            field = "drop_sentences"
+        elif any(w in trimmed for w in words):
+            field = "trim_words"
+        else:  # a take the retake cluster does not keep: the index's call, not this decision's
+            continue
+        others = [(s2, w2) for s2, (v2, w2) in items if v2 != v and all(w in kept for w in w2)]
+        if not others:
+            continue
+        said = " ".join(index.word(w).text.strip() for w in words)
+        other = " ".join(index.word(w).text.strip() for w in others[0][1])
+        out.append(f"{field}: {sid} opens list item {v} (\"{said}\") and {others[0][0]} (\"{other}\") is kept, so the "
+                   f"spoken count breaks; keep \"{said}\" with its item (a list keeps every number or none)")
+    return out
+
+
+def _marker_gaps(d: PlanDecision) -> list[str]:
+    """Rejections for numbered structure labels with a gap ("2/3" and "3/3" without "1/3")."""
+    fractions: dict[int, set[int]] = {}
+    steps: dict[str, set[int]] = {}
+    for mk in d.structure_markers:
+        label = mk.label.strip().lower()
+        if m := re.fullmatch(r"(\d+)\s*/\s*(\d+)", label):
+            fractions.setdefault(int(m.group(2)), set()).add(int(m.group(1)))
+        elif m := re.fullmatch(r"(step|tip|rule|#|no\.?|number)\s*(\d+)", label):
+            steps.setdefault(m.group(1), set()).add(int(m.group(2)))
+    out: list[str] = []
+    for total, seen in fractions.items():
+        missing = [f"{i}/{total}" for i in range(1, total + 1) if i not in seen]
+        if missing:
+            out.append(f"structure_markers: the {total}-item labels skip {', '.join(missing)}; label every item "
+                       "(on the words that open it) or none")
+    for noun, seen in steps.items():
+        missing = [f"{noun} {i}" for i in range(1, max(seen) + 1) if i not in seen]
+        if missing:
+            out.append(f"structure_markers: the labels skip {', '.join(missing)}; label every item or none")
+    return out
+
+
 # ============================================================================================ validation
 def validate_decision(d: PlanDecision, index: TakeIndex) -> list[str]:
     """The rejections (empty = valid), each a sentence the retry prompt can carry back to the model."""
@@ -465,4 +550,8 @@ def validate_decision(d: PlanDecision, index: TakeIndex) -> list[str]:
         if s is not None and drop.reason != "repeat" and is_cta_sentence(s.text):
             out.append(f"drop_sentences: {s.id} is the creator's spoken call to action (\"{s.text.strip()}\"); it "
                        "is never dropped unless the reason is repeat")
+
+    # --- a spoken list keeps its count ("One," stays while "Two," and "Three," do), and numbered labels have no gap
+    out.extend(_list_breaks(d, ix, kept))
+    out.extend(_marker_gaps(d))
     return out
