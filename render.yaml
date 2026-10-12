@@ -37,6 +37,11 @@ services:
       # REMOTION_AWS_REGION, REMOTION_FUNCTION_NAME, REMOTION_SERVE_URL
       # AI_QUALITY=1, BEST_OF_N_HOOKS=1   (optional; both default on)
       #
+      # --- Studio editing engine (default OFF; see the marque-studio service below) ---
+      # STUDIO_ENGINE=off|on|allowlist   STUDIO_ENGINE_ALLOWLIST=<creator ids, comma-separated>
+      # STUDIO_WORKER_URL=http://marque-studio:8080   STUDIO_WORKER_TOKEN=<shared secret>
+      # STUDIO_QUEUE_MAX_S=300 (fall back when no worker slot), STUDIO_MAX_S=2400 (fall back when slow)
+      #
       # --- Palo port (branch palo-port) — ALL default OFF; flip one at a time ---
       # PALO_PORT=1                (master switch; everything below needs it)
       # MEMORY_V2, IDEA_BANK, TRACK_INSIGHTS, STRATEGY_COMPILER, WRITE_AGENT, EXEMPLAR_BANK, VIDEO_BRAIN
@@ -45,6 +50,46 @@ services:
       # Metrics/keys (only when TRACK_INSIGHTS on): APIFY_KEY (have), POSTFORME_KEY, IG_GRAPH_TOKEN
       # Extraction/embeddings: AZURE_OPENAI_* , GOOGLE_PROJECT_ID/GOOGLE_API_KEY, OPENAI_API_KEY
       # Prereq: apply migrations.sql PALO PORT block + enable the pgvector extension on Supabase.
+
+  # --- Studio editing engine (studio/, Dockerfile.studio) ---------------------------------
+  # Private service: only marque-api reaches it (STUDIO_WORKER_URL = http://marque-studio:8080
+  # over Render's private network). It runs one-tap clip edits; the API falls back to its own
+  # pipeline whenever Studio is off, busy or failing. Needs real cores: a 30 s take is about
+  # 8 min on 4 vCPU. The disk holds job folders for 24 h so chat re-edits can re-render.
+  # Enable on the API with STUDIO_ENGINE=on (or allowlist + STUDIO_ENGINE_ALLOWLIST) plus
+  # STUDIO_WORKER_URL and STUDIO_WORKER_TOKEN (the same token as below).
+  - type: pserv
+    name: marque-studio
+    runtime: docker
+    region: oregon
+    plan: pro plus
+    dockerfilePath: ./Dockerfile.studio
+    dockerContext: .
+    disk:
+      name: studio-data
+      mountPath: /data
+      sizeGB: 20
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: STUDIO_WORKER_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ASSEMBLYAI_KEY
+        sync: false
+      - key: REMOTION_AWS_ACCESS_KEY_ID
+        sync: false
+      - key: REMOTION_AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: REMOTION_BUCKET
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
 
   # --- Palo port cron jobs (POST the internal sweep endpoints on a schedule) ---
   # Each is a no-op until PALO_PORT + the capability flag + INTERNAL_CRON_TOKEN are set.

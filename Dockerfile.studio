@@ -1,0 +1,68 @@
+# The Studio worker (studio/studio/server): runs one-tap clip edits for marque-api (see render.yaml, service
+# marque-studio). Separate from the API image on purpose: the engine needs a full FFmpeg 8 (zscale, rubberband,
+# libass, x264, FDK-AAC), MediaPipe, PyTorch (CPU), Node 24 and a headless Chromium for the Remotion caption overlay,
+# none of which the 512 MiB API box can hold.
+#
+# FFmpeg is built from Ubuntu's 8.1.2 source with --enable-nonfree (FDK-AAC): fine on our own servers, never
+# redistribute the image. Mirrors studio/scripts/setup-linux.sh.
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE} AS ffmpeg
+ARG FF_VER=8.1.2
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential nasm pkg-config curl \
+      ca-certificates xz-utils libzimg-dev librubberband-dev libass-dev libx264-dev libx265-dev libvidstab-dev \
+      libfreetype-dev libfontconfig-dev libharfbuzz-dev libfribidi-dev libmp3lame-dev libopus-dev libsoxr-dev \
+      libfdk-aac-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -sSfO "http://archive.ubuntu.com/ubuntu/pool/universe/f/ffmpeg/ffmpeg_${FF_VER}.orig.tar.xz" \
+    && tar xf "ffmpeg_${FF_VER}.orig.tar.xz" && cd "ffmpeg-${FF_VER}" \
+    && ./configure --prefix=/opt/ffmpeg8 --enable-gpl --enable-version3 --enable-nonfree --disable-doc \
+       --disable-debug --enable-libfdk-aac --enable-libx264 --enable-libx265 --enable-libvidstab --enable-libzimg \
+       --enable-librubberband --enable-libass --enable-libfreetype --enable-libfontconfig --enable-libharfbuzz \
+       --enable-libfribidi --enable-libmp3lame --enable-libopus --enable-libsoxr \
+    && make -j"$(nproc)" && make install
+
+FROM ${BASE_IMAGE}
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl xz-utils \
+      python3.12 python3.12-venv python3.12-dev build-essential rubberband-cli fonts-dejavu-core \
+      libzimg2 librubberband2 libass9 libx264-164 libx265-199 libvidstab1.1 libfreetype6 libfontconfig1 \
+      libharfbuzz0b libfribidi0 libmp3lame0 libopus0 libsoxr0 libfdk-aac2 libsndfile1 \
+      libgles2 libegl1 libgl1 libglib2.0-0 libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+      libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 libpango-1.0-0 \
+      libcairo2 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=ffmpeg /opt/ffmpeg8 /opt/ffmpeg8
+RUN ln -s /opt/ffmpeg8/bin/ffmpeg /usr/local/bin/ffmpeg && ln -s /opt/ffmpeg8/bin/ffprobe /usr/local/bin/ffprobe
+
+# Node 24 (Remotion overlay renderer), pinned
+ARG NODE_VERSION=v24.21.0
+RUN curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-x64.tar.xz" \
+    && tar xf /tmp/node.tar.xz -C /opt && ln -s "/opt/node-${NODE_VERSION}-linux-x64" /opt/node24 \
+    && rm /tmp/node.tar.xz
+ENV PATH=/opt/node24/bin:$PATH
+
+WORKDIR /app/studio
+# Python: CPU-only PyTorch first (the default wheels pull CUDA, several GB), then the engine with its server extra.
+COPY studio/pyproject.toml studio/README.md ./
+COPY studio/studio ./studio
+RUN python3.12 -m venv /opt/venv \
+    && /opt/venv/bin/pip install -q --upgrade pip wheel \
+    && /opt/venv/bin/pip install -q torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
+    && /opt/venv/bin/pip install -q -e ".[server]"
+ENV PATH=/opt/venv/bin:$PATH
+
+# The Remotion overlay project and its headless Chromium
+COPY studio/overlay/package.json studio/overlay/package-lock.json ./overlay/
+RUN cd overlay && npm ci --no-audit --no-fund
+COPY studio/overlay ./overlay
+RUN cd overlay && npx remotion browser ensure
+
+COPY studio/skills ./skills
+COPY studio/scripts ./scripts
+# Pre-fetch the face model so the first edit doesn't download it (verified by size + SHA-256 on load)
+RUN python -c "from studio.perception.visual import ensure_face_landmarker_model as f; print(f(allow_download=True))"
+
+ENV STUDIO_REAL=1 STUDIO_TIER=standard STUDIO_WORKER_DATA=/data/studio-worker STUDIO_WORK_DIR=/data/studio-worker/engine
+EXPOSE 8080
+CMD ["python", "-m", "studio.server.app"]

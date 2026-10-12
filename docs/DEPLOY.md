@@ -88,3 +88,26 @@ Two things ASC used to require a manual website click for on *every* build:
   service by themselves — follow with a deploy.
 - First request after an idle period may be slow only on free plans; starter is
   always-on.
+
+## Studio editing engine (marque-studio worker)
+
+One-tap clip edits can run on the Studio engine (`studio/`) instead of the legacy EDL + Lambda pipeline.
+The API decides per job at create time (`job["engine"]`, `backend/app/studio_engine.py`) and falls back to the
+legacy pipeline for that job whenever Studio is off, busy, slow or failing. Nothing changes in the iOS app: the
+job still polls the same `GET /v1/clips/{id}` fields (`status`, `clips[].render_url`, `thumbnail_url`).
+
+- **Worker**: Render private service `marque-studio` (render.yaml), `Dockerfile.studio`, plan pro plus (4 vCPU,
+  8 GB), a 20 GB disk at `/data` for 24 h of job folders. Env: `STUDIO_WORKER_TOKEN`, `ANTHROPIC_API_KEY`,
+  `ELEVENLABS_API_KEY`, `ASSEMBLYAI_KEY`, `REMOTION_AWS_ACCESS_KEY_ID`, `REMOTION_AWS_SECRET_ACCESS_KEY`,
+  `REMOTION_BUCKET`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (same values as marque-api).
+- **API switches** (marque-api env, restart to apply): `STUDIO_ENGINE=off|on|allowlist`,
+  `STUDIO_ENGINE_ALLOWLIST=<creator ids>`, `STUDIO_WORKER_URL=http://marque-studio:8080` (the private hostname
+  the Render dashboard shows), `STUDIO_WORKER_TOKEN`. Optional: `STUDIO_QUEUE_MAX_S` (300), `STUDIO_MAX_S` (2400).
+- **Kill switch**: set `STUDIO_ENGINE=off` and redeploy marque-api. New jobs go legacy; jobs already on Studio
+  finish there or fall back.
+- **What routes**: `auto_confirm` talking-head jobs. Split screen / react, analyze-first (brief review) and eval
+  `edl_only` jobs stay legacy. Sources over 10 min fall back.
+- **Known gap**: a Studio clip has no legacy EDL, so the manual Pro editor can't open it (the app shows "isn't
+  ready yet"); chat tweaks re-edit it through the worker (`POST /jobs/{id}/chat`). Retheme returns `no_edl`.
+- **Outputs**: finals in the Remotion S3 bucket under `studio/<job>/<clip>-r<n>.mp4`, posters in
+  `marque-clips/posters/`, same places the legacy pipeline writes.

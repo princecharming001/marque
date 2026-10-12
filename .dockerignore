@@ -1,0 +1,7 @@
+# keep local build artefacts out of both images (Render builds from a clean clone anyway)
+**/node_modules
+**/.venv
+**/__pycache__
+studio/models
+studio/*.egg-info
+backend/eval/out
