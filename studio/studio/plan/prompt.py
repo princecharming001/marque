@@ -39,18 +39,19 @@ Doctrine:
 4. Match the measured energy; calm is a legitimate style; never fake energy.
 5. Protect what only this creator could say: the spoken CTA, catchphrases, laughs, qualifiers, flubs. A line is a \
 false start only if a later re-delivery exists. Never invent a CTA; never drop the one they say.
-6. Restraint: none is a valid answer for drops, punch-in, emphasis, markers and text fixes. Over-editing is the \
-failure to avoid; a clean take may need no drops.
+6. Restraint: none is a valid answer for drops, trims, punch-in, emphasis, markers and text fixes. Over-editing is \
+the failure to avoid; a clean take may need no drops.
 7. Keep the creator's order. The first kept line is content, never preamble. End on the last line that adds \
 something, then the spoken CTA.
 
-drop_sentences, each with a reason: preamble (greetings, "today I want to talk about", a series label like \
-"Part one." said before the claim), tangent (the payoff lands \
-without it and it carries no emotion or identity), after_payoff (after the last line that adds something, except \
-the CTA), unfinished (an abandoned fragment with no re-delivery), repeat (a weaker statement whose kept re-delivery \
-exists in its cluster), repeats_hook (a later line restating the kept hook). Drops remove at most half the spoken \
-words. Code keeps each cluster's recommended take; choose_take only when another take is the better complete \
-delivery.
+drop_sentences, each with a reason: preamble (greetings, "today I want to talk about", a series label said as \
+its own sentence), tangent (the payoff lands without it and it carries no emotion or identity), after_payoff \
+(after the last line that adds something, except the CTA), unfinished (an abandoned fragment with no re-delivery), \
+repeat (a weaker statement whose kept re-delivery exists in its cluster), repeats_hook (a later line restating the \
+kept hook). Drops remove at most half the spoken words. Never drop the sentence that carries the hook. trim_words \
+cuts a label or preamble opening a sentence that also holds content ("w0001 Part w0002 one: w0003 Everyone..." \
+trims w0001-w0002, reason label), or an aside ending it, at punctuation or a pause. Code keeps each cluster's \
+recommended take; choose_take only when another take is the better complete delivery.
 
 Style: classify by what the viewer should do afterwards: understand (explainer), do (tutorial), choose (listicle), \
 feel a story (storytime), laugh (comedy), argue (hot_take), hear an exchange (podcast_clip), buy (sales_ugc), trust \
@@ -61,12 +62,12 @@ take the quieter one. High energy allows a punch-in; calm keeps long pauses and 
 
 Fields: goal = the one idea, at most 25 words. hook_promise = what the opening commits to; payoff = the word range \
 that delivers it. cta = the spoken call to action's words. must_keep = ranges code must never trim. \
-deliberate_beat_gap_ids = pauses kept at measured length (a beat before a reveal); code trims the others that run \
-past the energy's beat window (a stall to about the speaker's median). cut_filler_word_ids = only {um} words, in \
+deliberate_beat_gap_ids = pauses kept at measured length (a beat before a reveal); code trims the others. \
+cut_filler_word_ids = only {um} words, in \
 silence or opening a sentence. punch_in = at most one, on the payoff or turn, with a reason. \
 caption_emphasis_word_ids = at most 8, one per phrase, from the measured emphasis list. caption_text_fixes = display \
-text for a mis-heard word (names, numbers), never the audio. structure_markers = short labels ("1/3", "Step 2") on \
-the words opening each item, listicle or tutorial only. notes = one or two lines for the report.\
+text for a mis-heard word (names, numbers). structure_markers = short labels ("1/3", "Step 2") on the words opening \
+each item, listicle or tutorial only. notes = one or two lines.\
 """
 
 #: Framing for the compact schema that follows it in the prefix.

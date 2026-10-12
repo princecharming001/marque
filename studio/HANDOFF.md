@@ -344,8 +344,9 @@ The code plan here is without a planner decision.
 2. **"Part one."** The pure-code plan keeps a spoken series label that every Director cut (the brief's hook now skips
    it, and the planner's checklist names it as preamble). Leave the cut to the planner's `preamble` drop, or add a
    code rule for the fallback path.
-3. **Cuts inside a sentence.** The planner can drop only whole sentences, so "Part one:" at the start of a longer
-   sentence cannot go. A `cut_ranges` field with the same guards would fix it.
+3. **Cuts inside a sentence.** Fixed: the decision's `trim_words` cuts a label or aside at one edge of a kept
+   sentence, and the validator rejects dropping the sentence that carries the hook (see
+   `docs/standard-tier-interfaces.md`, "Word trims and the hook guard").
 
 **What needs a real-credit probe** (`docs/standard-tier-plan.md` §4; about $3-5 and 1.5 hours on one 4-vCPU box).
 

@@ -797,3 +797,47 @@ def test_the_brief_hook_skips_a_series_label_and_the_cta_comes_from_the_decision
     doc2, _ops, _note = plan(ix, decision(cta=rng(last[0], last[-1])))
     assert doc2.brief.cta == "Tell your sister about this trick."
     assert set(last) <= set(doc2.pins.cta_word_ids)
+
+
+def _stop_mid_line(ix: TakeIndex, *, tail_after_s: float) -> TakeIndex:
+    """The fixture with its last word unpunctuated ("week") and the recording ending ``tail_after_s`` after it."""
+    words = [w.model_copy(update={"text": "week"}) if w.id == "w0041" else w for w in ix.words]
+    end = words[-1].end_us + round(tail_after_s * 1e6)
+    media = ix.media.model_copy(update={"duration_us": end})
+    return ix.model_copy(update={"words": words, "media": media})
+
+
+def test_a_last_line_the_recording_cuts_off_is_dropped_even_when_it_is_the_cta(take_index: TakeIndex) -> None:
+    """Regression (real d030, standard tier): the take stops mid-line ("Start with who buys, what they actually"),
+    the index marks the sentence complete for lack of later evidence, and the pure-code cut ended mid-sentence."""
+    cut = _stop_mid_line(take_index, tail_after_s=0.2)
+    doc, _ops, note = plan(cut)
+    assert not set(wids(29, 41)) & set(kept(doc, cut))  # s005 gone, even though it is the spoken CTA
+    assert "cut off by the end of the recording" in {r.from_word: r.reason for r in doc.removed}["w0029"]
+    assert kept(doc, cut)[-1] == "w0028"  # the story ends on the last finished sentence
+    # a finished last line, or a recording that runs on after it, is kept
+    assert set(wids(29, 41)) <= set(kept(plan(take_index)[0], take_index))
+    later = _stop_mid_line(take_index, tail_after_s=2.0)
+    assert set(wids(29, 41)) <= set(kept(plan(later)[0], later))
+    # never the only line: a one-sentence take the ASR left unpunctuated ships as spoken instead of shipping nothing
+    one = build(S(words("hey everyone check out my new studio", end_gap=0)))
+    assert kept(plan(one)[0], one) == wids(1, 7)
+
+
+def test_a_trim_cuts_the_series_label_and_the_cut_opens_on_the_claim() -> None:
+    """Regression (real d030, standard tier): the ASR merged "Part one:" into the hook's sentence and the planner,
+    able only to drop whole sentences, dropped it: the video opened on "They're wrong." The decision now trims the
+    label at its colon and the story opens on the claim."""
+    ix = build(S([T("Part"), T("one:", gap=220), *words("Everyone says you need an authentic brand story.")]),
+               S(words("They're wrong.")), S(words("Your story is just the frame you hang the proof on.")))
+    hook = "Everyone says you need an authentic brand story, but they're wrong."
+    d = decision(hook_promise=hook, trim_words=[{"from_word": "w0001", "to_word": "w0002", "reason": "label"}])
+    doc, _ops, _note = plan(ix, d)
+    assert kept_text(doc, ix).startswith("Everyone says you need an authentic brand story. They're wrong.")
+    assert {r.from_word: r.reason for r in doc.removed}["w0001"] == "label: trimmed 'Part one:' from s001"
+    assert radio_check(doc, ix) == []
+    # a trim the validator refuses ("Part one: Everyone | says" runs on) is skipped with a note, never applied
+    bad = decision(hook_promise=hook, trim_words=[{"from_word": "w0001", "to_word": "w0003", "reason": "preamble"}])
+    doc2, _ops2, note2 = plan(ix, bad)
+    assert kept(doc2, ix)[:4] == wids(1, 4)
+    assert "trim w0001-w0003 skipped" in note2 and "ends mid-clause" in note2

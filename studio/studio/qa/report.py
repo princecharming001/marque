@@ -356,6 +356,8 @@ def _decision_lines(d: Mapping[str, Any], index: TakeIndex | None) -> list[str]:
          f"hook promise: {_esc(d.get('hook_promise'))}"]
     drops = d.get("drop_sentences") or []
     L.append("  - drops: " + (", ".join(f"{x.get('sentence_id')} ({x.get('reason')})" for x in drops) or "none"))
+    if d.get("trim_words"):
+        L.append("  - trims: " + "; ".join(f"{_range_txt(index, x)} ({x.get('reason')})" for x in d["trim_words"]))
     if d.get("choose_take"):
         L.append("  - take choices: " + ", ".join(f"{x.get('cluster_id')} → {x.get('sentence_id')}"
                                                    for x in d["choose_take"]))

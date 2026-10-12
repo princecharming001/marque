@@ -3,8 +3,10 @@
 
 The decision names **IDs only** (sentences, clusters, words, gaps from the Take Index), never times: the compiler
 keeps invariant 3 ("no model timestamps") by construction. Every field is something the Director actually decided
-on the real jobs (the ``Part one.`` drop, the payoff pin, one 1.15x lean-in, caption emphasis, take40's ``1/3``
-labels, the "restates the hook" drop); everything else is code.
+on the real jobs (the ``Part one:`` label cut, the payoff pin, one 1.15x lean-in, caption emphasis, take40's ``1/3``
+labels, the "restates the hook" drop); everything else is code. A label said in the same sentence as the claim is a
+word-level ``trim_words`` range, not a sentence drop: the ASR often merges "Part one: Everyone says..." into one
+sentence, and dropping it opened d030 on "They're wrong." with its setup gone.
 
 Why the models carry no ``pattern``/``max_length`` constraints: the planner call sends this schema as a native
 structured output, and Anthropic's grammar compiler rejects or ignores string/array constraints (HANDOFF §6:
@@ -12,10 +14,11 @@ structured output, and Anthropic's grammar compiler rejects or ignores string/ar
 rejections are plain text the retry carries back to the model.
 
 :func:`validate_decision` is the planner's safety net, not its taste: it refuses only what code could not apply
-or what the doctrine forbids outright (unknown IDs; drops past half the spoken words; a ``repeat`` drop with no
-later take; the payoff/CTA inside dropped words; dropping the spoken CTA; a filler cut that would remove a lexical
-word; more than one punch-in; more than eight emphasis words). Anything it rejects is listed so the one retry can
-fix it; after that the pure-code plan ships.
+or what the doctrine forbids outright (unknown IDs; drops and trims past half the spoken words; a ``repeat`` drop
+with no later take; the payoff/CTA inside removed words; dropping the spoken CTA; dropping the sentence that carries
+the hook while no kept sentence does; a trim that is not at a sentence edge, ends mid-clause or leaves under two
+words; a filler cut that would remove a lexical word; more than one punch-in; more than eight emphasis words).
+Anything it rejects is listed so the one retry can fix it; after that the pure-code plan ships.
 """
 
 from __future__ import annotations
@@ -29,12 +32,23 @@ from pydantic import BaseModel, ConfigDict, Field
 from studio.perception.index import Cluster, TakeIndex
 
 __all__ = [
-    "CTA_LEXICON", "MAX_DROP_SHARE", "MAX_EMPHASIS_WORDS", "PLAN_SCHEMA_JSON",
-    "PlanDecision", "PunchIn", "Reason", "SentenceDrop", "StructureMarker", "TakeChoice", "TextFix", "WordRange",
-    "is_cta_sentence", "kept_word_ids", "validate_decision",
+    "CTA_LEXICON", "HOOK_MIN_OVERLAP", "MAX_DROP_SHARE", "MAX_EMPHASIS_WORDS", "PLAN_SCHEMA_JSON",
+    "TRIM_SEAM_MIN_PAUSE_MS", "PlanDecision", "PunchIn", "Reason", "SentenceDrop", "StructureMarker", "TakeChoice",
+    "TextFix", "TrimReason", "WordRange", "WordTrim", "hook_sentence_id", "is_cta_sentence", "kept_word_ids",
+    "trim_problem", "validate_decision",
 ]
 
 Reason = Literal["preamble", "tangent", "after_payoff", "unfinished", "repeat", "repeats_hook"]
+TrimReason = Literal["label", "preamble", "tangent", "after_payoff"]
+
+#: A trim's seam needs clause punctuation or at least this much silence (the articulatory maximum in
+#: ``skills/editing/constants.yaml``): a cut inside running speech is a mid-clause seam the listener hears.
+TRIM_SEAM_MIN_PAUSE_MS = 200.0
+#: A sentence "carries the hook" when it holds at least this share of the hook promise's content words (and at
+#: least two of them). The sentence that carries it best is never dropped unless a kept sentence also carries it.
+HOOK_MIN_OVERLAP = 0.5
+#: A kept sentence also carries the hook when it scores at least this share of the best match (a restated hook).
+_HOOK_ALSO_CARRIED = 0.6
 
 #: Drops may remove at most this share of the take's spoken words (the planner trims, it does not rewrite).
 MAX_DROP_SHARE = 0.5
@@ -58,8 +72,19 @@ CTA_LEXICON: tuple[str, ...] = (
 _CTA_RE = re.compile("|".join(CTA_LEXICON))
 
 
+def _every_field_required(schema: dict[str, Any]) -> None:
+    """List every property as required in the JSON schema (the Python defaults still apply when validating).
+
+    Anthropic's structured-output grammar rejects this schema as "too complex" while 13 of its fields are optional
+    (measured 2026-10-12: the same schema with every property required is accepted). The model answers every
+    field: an empty list or ``null`` means "nothing to decide"."""
+    props = schema.get("properties")
+    if isinstance(props, dict):
+        schema["required"] = list(props)
+
+
 class _Model(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_every_field_required)
 
 
 class WordRange(_Model):
@@ -70,6 +95,16 @@ class WordRange(_Model):
 class SentenceDrop(_Model):
     sentence_id: str
     reason: Reason
+
+
+class WordTrim(_Model):
+    """Words cut from one edge of a sentence that otherwise stays: a series label or preamble said in the same
+    sentence as the claim ("Part one: Everyone says..." trims "Part one:"), or a trailing aside after the point.
+    The seam is at clause punctuation or a pause, and at least two spoken words of the sentence stay."""
+
+    from_word: str
+    to_word: str
+    reason: TrimReason
 
 
 class TakeChoice(_Model):
@@ -103,6 +138,7 @@ class PlanDecision(_Model):
     goal: str  # <= 25 words (stated in the planner prompt; not a rejection)
     hook_promise: str
     drop_sentences: list[SentenceDrop] = Field(default_factory=list)
+    trim_words: list[WordTrim] = Field(default_factory=list)  # a label/aside at one edge of a kept sentence
     choose_take: list[TakeChoice] = Field(default_factory=list)
     payoff: WordRange | None = None
     cta: WordRange | None = None
@@ -160,10 +196,135 @@ def _dropped_sentence_ids(d: PlanDecision, index: TakeIndex) -> set[str]:
 
 
 def kept_word_ids(d: PlanDecision, index: TakeIndex) -> list[str]:
-    """Source-order word IDs the story keeps under ``d``: everything outside dropped sentences and outside the takes
-    a cluster does not keep. Words without a sentence are kept (the code plan decides on them)."""
+    """Source-order word IDs the story keeps under ``d``: everything outside dropped sentences, outside the takes
+    a cluster does not keep and outside the valid trims. Words without a sentence are kept (the code plan decides
+    on them)."""
     dropped = _dropped_sentence_ids(d, index)
-    return [w.id for w in index.words if not (w.sentence_id and w.sentence_id in dropped)]
+    trimmed = _trimmed_word_ids(d, index)
+    return [w.id for w in index.words if not (w.sentence_id and w.sentence_id in dropped) and w.id not in trimmed]
+
+
+# ---------------------------------------------------------------------------------------------- trims
+_CLAUSE_END = re.compile(r"[,;:.!?…—–]+[\"'”’)\]]*$")
+
+
+def _seam_pause_ms(index: TakeIndex, a_id: str, b_id: str) -> float:
+    """Silence between two source-adjacent words; a recording dropout is not a pause the speaker made."""
+    a, b = index.word(a_id), index.word(b_id)
+    g = index.gap_after(a.id)
+    if g is not None and g.before_word_id == b.id:
+        return 0.0 if g.is_dropout else g.duration_ms
+    return max(0.0, (b.start_us - a.end_us) / 1000.0)
+
+
+def _clause_seam(index: TakeIndex, a_id: str, b_id: str) -> bool:
+    """A clean seam between ``a`` and the next word ``b``: clause punctuation on ``a`` or a real pause."""
+    return bool(_CLAUSE_END.search(index.word(a_id).text.strip())) or \
+        _seam_pause_ms(index, a_id, b_id) >= TRIM_SEAM_MIN_PAUSE_MS
+
+
+def trim_problem(t: WordTrim, index: TakeIndex) -> str | None:
+    """Why the code plan cannot apply ``t`` (a rejection line), or None when it can: both words exist in order and in
+    one sentence, the range touches that sentence's first or last spoken word, the seam on the other side is at
+    clause punctuation or a pause (:data:`TRIM_SEAM_MIN_PAUSE_MS`), at least two spoken words of the sentence stay,
+    and a spoken call to action stays one."""
+    ix = index
+    rng = f"trim_words: {t.from_word}-{t.to_word}"
+    missing = [w for w in (t.from_word, t.to_word) if not ix.has_word(w)]
+    if missing:
+        return f"trim_words: {', '.join(missing)} is not a word of this take"
+    if ix.word_pos(t.from_word) > ix.word_pos(t.to_word):
+        return f"{rng} is reversed ({t.to_word} comes first)"
+    sid = ix.word(t.from_word).sentence_id
+    if not sid or sid not in ix.sentence_map or ix.word(t.to_word).sentence_id != sid:
+        return f"{rng} must lie inside one sentence (use drop_sentences to remove whole sentences)"
+    s = ix.sentence_map[sid]
+    cut = set(ix.word_ids(t.from_word, t.to_word))
+    order = list(s.word_ids)
+    first, last = order.index(t.from_word), order.index(t.to_word)
+    lexical = [i for i, w in enumerate(order) if ix.word(w).kind == "word"]
+    head = not any(i < first for i in lexical)
+    tail = not any(i > last for i in lexical)
+    left = [w for w in order if w not in cut and ix.word(w).kind == "word"]
+    if len(left) < 2:
+        return f"{rng} leaves fewer than two spoken words of {sid}; drop the sentence instead, or trim less"
+    if not (head or tail):
+        return (f"{rng} is in the middle of {sid}; a trim cuts a label or aside at the start or the end of a "
+                "sentence")
+    a, b = (order[last], order[last + 1]) if head else (order[first - 1], order[first])
+    if not _clause_seam(ix, a, b):
+        return (f"{rng} ends mid-clause: no punctuation or pause between {a} \"{ix.word(a).text.strip()}\" and "
+                f"{b} \"{ix.word(b).text.strip()}\"; trim to a comma, colon, full stop or pause, or keep the words")
+    if is_cta_sentence(s.text) and not is_cta_sentence(" ".join(ix.word(w).text for w in order if w not in cut)):
+        return f"{rng} cuts the spoken call to action out of {sid} (\"{s.text.strip()}\"); the CTA is never trimmed"
+    return None
+
+
+def _trimmed_word_ids(d: PlanDecision, index: TakeIndex) -> set[str]:
+    out: set[str] = set()
+    for t in d.trim_words:
+        if trim_problem(t, index) is None:
+            out.update(index.word_ids(t.from_word, t.to_word))
+    return out
+
+
+# ---------------------------------------------------------------------------------------------- the hook
+_TOKEN = re.compile(r"[a-z0-9]+")
+_STOP_WORDS = (
+    "a an the and but or so if then than you your yours i im me my we our us it its is are was were be been am to "
+    "of in on at for with that this these those there they them their he she his her as by from not no do does did "
+    "just really very what which who how about all can will would could should have has had get got")
+_STOP = frozenset(_STOP_WORDS.split())
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Lower-cased content words of ``text`` with a light plural fold ("stories" ~ "story", "says" ~ "say")."""
+    out: set[str] = set()
+    for tok in _TOKEN.findall(text.lower().replace("'", "").replace("’", "")):
+        if tok in _STOP or (len(tok) < 3 and not tok.isdigit()):
+            continue
+        if tok.endswith("ies") and len(tok) > 4:
+            tok = tok[:-3] + "y"
+        elif tok.endswith("s") and not tok.endswith("ss") and len(tok) > 3:
+            tok = tok[:-1]
+        out.add(tok)
+    return out
+
+
+def _hook_scores(hook_promise: str, index: TakeIndex) -> dict[str, tuple[float, int]]:
+    """Per sentence: the share of the hook promise's content words it holds, and how many."""
+    hook = _content_tokens(hook_promise)
+    if not hook:
+        return {}
+    out: dict[str, tuple[float, int]] = {}
+    for s in index.sentences:
+        n = len(hook & _content_tokens(s.text))
+        out[s.id] = (n / len(hook), n)
+    return out
+
+
+def hook_sentence_id(hook_promise: str, index: TakeIndex) -> str | None:
+    """The sentence that carries the hook promise best: the largest share of its content words, at least
+    :data:`HOOK_MIN_OVERLAP` and two words (the earliest wins a tie). None when no sentence clears that bar."""
+    scores = _hook_scores(hook_promise, index)
+    best: str | None = None
+    for s in index.sentences:
+        share, n = scores.get(s.id, (0.0, 0))
+        if share >= HOOK_MIN_OVERLAP and n >= 2 and (best is None or share > scores[best][0]):
+            best = s.id
+    return best
+
+
+def _label_before_hook(hook_promise: str, index: TakeIndex, sid: str) -> tuple[str, str] | None:
+    """A trim the retry can use instead of dropping the hook sentence: the words before the first hook word, when
+    they end at a clean seam and :func:`trim_problem` accepts them."""
+    hook = _content_tokens(hook_promise)
+    order = index.sentence_map[sid].word_ids
+    k = next((i for i, w in enumerate(order) if _content_tokens(index.word(w).text) & hook), None)
+    if not k:
+        return None
+    t = WordTrim(from_word=order[0], to_word=order[k - 1], reason="label")
+    return (t.from_word, t.to_word) if trim_problem(t, index) is None else None
 
 
 # ============================================================================================ validation
@@ -224,18 +385,53 @@ def validate_decision(d: PlanDecision, index: TakeIndex) -> list[str]:
     for mk in d.structure_markers:
         check_range("structure_markers", WordRange(from_word=mk.anchor_from_word, to_word=mk.anchor_to_word))
 
-    # --- drops never remove more than half of the spoken words
+    # --- trims: a label or aside at one edge of a sentence the story keeps, cut at a clean seam
+    dropped_now = _dropped_sentence_ids(d, ix)
+    trimmed: set[str] = set()
+    for t in d.trim_words:
+        problem = trim_problem(t, ix)
+        if problem:
+            out.append(problem)
+            continue
+        sid = wmap[t.from_word].sentence_id
+        ids = set(ix.word_ids(t.from_word, t.to_word))
+        if sid in dropped_now:
+            out.append(f"trim_words: {t.from_word}-{t.to_word} is inside {sid}, which is dropped; trim a sentence "
+                       "the story keeps, or drop it and not both")
+        elif ids & trimmed:
+            out.append(f"trim_words: {t.from_word}-{t.to_word} overlaps another trim")
+        trimmed |= ids
+
+    # --- drops (and trims) never remove more than half of the spoken words
     spoken = [w for w in ix.words if w.is_spoken]
     explicit = {x.sentence_id for x in d.drop_sentences if x.sentence_id in smap}
-    removed = sum(1 for w in spoken if w.sentence_id in explicit)
+    removed = sum(1 for w in spoken if w.sentence_id in explicit or w.id in trimmed)
     if spoken and removed > MAX_DROP_SHARE * len(spoken):
-        out.append(f"drop_sentences: {len(explicit)} drop(s) remove {removed} of {len(spoken)} spoken words "
-                   f"({removed / len(spoken):.0%}); the limit is {MAX_DROP_SHARE:.0%}. Drop less, or let the "
-                   "code plan trim.")
+        out.append(f"drop_sentences: {len(explicit)} drop(s) and {len(d.trim_words)} trim(s) remove {removed} of "
+                   f"{len(spoken)} spoken words ({removed / len(spoken):.0%}); the limit is {MAX_DROP_SHARE:.0%}. "
+                   "Drop less, or let the code plan trim.")
+
+    # --- the sentence that carries the hook stays (the opening claim), unless a kept sentence carries it too; a
+    #     label said before the claim in the same sentence ("Part one: Everyone says...") is a trim, not a drop
+    best = hook_sentence_id(d.hook_promise, ix)
+    if best is not None:
+        scores = _hook_scores(d.hook_promise, ix)
+        bar = scores[best][0] * _HOOK_ALSO_CARRIED
+        carried = any(sid not in dropped_now and share >= bar and n >= 2 for sid, (share, n) in scores.items())
+        for drop in d.drop_sentences:
+            if drop.sentence_id != best or drop.reason == "repeat" or carried:
+                continue
+            msg = (f"drop_sentences: {best} carries the hook (\"{smap[best].text.strip()}\"); dropping it loses the "
+                   "opening claim. Keep it")
+            label = _label_before_hook(d.hook_promise, ix, best)
+            if label is not None:
+                words = " ".join(wmap[w].text.strip() for w in ix.word_ids(*label))
+                msg += f", and trim only the words before the claim with trim_words {label[0]}-{label[1]} \"{words}\""
+            out.append(msg + ".")
 
     # --- a repeat needs a kept re-delivery of the same line in its cluster (normally the later, recommended take;
     #     with choose_take, whichever take the decision keeps); repeats_hook needs the hook it repeats
-    dropped = _dropped_sentence_ids(d, ix)
+    dropped = dropped_now
     order = {s.id: i for i, s in enumerate(ix.sentences)}
     hook_stated = bool(d.hook_promise.strip())
     for drop in d.drop_sentences:

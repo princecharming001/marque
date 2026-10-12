@@ -16,14 +16,15 @@ applied with :func:`studio.doc.ops.apply_ops`; IDs only, never times):
   brief's ``cta`` is the creator's spoken call to action when one is kept (never an invented one).
 * ``set_story``: one take per retake cluster (the decision's ``choose_take``, else the index's recommendation),
   abandoned sentences dropped, the decision's drops (never the spoken CTA except as a ``repeat``, never past half of
-  the spoken words), and the cut-off words handled. A fragment the speaker restarts ("we need to b- build") goes alone
-  when there is a closure on both sides of it, and stays where it is when there is none (the speaker's own stumble
-  inside continuous speech, never at a join; it goes after all if another removal would leave it at one); a word a
-  recording dropout chops, or a fragment with no restart, takes its clause with it: back to the nearest clause edge
-  inside the sentence (punctuation, or a pause of at least the articulatory maximum; a dropout is never an edge; the
-  sentence start counts only when no lexical word precedes the cut-off) and forward to the next one, else the
-  sentence is dropped, except the spoken CTA and the decision's payoff/CTA/must-keep sentences, which lose only the
-  chopped word (a mid-clause seam). Seams are plain cuts (the document default).
+  the spoken words) and trims (a label or aside at one edge of a kept sentence, only where
+  :func:`~studio.plan.decision.trim_problem` accepts it), and the cut-off words handled. A fragment the speaker
+  restarts ("we need to b- build") goes alone when there is a closure on both sides of it, and stays where it is when
+  there is none (the speaker's own stumble inside continuous speech, never at a join; it goes after all if another
+  removal would leave it at one); a word a recording dropout chops, or a fragment with no restart, takes its clause
+  with it: back to the nearest clause edge inside the sentence (punctuation, or a pause of at least the articulatory
+  maximum; a dropout is never an edge; the sentence start counts only when no lexical word precedes the cut-off) and
+  forward to the next one, else the sentence is dropped, except the spoken CTA and the decision's payoff/CTA/must-keep
+  sentences, which lose only the chopped word (a mid-clause seam). Seams are plain cuts (the document default).
 * ``cut_words`` for fillers: the decision's, every filler in the first kept sentence, sentence-initial fillers and
   fillers bounded by pauses of at least ``fillers.cut_if_bounded_by_gap_ms``; a filler without a closure of
   ``fillers.coarticulated_cut_min_closure_ms`` on both sides is left (the seam would land inside speech).
@@ -88,7 +89,7 @@ from studio.doc.model import (
 )
 from studio.doc.ops import apply_ops
 from studio.doc.validate import radio_blockers
-from studio.plan.decision import MAX_DROP_SHARE, PlanDecision, is_cta_sentence
+from studio.plan.decision import MAX_DROP_SHARE, PlanDecision, is_cta_sentence, trim_problem
 
 if TYPE_CHECKING:  # pragma: no cover
     from studio.compile.captions import CaptionParams
@@ -355,6 +356,26 @@ def _cutoff_removal(ix: TakeIndex, s: Sentence, consts: dict[str, Any], *,
     return {ix.word_pos(words[k].id) for k in remove}, "; ".join(why)
 
 
+#: How close (µs) to the end of the media a last word must end for its sentence to count as cut off by the stop
+UNFINISHED_TAIL_US = 600_000
+_CLOSING = re.compile(r"[.!?…][\"')\]]*$")
+
+
+def _unfinished_tail(ix: TakeIndex) -> Sentence | None:
+    """The take's last sentence when the recording stops on it mid-line: its last spoken word has no closing
+    punctuation and ends within :data:`UNFINISHED_TAIL_US` of the media's end."""
+    if not ix.sentences:
+        return None
+    last = ix.sentences[-1]
+    spoken = [ix.word(w) for w in last.word_ids if ix.word(w).kind != "event"]
+    if not spoken or _CLOSING.search(spoken[-1].text.strip()):
+        return None
+    end = int(getattr(ix.media, "duration_us", 0) or 0)
+    if end and end - spoken[-1].end_us > UNFINISHED_TAIL_US:
+        return None
+    return last
+
+
 def _protected_sentences(ix: TakeIndex, decision: PlanDecision) -> set[str]:
     """Sentences the decision's payoff/CTA/must-keep ranges point into (the planner saw them and wants them)."""
     out: set[str] = set()
@@ -417,6 +438,14 @@ def _story(ix: TakeIndex, decision: PlanDecision | None, consts: dict[str, Any])
     for s in ix.sentences:
         if not s.complete and s.id not in protected:
             drop(s.id, f"{s.id} is abandoned (incomplete): a false start or a line the take never finishes")
+    # --- a last line the recording cuts off: no closing punctuation and the take ends within a breath of it. The
+    # index can still mark it complete (the transcript has no later evidence), but ending on it ends mid-sentence
+    # ("Start with who buys, what they actually"). Dropped even when protected: an unfinished line is never an ending.
+    # Never the only line left: a short take the ASR left unpunctuated still ships rather than ships nothing.
+    tail = _unfinished_tail(ix)
+    if tail is not None and tail.id not in dropped and any(s.id not in dropped and s.id != tail.id
+                                                           for s in ix.sentences):
+        drop(tail.id, f"{tail.id} is cut off by the end of the recording (no closing punctuation)")
 
     # --- the decision's drops: never the spoken CTA (except as a repeat), never past half of the spoken words
     if decision is not None:
@@ -439,6 +468,27 @@ def _story(ix: TakeIndex, decision: PlanDecision | None, consts: dict[str, Any])
                 continue
             removed += spoken
             drop(s.id, f"{d.reason}: {s.text.strip()[:60]}")
+        # --- the decision's trims: a label or aside at one edge of a kept sentence ("Part one:" before the claim),
+        # applied only when the validator's own rules accept it and the sentence is still in the story
+        for t in decision.trim_words:
+            problem = trim_problem(t, ix)
+            if problem:
+                st.notes.append(f"trim {t.from_word}-{t.to_word} skipped: {problem.removeprefix('trim_words: ')}")
+                continue
+            sid = ix.word(t.from_word).sentence_id
+            if sid in dropped:
+                continue
+            positions = [ix.word_pos(w) for w in ix.word_ids(t.from_word, t.to_word)]
+            spoken = sum(1 for p in positions if st.keep[p] and ix.words[p].is_spoken)
+            if spoken_total and removed + spoken > MAX_DROP_SHARE * spoken_total:
+                st.notes.append(f"trim {t.from_word}-{t.to_word} ({t.reason}) skipped: drops and trims would remove "
+                                f"more than {MAX_DROP_SHARE:.0%} of the spoken words")
+                continue
+            removed += spoken
+            text = " ".join(ix.words[p].text.strip() for p in positions)
+            for p in positions:
+                st.keep[p] = False
+                st.reasons[p] = f"{t.reason}: trimmed {text!r} from {sid}"
 
     # --- cut-off words in the kept sentences
     for s in ix.sentences:

@@ -23,8 +23,11 @@ from studio.plan.decision import (
     TakeChoice,
     TextFix,
     WordRange,
+    WordTrim,
+    hook_sentence_id,
     is_cta_sentence,
     kept_word_ids,
+    trim_problem,
     validate_decision,
 )
 
@@ -83,8 +86,7 @@ def test_schema_is_compact_and_keeps_the_enums() -> None:
     assert "title" not in PLAN_SCHEMA_JSON and "description" not in PLAN_SCHEMA_JSON
     assert schema["$defs"]["SentenceDrop"]["properties"]["reason"]["enum"] == [
         "preamble", "tangent", "after_payoff", "unfinished", "repeat", "repeats_hook"]
-    assert set(schema["required"]) == {"style_primary", "goal", "hook_promise"}
-    assert set(schema["properties"]) == set(PlanDecision.model_fields)
+    assert set(schema["required"]) == set(schema["properties"]) == set(PlanDecision.model_fields)  # API limit
     assert schema["additionalProperties"] is False
     # no grammar features Anthropic's structured outputs reject
     for bad in ("pattern", "maxItems", "minItems", "maxLength", "minLength", "format"):
@@ -293,3 +295,102 @@ def test_rejections_are_sentences_the_retry_can_act_on(take_index: TakeIndex) ->
         field = r.split(":")[0]
         assert field in PlanDecision.model_fields, r
         assert len(r) < 400 and "\n" not in r
+
+
+def test_every_schema_property_is_required_at_every_level() -> None:
+    """Anthropic's structured-output grammar rejected the schema as "too complex" while 13 fields were optional
+    (measured on the real API, 2026-10-12); every property listed as required is accepted. Python defaults stay."""
+    from pydantic import TypeAdapter
+
+    schema = TypeAdapter(PlanDecision).json_schema()
+    for obj in [schema, *schema.get("$defs", {}).values()]:
+        if "properties" in obj:
+            assert set(obj["required"]) == set(obj["properties"]), obj.get("title")
+    d = PlanDecision(style_primary="hot_take", goal="g", hook_promise="h")
+    assert d.drop_sentences == [] and d.punch_in is None and d.notes == ""
+
+
+# ============================================================================================ trims and the hook
+def trims(*specs: tuple[str, str, str]) -> list[WordTrim]:
+    return [WordTrim(from_word=a, to_word=b, reason=r) for a, b, r in specs]  # type: ignore[arg-type]
+
+
+def labelled_index(monkeypatch: pytest.MonkeyPatch) -> TakeIndex:
+    """The fixture with a series label said in the hook's sentence, as the ASR merged it on the real d030 take:
+    ``s001 = w0001 Part w0002 one: w0003 Most ... w0010 much.`` (every later word ID shifts by two)."""
+    import conftest
+
+    script = [[("Part", "word", 0, ""), ("one:", "word", 220, "pause"), *conftest._SCRIPT[0]], *conftest._SCRIPT[1:]]
+    monkeypatch.setattr(conftest, "_SCRIPT", script)
+    return conftest.build_take_index()
+
+
+def test_a_trim_cuts_one_edge_of_a_sentence_at_a_clean_seam(take_index: TakeIndex) -> None:
+    ix = take_index
+    ok = trims(("w0029", "w0031", "preamble"))  # "If this helped," before the CTA: the CTA still stands
+    assert validate_decision(decision(trim_words=ok), ix) == []
+    assert trim_problem(ok[0], ix) is None
+    assert set(wids := ix.word_ids("w0029", "w0031")).isdisjoint(kept_word_ids(decision(trim_words=ok), ix))
+    assert len(wids) == 3
+
+    def why(a: str, b: str) -> str:
+        out = validate_decision(decision(trim_words=trims((a, b, "tangent"))), ix)
+        assert len(out) == 1 and out[0].startswith("trim_words:"), out
+        return out[0]
+
+    assert "ends mid-clause" in why("w0027", "w0028")  # "...and cut | the rest." runs on
+    assert "middle of s004" in why("w0021", "w0022")
+    assert "inside one sentence" in why("w0008", "w0009")
+    assert "fewer than two spoken words" in why("w0001", "w0007")
+    assert "call to action" in why("w0032", "w0041")  # "If this helped," alone is no CTA
+    assert "reversed" in why("w0031", "w0029")
+    assert "not a word" in why("w9999", "w0031")
+
+
+def test_a_trim_counts_toward_the_drop_share_and_never_cuts_protected_words(take_index: TakeIndex) -> None:
+    ix = take_index
+    assert rejections(ix, "which is dropped", drop_sentences=drops(("s004", "tangent")),
+                      trim_words=trims(("w0019", "w0019", "preamble")))
+    assert rejections(ix, "overlaps another trim",
+                      trim_words=trims(("w0029", "w0031", "preamble"), ("w0029", "w0031", "label")))
+    assert rejections(ix, "must_keep", trim_words=trims(("w0029", "w0031", "preamble")),
+                      must_keep=[rng("w0029", "w0033")])
+    # s001 + s004 are 18 of the 41 spoken words (44%); the 3-word trim takes it past half
+    two = drops(("s001", "tangent"), ("s004", "tangent"))
+    assert not rejections(ix, "remove", drop_sentences=two)
+    out = rejections(ix, "remove", drop_sentences=two, trim_words=trims(("w0029", "w0031", "preamble")))
+    assert len(out) == 1 and "2 drop(s) and 1 trim(s) remove 21 of 41" in out[0]
+
+
+def test_dropping_the_sentence_that_carries_the_hook_is_rejected(monkeypatch: pytest.MonkeyPatch,
+                                                               take_index: TakeIndex) -> None:
+    """Regression (real d030, standard tier): the planner dropped "Part one: Everyone says you need an authentic brand
+    story." as preamble because the prompt told it to drop a series label, and the video opened on "They're wrong."
+    with its setup gone. The hook's sentence stays; the label is a trim, and the rejection names it."""
+    assert hook_sentence_id(BASE["hook_promise"], take_index) == "s001"
+    assert rejections(take_index, "s001 carries the hook", drop_sentences=drops(("s001", "preamble")))
+    ix = labelled_index(monkeypatch)
+    out = rejections(ix, "carries the hook", drop_sentences=drops(("s001", "preamble")))
+    assert len(out) == 1 and 'trim_words w0001-w0002 "Part one:"' in out[0]
+    fixed = decision(trim_words=trims(("w0001", "w0002", "label")))
+    assert validate_decision(fixed, ix) == []
+    assert kept_word_ids(fixed, ix)[0] == "w0003"
+    # a repeat (its kept re-delivery carries the hook) and a hook nobody can match are not this rule's business
+    assert not rejections(ix, "carries the hook", hook_promise="", drop_sentences=drops(("s001", "preamble")))
+    assert not rejections(ix, "carries the hook", hook_promise="a calm tutorial about sound",
+                          drop_sentences=drops(("s001", "preamble")))
+
+
+def test_a_hook_restated_in_a_kept_sentence_may_lose_either_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    import conftest
+
+    restated = [("So", "word", 0, ""), ("yes,", "word", 0, ""), ("most", "word", 0, ""), ("people", "word", 0, ""),
+                ("cut", "word", 0, ""), ("way", "word", 0, ""), ("too", "word", 0, ""), ("much.", "word", 600, "pause")]
+    monkeypatch.setattr(conftest, "_SCRIPT", [*conftest._SCRIPT[:3], restated, conftest._SCRIPT[4]])
+    ix = conftest.build_take_index()
+    hook = "most people over-cut their videos"
+    assert hook_sentence_id(hook, ix) == "s001"
+    assert not rejections(ix, "carries the hook", hook_promise=hook, drop_sentences=drops(("s001", "preamble")))
+    assert not rejections(ix, "carries the hook", hook_promise=hook, drop_sentences=drops(("s004", "repeats_hook")))
+    assert rejections(ix, "carries the hook", hook_promise=hook,
+                      drop_sentences=drops(("s001", "preamble"), ("s004", "repeats_hook")))

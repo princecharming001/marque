@@ -61,6 +61,8 @@ Reason = Literal["preamble", "tangent", "after_payoff", "unfinished", "repeat", 
 
 class WordRange(BaseModel): from_word: str; to_word: str
 class SentenceDrop(BaseModel): sentence_id: str; reason: Reason
+TrimReason = Literal["label", "preamble", "tangent", "after_payoff"]
+class WordTrim(BaseModel): from_word: str; to_word: str; reason: TrimReason   # one edge of a kept sentence
 class TakeChoice(BaseModel): cluster_id: str; sentence_id: str
 class PunchIn(BaseModel): anchor_word: str; reason: str
 class TextFix(BaseModel): word_id: str; text: str          # caption display text for one word (never the audio)
@@ -71,6 +73,7 @@ class PlanDecision(BaseModel):
     goal: str                     # ≤ 25 words
     hook_promise: str
     drop_sentences: list[SentenceDrop] = []
+    trim_words: list[WordTrim] = []             # "Part one:" before the claim in the same sentence
     choose_take: list[TakeChoice] = []
     payoff: WordRange | None = None
     cta: WordRange | None = None
@@ -441,8 +444,26 @@ planner-level call that the pure-code plan does not make on its own:
 - d030 Opus ending on the payoff "proof on." rather than "So flip it.".
 
 With decisions that copy the Directors' choices, d030 Opus and take40 reach Jaccard 1.000. var-silences reaches
-0.981; the gap is "Part one:" inside s001, because a decision can only drop whole sentences. No job has a real
-`logs/plan.json` yet, so the planner column read `absent` everywhere.
+0.981; the gap is "Part one:" inside s001, because a decision could only drop whole sentences (fixed since: see
+"Word trims and the hook guard" below). No job has a real `logs/plan.json` yet, so the planner column read `absent`
+everywhere.
+
+## Word trims and the hook guard (2026-10-12, as built)
+
+The first real planner run on d030 dropped s001 ("Part one: Everyone says you need an authentic brand story.") as
+preamble, because the ASR merged the label into the hook's sentence and the checklist said to drop a series label.
+The video opened on "They're wrong." with its setup gone. Two changes:
+
+- `trim_words` cuts words at one edge of a sentence that stays. `trim_problem` accepts a trim only inside one
+  sentence, touching its first or last spoken word, with clause punctuation or a pause of at least 200 ms at the seam,
+  leaving at least two spoken words, and leaving a spoken CTA intact. Trims count toward the 50% drop share and
+  `kept_word_ids` leaves them out, so a payoff, CTA or must-keep range inside a trim is rejected. The code plan applies
+  only trims `trim_problem` accepts and notes the rest.
+- `validate_decision` rejects dropping the sentence that best matches `hook_promise` (at least half its content words,
+  and two or more) unless a kept sentence also carries the hook. The rejection names the label trim to use instead.
+
+On the same d030 index the real planner then answered `trim_words w0001-w0002 (label)` on attempt 1, and the cut opens
+"Everyone says you need an authentic brand story. They're wrong."
 
 ## Review fixes (2026-10-12, as built)
 
