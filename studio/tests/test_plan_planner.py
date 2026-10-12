@@ -179,7 +179,7 @@ def test_valid_decision_on_the_first_try(job: Job, take_index: TakeIndex, digest
     assert call["instructions"].startswith(DOCTRINE_CHECKLIST) and PLAN_SCHEMA_JSON in call["instructions"]
     assert "Take digest:" not in call["instructions"]
     assert call["prompt"] == digest_prompt(digest.text) and digest.text in call["prompt"]
-    assert call["model_settings"]["max_tokens"] == MAX_TOKENS == 16_000
+    assert call["model_settings"]["max_tokens"] == MAX_TOKENS == 8_000
     # usage per attempt (streamed Anthropic call: the scripted stream's estimate, but present and attributed)
     assert [row["attempt"] for row in res.usage["attempts"]] == [1]
     row = res.usage["attempts"][0]
@@ -332,9 +332,11 @@ def test_byok_spec_is_honoured(job: Job, take_index: TakeIndex, digest: Digest, 
 def test_fallback_env_is_the_only_escalation(job: Job, take_index: TakeIndex, digest: Digest, keyed: Settings,
                                              monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(FALLBACK_ENV, "claude-opus-5-5")
+    monkeypatch.setenv(planner.ALLOW_PRICIER_ENV, "1")  # Opus 5.5 is priced above the Sonnet 5.5 primary
     primary, fallback = Script(DROPS_CTA, name="primary"), Script(VALID, name="fallback")
     seen = install(monkeypatch, primary, by_model={"claude-opus-5-5": fallback})
-    res = plan(job, take_index, digest, settings=keyed)
+    # (an Opus 5.5 call's worst case, ~$0.17, is over the default $0.15 cap: the caller opts into the spend)
+    res = plan(job, take_index, digest, settings=keyed, max_usd=1.0)
     assert res.decision == PlanDecision.model_validate(VALID)
     assert len(primary.calls) == 2 and len(fallback.calls) == 1 and res.attempts == 3
     assert CTA_REJECTION in res.rejected[0]  # the first attempt's rejections are kept
@@ -396,3 +398,88 @@ def test_plan_json_is_written_on_every_outcome_and_overwritten(job: Job, take_in
     plan(job, take_index, digest, settings=keyed)
     second = json.loads((job.logs_dir / "plan.json").read_text())
     assert second["decision"] is None and second["attempts"] == 2 and second != first
+
+
+# ============================================================================================ spend cap
+def test_a_pricier_fallback_is_refused_without_the_flag(job: Job, take_index: TakeIndex, digest: Digest,
+                                                        keyed: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    """STUDIO_PLANNER_FALLBACK cannot quietly switch a failed plan to a dearer model (Fable at $50/MTok out would add
+    up to two 8k-token calls); STUDIO_PLANNER_FALLBACK_ALLOW_PRICIER=1 allows it explicitly."""
+    monkeypatch.setenv(FALLBACK_ENV, "claude-fable-5-1")
+    fallback = Script(VALID, name="fallback")
+    install(monkeypatch, Script(server_error()), by_model={"claude-fable-5-1": fallback})
+    res = plan(job, take_index, digest, settings=keyed)
+    assert res.decision is None and fallback.calls == [] and not events(job, "planner_fallback")
+    assert "costs more than claude-sonnet-5-5" in res.note and planner.ALLOW_PRICIER_ENV in res.note
+    assert events(job, "planner_fallback_refused")[0]["to_model"] == "claude-fable-5-1"
+    # an unpriced fallback against a priced primary is refused too
+    monkeypatch.setenv(FALLBACK_ENV, "mystery-model-1")
+    job2 = Job.create("fixture-job-2", work_dir=job.root.parent)
+    res2 = plan(job2, take_index, digest, settings=keyed)
+    assert res2.decision is None and "no list price" in res2.note
+
+
+def test_the_spend_cap_skips_the_retry_and_a_zero_cap_skips_the_call(job: Job, take_index: TakeIndex,
+                                                                     digest: Digest, keyed: Settings,
+                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    # a rejected first answer is not retried when the retry's worst case (prompt uncached, 8k out) passes the cap
+    script = Script(DROPS_CTA, VALID, name="claude-sonnet-5-5")
+    install(monkeypatch, script)
+    res = plan(job, take_index, digest, settings=keyed, max_usd=0.05)
+    assert res.decision is None and len(script.calls) == 1 and res.attempts == 1
+    assert "retry skipped" in res.note and "$0.05 spend cap" in res.note
+    assert events(job, "planner_retry_skipped") and not events(job, "planner_retry")
+    saved = json.loads((job.logs_dir / "plan.json").read_text())
+    assert saved["max_usd"] == 0.05 and saved["skipped"] and saved["skipped"][0].startswith("retry skipped")
+    # the default cap ($0.15) leaves room for one Sonnet 5.5 retry after a typical first call
+    job2 = Job.create("fixture-job-2", work_dir=job.root.parent)
+    script2 = Script(DROPS_CTA, VALID, name="claude-sonnet-5-5")
+    install(monkeypatch, script2)
+    assert plan(job2, take_index, digest, settings=keyed).decision is not None and len(script2.calls) == 2
+    # a cap already reached: no call at all
+    job3 = Job.create("fixture-job-3", work_dir=job.root.parent)
+    script3 = Script(VALID)
+    install(monkeypatch, script3)
+    res3 = plan(job3, take_index, digest, settings=keyed, max_usd=0.0)
+    assert res3.decision is None and script3.calls == [] and res3.attempts == 0 and "spend cap $0.00" in res3.note
+    # a stricter STUDIO_MAX_MODEL_USD lowers the default; a looser one (meant for the Director) never raises it
+    monkeypatch.setenv("STUDIO_MAX_MODEL_USD", "0.02")
+    assert planner.spend_cap(job3, None).cap == 0.02
+    monkeypatch.setenv("STUDIO_MAX_MODEL_USD", "10")
+    assert planner.spend_cap(job3, None).cap == planner.DEFAULT_MAX_USD and planner.spend_cap(job3, 3).cap == 3
+
+
+class Truncated(Script):
+    """The first answer stops at max_tokens with half a JSON object."""
+
+    def answer(self, messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if self.calls:
+            return super().answer(messages, info)
+        self.calls.append({"prompt": last_prompt(messages)})
+        return ModelResponse(parts=[TextPart('{"style_primary": "explainer", "goal": "teach restr')],
+                             usage=RequestUsage(input_tokens=3000, output_tokens=MAX_TOKENS), finish_reason="length")
+
+
+def test_an_answer_cut_off_at_max_tokens_is_not_retried(job: Job, take_index: TakeIndex, digest: Digest,
+                                                        settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    spec = ModelSpec(provider="openai", model="gpt-5.5", api_key=FAKE_OAI, byok=True, effort="low")  # no streaming
+    script = Truncated(VALID)
+    install(monkeypatch, script)
+    res = plan(job, take_index, digest, spec=spec, settings=settings)
+    assert res.decision is None and len(script.calls) == 1 and "stopped at max_tokens" in res.note
+
+
+def test_the_planner_role_never_uses_server_side_fallbacks(tmp_path: Any, job: Job) -> None:
+    """A refusal must take the documented pure-code path (and a fallback attempt would be billed while the trace
+    counts only the answer): no server-side fallback opt-in for the planner, house or BYOK, whatever the model."""
+    s = Settings.load(env={"ANTHROPIC_API_KEY": FAKE_ANT})
+    house = pv.house_spec("planner", settings=s)
+    assert not house.uses_server_fallbacks() and "anthropic_betas" not in pv.model_settings(house, "planner")
+    assert not pv.spec_from_cli("anthropic", "claude-sonnet-5-5", None, settings=s, role="planner") \
+        .uses_server_fallbacks()
+    assert pv.spec_from_cli("anthropic", "claude-sonnet-5-5", None, settings=s).uses_server_fallbacks()  # Director
+    raw = ModelSpec(provider="anthropic", model="claude-sonnet-5-5", api_key=FAKE_ANT, effort="low")
+    assert raw.uses_server_fallbacks()  # a hand-built spec would opt in; build_model turns it off for the role
+    model = pv.build_model(raw, role="planner", job=job, stage="plan")
+    assert not pv.native_model(model).settings.get("extra_body")  # type: ignore[union-attr]
+    assert model._base_fields()["server_fallbacks"] is False  # type: ignore[attr-defined]

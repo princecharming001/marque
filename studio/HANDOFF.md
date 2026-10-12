@@ -1,12 +1,12 @@
 # Yunicorn Studio: handoff
 
-You're picking up **Yunicorn Studio**, a from-scratch, quality-first, agentic video editor for creators' talking-head videos. Read this file first, then `README.md` (usage), `ARCHITECTURE.md` (the binding interface contract) and `skills/editing/SKILL.md` (the editing doctrine the AI follows).
+You're picking up **Yunicorn Studio**, a from-scratch, quality-first, agentic video editor for creators' talking-head videos. Read this file first, then `README.md` (usage and the two tiers), `ARCHITECTURE.md` (the binding interface contract; §11 is the standard tier) and `skills/editing/SKILL.md` (the editing doctrine the AI follows). The latest status is §6c.
 
 ## 1. What the owner asked for (non-negotiable)
 
 - Rebuild the video editing engine **from scratch** as an open-ended, iterative, agentic editor, not a fixed rule set.
 - **Claude-first**, but it must also accept a creator's own key for Anthropic, OpenAI, Google Gemini or any OpenAI-compatible endpoint (BYOK). The default runs on our own house key.
-- **The only goal is the quality of the final video.** Ignore cost and latency.
+- **The only goal is the quality of the final video.** Ignore cost and latency. *(Changed on 2026-10-09 for the default path: a standard edit must cost under $0.20 a video. That tier is now the default. The quality-first Director edit stays as the paid tier, unchanged; see §6b and §6c.)*
 - Editing is guided by deep research into how to edit talking-head videos (cuts, pacing, b-roll, captions, music, SFX, speed, zooms, colour, audio). That research lives in `skills/editing/` as guidance, not hard rules. "None" (no music, no b-roll, no zoom) is always a valid choice, and over-editing is the main failure to avoid.
 - Use proven open-source and free tools where possible; paid tools only when clearly better. Don't build what already exists.
 - **Not wired into the app yet.** The owner will send 5 videos and ask you to edit them in chat to verify quality. Only after that does it get integrated into the iOS app and backend.
@@ -21,6 +21,7 @@ You're picking up **Yunicorn Studio**, a from-scratch, quality-first, agentic vi
   3. `c7bd2aa`: Director, critics, loop, pipeline and CLI.
   4. `e6e0db0`: caption fixes from the first real runs.
   5. The commit that adds this handoff file.
+  6. Later commits (`git log`): Linux portability, cut-off joins, cost accounting, the standard-tier plan (`359ffd6`), and standard-tier phase A (`6bb7358`). Phase B and C are not committed yet as this is written.
 - **Docs in the repo:**
 
   | Path | What it is |
@@ -28,10 +29,14 @@ You're picking up **Yunicorn Studio**, a from-scratch, quality-first, agentic vi
   | `studio/docs/plan.md` | The approved engineering plan |
   | `studio/docs/explainer.md` | The owner-facing plain-language explainer |
   | `studio/docs/research/` | Verified research by topic (`research_*.md`), the architecture, doctrine and toolchain designs, three design critiques, and the earlier research report |
+  | `studio/docs/standard-tier-plan.md` | Why the Director edit costs dollars and how the standard tier gets under $0.20: design, cost tables, build plan, the real-credit probe (§4) |
+  | `studio/docs/standard-tier-interfaces.md` | The standard tier's binding module signatures, with "As built" notes |
 
 - **Not in git (you must recreate):** API keys, the Python venv, model weights (downloaded on first use), the test videos, and the work directory.
 
 ## 3. How it works (60 seconds)
+
+This section describes the **director** tier, the reviewed edit. The default **standard** tier runs the same steps 1, 2, 4 and 6, but replaces 3 and 5 with one planner call, code, one render and code-only repair. See ARCHITECTURE §11 and §6c below.
 
 1. **Ingest** (`studio/media`): turns the upload into an upright SDR BT.709 ProRes mezzanine (HDR tone-mapped exactly once), a 48 kHz float dialogue WAV, and a proxy.
 2. **Perception, the "Take Index"** (`studio/perception`):
@@ -112,11 +117,13 @@ export STUDIO_ENV_FILE=~/studio.env STUDIO_REAL=1 STUDIO_WORK_DIR=~/studio-work
 - Full-quality renders are slow: x264 `veryslow` and Remotion ProRes 4444. Expect **tens of minutes per 30–60 s take** with the champion loop. Run at most 2 edits at once.
 - **Disk:** ProRes intermediates are about 26 MB/s at 1080p30 and much more at 4K60. Keep **≥10 GB free**; the pipeline refuses to render below 1.5 GB. Delete old job directories in the work dir freely.
 
-**Tests** (keyless and offline; 1,211 pass):
+- **Tiers:** `studio edit` defaults to the **standard** tier (`STUDIO_TIER`). Pass `--tier director` (or set `STUDIO_TIER=director`) for the Director and champion loop described above. A resume and `studio chat` stay in the job's tier. A standard edit is one planner call and one render at x264 `medium` (no champion loop); its compute is estimated at 33-54 vCPU-min for a 60 s take, not yet measured on the production host.
+
+**Tests** (keyless and offline; 1,342 passed at phase A, plus 57 from phase B; see §6c):
 
 ```bash
 .venv/bin/python -m pytest tests -q -m "not real and not slow"
-.venv/bin/python -m pytest tests -q -m slow        # renders synthetic media, slower
+.venv/bin/python -m pytest tests -q -m slow        # renders synthetic media, slower (needs Node 24 on PATH and the Remotion browser, or STUDIO_REMOTION_BROWSER)
 STUDIO_ENV_FILE=~/studio.env STUDIO_REAL=1 .venv/bin/python -m pytest tests -q -m real   # small real API calls
 ```
 
@@ -226,9 +233,186 @@ Haiku 5.5 / Sonnet 5.5 capability overrides (pydantic-ai's profile would send Ha
 
 **Environment limits here:** no libvmaf (CAMBI banding metric reports unavailable; advisory, not an invariant).
 
+## 6c. Session 3: the standard tier (2026-10-12)
+
+**In plain terms.**
+- `studio edit` now defaults to the **standard tier**. The estimate is about **$0.04** of model and speech-to-text per
+  video, instead of $6-36, with the same ten hard checks.
+- Each video ships marked **"NOT REVIEWED: standard tier"**: code checked it, but nobody watched it.
+- The Director/critic edit is unchanged. Run it with `--tier director`, or upgrade a standard job the same way.
+- **Nothing in the standard tier has run against a real model or real speech-to-text yet**, because the API credits
+  are exhausted. Treat its cost and quality as unproven until the probe below runs.
+
+**Built, by phase.** The design is `docs/standard-tier-plan.md`; the signatures and "As built" notes are in
+`docs/standard-tier-interfaces.md`.
+
+*Phase A (commit `6bb7358`):*
+- **Tiers.** `STUDIO_TIER` (default `standard`), `--tier`, `--planner-model`, `STUDIO_PLANNER_MODEL` /
+  `STUDIO_PLANNER_EFFORT`. `job.json` records the tier and planner, so a resume or a chat stays in its tier. Jobs from
+  before tiers stay Director jobs.
+- **Planner role.** Effort `low`, a 5-minute cache, and capability fixes so Haiku 5.5 / Sonnet 5.5 get effort, not a
+  thinking budget.
+- **The digest** (`studio/plan/digest.py`): the take as text with word IDs, about 0.8-1.3k tokens per real take.
+- **The decision** (`studio/plan/decision.py`): `PlanDecision`, which names IDs only, and the guards that reject an
+  unusable answer.
+- **The planner** (`planner.py`, `prompt.py`):
+  - one structured-output call and one retry carrying the rejections;
+  - on any failure, the pure-code plan;
+  - `STUDIO_PLANNER_FALLBACK` is the only escalation;
+  - everything recorded in `logs/plan.json`.
+- **Rendering.** Render profile `standard` (x264 `medium` CRF 16, same tags), `STUDIO_REMOTION_CONCURRENCY`, and an
+  ingest cap that turns a 4K60 upload into a 1080p30 lean working copy.
+- **ASR accounting.** Every Scribe/AssemblyAI call is traced and priced in the report. This also fixed an ASR cache
+  miss that re-paid speech-to-text on every re-run: libsndfile writes a timestamp into the WAV.
+- **Shared with the Director.** `validate.radio_blockers` and `compile.color.measure_color`.
+
+*Phase B (not committed yet as this is written):*
+- **`studio/plan/code_plan.py`.** The decision (or none) becomes a complete document: story, clause-edge cut-off
+  removal, fillers, pauses, pins, an optional punch-in, labels, one uniform caption size, voice chain, colour only on
+  a fault. `plan_document` writes it as a fresh version, and the radio test gates it. Eleven bugs in the earlier draft
+  were fixed, among them:
+  - captions never cleared the size ladder on real takes;
+  - a re-plan was applied on top of the old document, whose pins broke it;
+  - filler and pause rules were looser than the doctrine;
+  - the colour check could brighten deep skin;
+  - the punch-in could hold to the end of the video;
+  - a cut-off at a sentence start dropped the whole sentence.
+- **`studio/plan/repair.py`.** Code-only fixes for invariants 1, 4, 7 and 8, with at most one re-render. A caption
+  fix re-renders only the overlay layer and the master, on the failed render's hard-linked A-roll and mix. A loudness
+  fix re-masters the mix and re-muxes onto the copied video stream. Failures with no code fix render nothing and are
+  reported.
+- **`scripts/plan_eval.py`.** An offline harness comparing the code plan, and any `logs/plan.json` decision, with the
+  Director's delivered document on existing jobs. No model calls, about 1 s a job.
+
+*Phase C:*
+- `_edit_standard`: ingest caps → index → digest → planner → code plan → one render → QA → repair → deliver one final
+  with the NOT REVIEWED report;
+- `_chat_standard`;
+- the upgrade from a standard job to the Director;
+- these docs: README tiers, ARCHITECTURE §3 and §11, the "As built" notes.
+
+*Review fixes (after phase C; the list is in `docs/standard-tier-interfaces.md`, "Review fixes"):*
+- **Pipeline.** An interrupted upgrade resumes as an upgrade; `--tier standard` after an upgrade re-plans instead of
+  relabelling the Director's champion; a planner call that never answered is made again on a crash-resume; the
+  tier's hard limits (source ≤ 10 min, output ≤ 90 s) refuse before anything is paid; the pure-code second attempt
+  runs only for plan-dependent failures; `studio render` and `studio index` follow the job's tier.
+- **Cost.** Paid voice isolation is priced ($0.12/min) and kept within a $0.17 running API budget; the planner and
+  the chat have an 8k output budget, a $0.15 spend cap (`--max-usd`), no server-side refusal fallback, and a
+  fallback model priced above the primary is refused.
+- **CLI.** Exit code 4 when nothing was delivered.
+- **Chat.** Only requests that ask to add music, SFX, b-roll or isolation are refused without a call ("remove the
+  footage of me coughing" is planned), and the suggested upgrade command carries `--max-usd 3`.
+- **Code plan.** A speaker's stumble with no gap to cut in stays (it no longer costs its clause or the CTA); the
+  CTA/payoff sentences are never dropped by the cut-off rule; dropout silence inside kept speech is cut; stalls come
+  down to the speaker's boundary pause; captions never split a page into a flicker (a size steps down instead);
+  decision accents keep the 25 % page share; the CTA lexicon matches imperatives only; the brief's hook skips a
+  spoken "Part one." label; "one" and list markers no longer draw accents.
+
+**Tests.**
+- Keyless suite: **1,342 passed, 0 failed** at phase A (`6bb7358`).
+- Phase B adds **57 keyless tests** (code plan 26, repair 21, eval 10) and **2 slow tests**: repair's real overlay
+  pass and audio pass, 134 s. All pass on their own; the five plan test files together pass 82.
+- After phase C and the review fixes the full keyless suite is **1,476 passed, 4 skipped, 0 failed** (20.5 min). The
+  slow tests were not re-run after the review fixes.
+- `ruff check studio tests scripts` is clean.
+
+**Keyless checks on the five real jobs.** Run locally with `scripts/plan_eval.py`; nothing was copied into the repo.
+The code plan here is without a planner decision.
+
+| Job | Kept-word agreement with the Director | Payoff/CTA pins kept | Output s (Director / plan) | Caption px (Director / plan) |
+|---|---|---|---|---|
+| d030, Opus Director | 0.945 | 11/11 | 25.9 / 27.9 | 80 / 64 |
+| d030, Fable Director | 0.978 | 35/35 | 26.9 / 27.9 | 70 / 64 |
+| real-take40 | 1.000 | 18/18 | 37.0 / 37.0 | 80 / 64 |
+| var-silences | 0.835 | 16/16 | 32.4 / 38.0 | 68 / 64 |
+| 4k60 | 1.000 | 11/11 | 15.2 / 15.2 | 72 / 64 |
+
+- Every plan validated with 0 errors and 0 radio-test blockers. Every word the plan removes, the Director removed
+  too.
+- On var-silences, the cuts at the recording dropouts match the Director word for word ("life," and "buys,").
+- The gaps are story calls that belong to the planner: the spoken "Part one." label (3 of 5 jobs), var-silences s003
+  (restates the hook), and where d030 ends.
+- With decisions that copy the Directors' choices, d030 and take40 reach 1.000 and var-silences 0.981.
+- Synthetic-media repair: a caption pushed into the platform UI was fixed by a 38.5 s overlay pass, against about 80 s
+  for the first render. A mix 3 dB too quiet came back to -14.0 LUFS without re-encoding the picture.
+
+**Product calls for the owner.**
+1. **Caption size.** The standard tier picks the biggest size that pages as cleanly as the smallest. On all five real
+   takes (fast talkers, 186-212 words a minute) that is the 64 px floor; the Directors chose 68-80 px and accepted
+   more one-word or shrunk pages. Allowing one extra paging fault would give take40 68 px and var-silences 66 px
+   (`code_plan._caption_ops`).
+2. **"Part one."** The pure-code plan keeps a spoken series label that every Director cut (the brief's hook now skips
+   it, and the planner's checklist names it as preamble). Leave the cut to the planner's `preamble` drop, or add a
+   code rule for the fallback path.
+3. **Cuts inside a sentence.** The planner can drop only whole sentences, so "Part one:" at the start of a longer
+   sentence cannot go. A `cut_ranges` field with the same guards would fix it.
+
+**What needs a real-credit probe** (`docs/standard-tier-plan.md` §4; about $3-5 and 1.5 hours on one 4-vCPU box).
+
+*The runs:*
+- **Three videos:**
+  - d030 (30 s): tests the "Part one." drop, the payoff pin, and the out-point "proof on.";
+  - real-take40 (40 s): tests the `1/3 2/3 3/3` labels and the "Fusion isn't" text fix;
+  - var-silences (105 s): tests the dropout joins at "life,"/"buys," and the "restates the hook" drop.
+- **Two planners:** each video through the standard tier on Haiku 5.5 and on Sonnet 5.5 at effort `low`, 6 edits.
+- **Chat:** one chat edit on each of the 6 results.
+- **4K60:** one 4K60 ingest through the 1080p30 path, for compute only.
+- **Judging:** each of the 6 outputs against its existing Director champion, with one Opus 5.5 judge in both orders.
+
+*Pass criteria:*
+1. **Planner.** Input at most 6k tokens and output at most 3k at effort `low`. Structured output accepted on both
+   models with this schema. At most 1 retry across the 3 videos, and zero refusals. Replace the chars/3.5 estimates
+   with `count_tokens`.
+2. **Agreement with the Director.**
+   - kept-word agreement at least 0.9;
+   - the same payoff pin, and the same out-point on d030;
+   - "Part one." dropped, the take40 labels emitted, and the var-silences joins.
+
+   Choose Haiku or Sonnet on this, not on price.
+3. **Judge.** Zero P0 (a cut-off end, a caption over the eyes or mouth, a clipped word) across the 6. Record the P1s.
+   The Director winning most comparisons is expected: that is the difference between the tiers, not a failure.
+4. **Compute** on the production host:
+   - the standard render at most 10 vCPU-min per 30 s of output;
+   - Remotion at concurrency 4 fits in 8 GB;
+   - the CRF 16 bitrate at most 16 Mbps, and invariant 10 passes;
+   - the 4K60 ingest at most 3x the source duration.
+5. **ElevenLabs billing.** Compare the dashboard with the audio seconds in `trace.jsonl`; the per-minute rounding is
+   unstated.
+6. **Chat.** The time and cost of an overlay-only re-render, against a full one.
+
+*How to run it, once phase C has landed and keys are set* (`STUDIO_ENV_FILE`, `STUDIO_REAL=1`):
+
+```bash
+for m in claude-haiku-5-5 claude-sonnet-5-5; do
+  .venv/bin/studio edit ~/studio-testdata/qa-editor-d030-h264.mov     --tier standard --planner-model $m --platform tiktok
+  .venv/bin/studio edit ~/studio-testdata/qa-editor-real-take40.mov   --tier standard --planner-model $m --platform reels
+  .venv/bin/studio edit ~/studio-testdata/qa-editor-var-silences.mov  --tier standard --planner-model $m --platform reels
+done
+```
+
+`scripts/plan_eval.py` compares a `logs/plan.json` with the Director document **in the same job directory**. For
+criterion 2, run the planner once over each existing Director job's own index (one planner call, no render), then
+run the harness on that job:
+
+```bash
+JOB=/root/studio-work/20261008-225344-08453c   # d030; real-take40 is 20261008-205115-fc126f, var-silences 20261008-200717-0b7de7
+STUDIO_PLANNER_MODEL=claude-haiku-5-5 .venv/bin/python -c '
+import sys; from pathlib import Path
+from studio.jobs import Job; from studio.plan.digest import build_digest; from studio.plan.planner import plan
+job = Job(Path(sys.argv[1])); ix = job.load_index()
+print(plan(job, ix, build_digest(ix, platform=sys.argv[2])).note)' "$JOB" tiktok
+.venv/bin/python scripts/plan_eval.py "$JOB"
+```
+
+Each planner run overwrites that job's `logs/plan.json`, so evaluate after each model. Afterwards, update the cost
+figures in README, ARCHITECTURE §11 and the plan from the measured `report.md` cost lines, and pick the default
+planner.
+
 ## 7. Your next steps, in order
 
 1. **Set up** (§4) and run the keyless tests.
+   - **First, once credits exist:** land phase C, run the full keyless suite, then the standard-tier probe in
+     §6c. It decides the default planner and replaces the estimated costs with measured ones.
 2. **Re-run the blocked end-to-end cases** one or two at a time:
    ```bash
    .venv/bin/python -m studio.cli edit <take> --platform reels --out ~/studio-out/<name>

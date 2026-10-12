@@ -44,7 +44,8 @@ failure to avoid; a clean take may need no drops.
 7. Keep the creator's order. The first kept line is content, never preamble. End on the last line that adds \
 something, then the spoken CTA.
 
-drop_sentences, each with a reason: preamble (greetings, "today I want to talk about"), tangent (the payoff lands \
+drop_sentences, each with a reason: preamble (greetings, "today I want to talk about", a series label like \
+"Part one." said before the claim), tangent (the payoff lands \
 without it and it carries no emotion or identity), after_payoff (after the last line that adds something, except \
 the CTA), unfinished (an abandoned fragment with no re-delivery), repeat (a weaker statement whose kept re-delivery \
 exists in its cluster), repeats_hook (a later line restating the kept hook). Drops remove at most half the spoken \
@@ -60,12 +61,12 @@ take the quieter one. High energy allows a punch-in; calm keeps long pauses and 
 
 Fields: goal = the one idea, at most 25 words. hook_promise = what the opening commits to; payoff = the word range \
 that delivers it. cta = the spoken call to action's words. must_keep = ranges code must never trim. \
-deliberate_beat_gap_ids = pauses kept at measured length (a beat before a reveal); others are trimmed to the \
-speaker's median by code. cut_filler_word_ids = only {um} words, in silence or opening a sentence. punch_in = at \
-most one, on the payoff or turn, with a reason. caption_emphasis_word_ids = at most 8, one per phrase, from the \
-measured emphasis list. caption_text_fixes = display text for a mis-heard word (names, numbers), never the audio. \
-structure_markers = short labels ("1/3", "Step 2") on the words opening each item, listicle or tutorial only. \
-notes = one or two lines for the report.\
+deliberate_beat_gap_ids = pauses kept at measured length (a beat before a reveal); code trims the others that run \
+past the energy's beat window (a stall to about the speaker's median). cut_filler_word_ids = only {um} words, in \
+silence or opening a sentence. punch_in = at most one, on the payoff or turn, with a reason. \
+caption_emphasis_word_ids = at most 8, one per phrase, from the measured emphasis list. caption_text_fixes = display \
+text for a mis-heard word (names, numbers), never the audio. structure_markers = short labels ("1/3", "Step 2") on \
+the words opening each item, listicle or tutorial only. notes = one or two lines for the report.\
 """
 
 #: Framing for the compact schema that follows it in the prefix.

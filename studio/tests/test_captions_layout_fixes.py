@@ -79,6 +79,31 @@ def test_light_verbs_get_no_accent(take_index: TakeIndex) -> None:
     assert C._accent_score(tok2, C.CaptionParams()) > 0.7
 
 
+def test_one_is_a_number_only_before_a_content_word_and_list_markers_are_never_accented(
+        take_index: TakeIndex) -> None:
+    """take40: 'the third one is' and 'Pour one into the other' accented the pronoun "one" over the meaning words;
+    d030's first page 'Part one.' was accented on "one"; two of three list markers ('Two,' 'Three,') were accented
+    and 'One,' was not. "one" counts as a number only before a content word, and list markers are structure: none
+    of them is accented."""
+    base = take_index.word("w0020")
+
+    def tok(text: str, sid: str = "s004", emphasis: float = 0.95) -> C._Tok:
+        w = base.model_copy(update={"text": text, "emphasis": emphasis, "sentence_id": sid})
+        return C._Tok(wid=w.id, text=text, start=Fraction(0), end=Fraction(1, 2), word=w, seg=0)
+
+    P = C.CaptionParams()
+    assert C._accent_score(tok("one"), P, prev=tok("third"), nxt=tok("is")) == 0.0  # the pronoun
+    assert C._accent_score(tok("one"), P, prev=tok("Pour"), nxt=tok("into")) == 0.0
+    assert C._accent_score(tok("one."), P, prev=tok("Part")) == 0.0  # a label
+    assert C._accent_score(tok("one's"), P, prev=tok("this"), nxt=tok("easy")) == 0.0
+    assert C._accent_score(tok("one"), P, prev=tok("only"), nxt=tok("trick")) > 1.0  # a number before a noun
+    assert C._accent_score(tok("two"), P, prev=tok("the"), nxt=tok("cuisines")) > 1.0
+    # sentence-initial list markers, all alike: none accented
+    for marker in ("One,", "Two,", "Three:", "First,", "2."):
+        assert C._accent_score(tok(marker, sid="s005"), P, prev=tok("done.", sid="s004"), nxt=tok("butter")) == 0.0
+    assert C._accent_score(tok("Three", sid="s005"), P, prev=tok("done.", sid="s004"), nxt=tok("ingredients")) > 0.7
+
+
 # ---------------------------------------------------------------------------------------------- above the head
 def _low_face(ix: TakeIndex, cy: float = 0.62, h: float = 0.3) -> TakeIndex:
     """A close selfie: the chin sits under the platform's caption band (like real-take40 / var-silences)."""

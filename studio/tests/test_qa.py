@@ -1112,6 +1112,12 @@ def test_report_cost_section_shows_the_asr_line(tmp_path: Path) -> None:
     text2 = "\n".join(qr._section_history(job2, None))
     assert "**Estimated ASR cost: $0.004** (60 s of audio over 1 call; index $0.004;" in text2
     assert "Estimated model cost" not in text2 and "Estimated total" not in text2 and "| asr:index | 0.004 |" in text2
+    # paid voice isolation ($0.12/min) has its own line and is in the total, not in the model cost
+    job.trace("audio_isolation", provider="elevenlabs", seconds=45.0)
+    text3 = "\n".join(qr._section_history(job, None))
+    assert "**Estimated paid voice isolation cost: $0.09** (45 s of audio over 1 pass; elevenlabs $0.12/min" in text3
+    assert "**Estimated model cost: $0.03**" in text3 and "**Estimated total: $0.12**" in text3
+    assert "| isolation:elevenlabs | 0.09 |" in text3
 
 
 @pytest.mark.real

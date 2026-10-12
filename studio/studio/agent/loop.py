@@ -60,13 +60,18 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = [
     "DEFAULT_GUARD", "WINLESS_STOP", "MIN_FREE_BYTES", "DiskSpaceError", "LoopConfig", "RoundRecord", "LoopState",
     "LoopResult", "ChampionLoop", "champion_loop", "ensure_disk", "free_bytes", "render_full", "prune_render",
-    "clean_incomplete_renders", "prune_overlay_cache", "render_complete",
+    "clean_incomplete_renders", "prune_overlay_cache", "render_complete", "STANDARD_REVIEW_NOTE",
+    "STANDARD_STOP_REASON", "record_standard_champion", "is_standard_state", "reopen_for_review",
 ]
 
 DEFAULT_GUARD = 12
 WINLESS_STOP = 2
 MIN_FREE_BYTES = storage.HEADROOM_BYTES
 _STATE = "loop_state.json"
+#: The standard tier's champion is never critiqued: it ships NOT REVIEWED with this note (the report prints
+#: "NOT REVIEWED: standard tier" for it), after exactly one render (plus at most one code-only repair render).
+STANDARD_REVIEW_NOTE = "standard tier: code QA only"
+STANDARD_STOP_REASON = "standard tier: one render"
 
 #: Render intermediates (never deliverables): A-roll/overlay layers, WAV mixes and stems, conformed stills.
 INTERMEDIATES: tuple[str, ...] = storage.RENDER_INTERMEDIATES
@@ -297,6 +302,42 @@ class LoopResult:
     reviewed: bool = True
     review_note: str = ""
     alternates: list[dict[str, Any]] = field(default_factory=list)
+
+
+def record_standard_champion(job: Job, render_dir: str | os.PathLike[str], doc_version: int, *, passed: bool,
+                             stop_reason: str = STANDARD_STOP_REASON) -> LoopState:
+    """Write the standard tier's one render as the loop's champion (``logs/loop_state.json``), finished and NOT
+    REVIEWED (:data:`STANDARD_REVIEW_NOTE`). The standard tier has no loop, but recording its champion in the loop's
+    own state means ``studio chat``, ``studio report`` and a Director upgrade (:func:`reopen_for_review`, then
+    :meth:`ChampionLoop.run`, which starts from an existing champion) read one shape, whichever tier wrote it."""
+    st = LoopState(champion_render=Path(render_dir).name, champion_doc=int(doc_version), champion_passed=bool(passed),
+                   done=True, stop_reason=stop_reason, reviewed=False, review_note=STANDARD_REVIEW_NOTE)
+    st.save(job)
+    trace_event(job, "loop", what="standard_champion", render=st.champion_render, doc_version=st.champion_doc,
+                passed=st.champion_passed, stop=stop_reason)
+    return st
+
+
+def is_standard_state(st: LoopState) -> bool:
+    """The state's champion came from the standard tier and nothing has reviewed it since."""
+    return not st.reviewed and st.review_note.startswith("standard tier")
+
+
+def reopen_for_review(job: Job) -> LoopState:
+    """The standard → Director upgrade: keep the standard champion (when its render is still complete) and clear the
+    finished flag, stop reason, rounds and review so :meth:`ChampionLoop.run` critiques that render and the Director
+    revises it, instead of rendering a first pass again. Without a complete champion the state is cleared and the loop
+    renders the Director's document as usual."""
+    old = LoopState.load(job)
+    keep = (old.champion_render is not None and old.champion_doc is not None
+            and render_complete(job.renders_dir / old.champion_render))
+    st = LoopState(champion_render=old.champion_render if keep else None,
+                   champion_doc=old.champion_doc if keep else None,
+                   champion_passed=old.champion_passed if keep else False)
+    st.save(job)
+    trace_event(job, "loop", what="reopened", champion=st.champion_render, doc_version=st.champion_doc,
+                previous_stop=old.stop_reason or None)
+    return st
 
 
 def critique_record_complete(rec: dict[str, Any]) -> bool:
@@ -586,7 +627,7 @@ class ChampionLoop:
         from studio.agent.cost import job_cost
 
         cs = job_cost(self.job)
-        spent = cs.total_usd - cs.by_role.get("asr", 0.0)  # model calls only; ASR is tenths of a cent
+        spent = cs.model_usd  # model calls only: ASR and paid isolation are not model spend
         if spent >= cap:
             return f"model spend cap ${cap:.2f} reached (${spent:.2f} at list prices)"
         return None

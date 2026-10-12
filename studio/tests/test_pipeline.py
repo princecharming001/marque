@@ -479,44 +479,6 @@ def test_edit_records_tier_and_planner_and_a_resume_reuses_them(ready_job: Job,
     assert ready_job.meta["meta"]["tier"] == "director"
 
 
-def test_standard_tier_is_a_refusing_stub_until_phase_c(ready_job: Job, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``--tier standard`` (or STUDIO_TIER=standard on a new job) reaches ``_edit_standard`` after ingest and the Take
-    Index and refuses clearly; the job has recorded its tier and planner by then. A chat on a standard job goes to
-    ``_chat_standard`` and refuses the same way."""
-    from studio.config import reset_settings
-
-    with pytest.raises(pipeline.PipelineError, match=r"standard tier: not built yet \(phase C\)"):
-        pipeline.edit(ready_job.root, tier="standard", planner_model="claude-haiku-5-5")
-    meta = ready_job.meta["meta"]
-    assert meta["tier"] == "standard" and meta["planner"]["model"] == "claude-haiku-5-5"
-    assert not (ready_job.root / "logs" / "director_state.json").exists()
-    # a resume of a standard job stays standard without a flag …
-    with pytest.raises(pipeline.PipelineError, match="phase C"):
-        pipeline.edit(ready_job.root)
-    # … and a chat on it runs in its tier (no Director, no model call)
-    ready_job.save_doc(CutDocument(job_id=ready_job.id))
-    with pytest.raises(pipeline.PipelineError, match="phase C"):
-        pipeline.chat(ready_job.root, "shorter")
-    # the job's own tier can be switched back explicitly
-    ready_job.update_meta(tier="standard")
-    sc = ScriptedDirector(_plan())
-    res = pipeline.edit(ready_job.root, tier="director", director_model_override=sc.model(),
-                        loop_kwargs=LoopFakes(ready_job).kwargs())
-    assert res.tier == "director" and ready_job.meta["meta"]["tier"] == "director"
-    # a NEW job takes STUDIO_TIER (the default is standard) when no flag is given
-    monkeypatch.setenv("STUDIO_TIER", "standard")
-    reset_settings()
-    fresh = Job.create("fresh", work_dir=ready_job.root.parent)
-    shutil.copy(ready_job.mezz_path, fresh.mezz_path)
-    shutil.copy(ready_job.proxy_path, fresh.proxy_path)
-    shutil.copy(ready_job.audio_path, fresh.audio_path)
-    fresh.save_media_info(ready_job.load_media_info())
-    fresh.save_index(ready_job.load_index())
-    with pytest.raises(pipeline.PipelineError, match="phase C"):
-        pipeline.edit(fresh.root)
-    assert fresh.meta["meta"]["tier"] == "standard" and fresh.meta["meta"]["planner"]["model"] == "claude-sonnet-5-5"
-
-
 def test_resolve_tier_rules(job: Job) -> None:
     from studio.config import Settings
 

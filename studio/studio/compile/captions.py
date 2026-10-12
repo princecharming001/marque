@@ -893,9 +893,33 @@ _LIGHT_VERBS = {"start", "starts", "started", "build", "builds", "built", "make"
                 "works", "worked", "call", "calls", "called", "show", "shows", "showed", "turn", "turns", "turned"}
 
 
-def _accent_score(t: _Tok, params: CaptionParams) -> float:
+_ORDINALS = {"first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"}
+_MARKER_END = re.compile(r"[,:.)]+[\"')\]]*$")
+
+
+def _is_list_marker(t: _Tok, prev: _Tok | None) -> bool:
+    """A sentence-initial enumerator ("One," "Two:" "Third," "1."): structure, not meaning."""
+    start = prev is None or prev.word.sentence_id != t.word.sentence_id or bool(_SENT_END.search(prev.text))
     n = _norm(t.text)
+    return start and bool(_MARKER_END.search(t.text.strip())) and (_is_number(t.text) or n in _ORDINALS)
+
+
+def _accent_score(t: _Tok, params: CaptionParams, *, prev: _Tok | None = None, nxt: _Tok | None = None) -> float:
+    """How strongly ``t`` earns a caption accent (0 = never). ``prev``/``nxt`` are its neighbours in the story: a
+    sentence-initial list marker ("One," "Two,") is never accented, all of them alike (they are structure; the
+    planner's labels carry it), and "one" counts as a number only before a content word ("one trick"), never as
+    the pronoun ("the third one is", "pour one into") or a label ("Part one.")."""
+    n = _norm(t.text)
+    if _is_list_marker(t, prev):
+        return 0.0
     number = _is_number(t.text)
+    if n in ("one's", "ones"):  # "this one's", "the ones": a pronoun
+        return 0.0
+    if n == "one":
+        follows = nxt is not None and nxt.word.sentence_id == t.word.sentence_id \
+            and not _STRONG_PUNCT.search(t.text) and not _SENT_END.search(t.text) and _norm(nxt.text) not in _STOP
+        if not follows:
+            return 0.0
     if not number and (n in _STOP or len(n) <= 2):
         return 0.0
     if n in _LIGHT_VERBS and n not in _KEYWORDS and not t.payoff:
@@ -919,8 +943,16 @@ def _accent_score(t: _Tok, params: CaptionParams) -> float:
 
 def _choose_emphasis(pages: Sequence[Sequence[_Tok]], params: CaptionParams, device_words: set[str]) -> set[str]:
     cands: list[tuple[float, int, _Tok]] = []
+    flat = [t for page in pages for t in page]
+    pos = {id(t): i for i, t in enumerate(flat)}
+
+    def score(t: _Tok) -> float:
+        i = pos[id(t)]
+        return _accent_score(t, params, prev=flat[i - 1] if i > 0 else None,
+                             nxt=flat[i + 1] if i + 1 < len(flat) else None)
+
     for k, page in enumerate(pages):
-        scored = [(_accent_score(t, params), t) for t in page if t.wid not in device_words]
+        scored = [(score(t), t) for t in page if t.wid not in device_words]
         scored = [(s, t) for s, t in scored if s >= params.accent_score_min]
         if scored:
             s, t = max(scored, key=lambda x: x[0])

@@ -9,6 +9,10 @@ at the job root (``job.report_path``):
    spoken (with its ID) and what is on screen (segment, insert, caption page), rendered with
    :func:`studio.perception.frames.contact_sheet` from the encoded file itself and embedded as a relative
    image (``renders/r{n}/contact_sheet.jpg``).
+   A standard-tier job adds **Plan (standard tier)**: where the plan came from (the planner's decision or the
+   pure-code plan, and why), the decision by field, the digest the planner read, the planner call's tokens and cost,
+   repair and the second attempt, and a seams table (what each join removes, by the document's recorded reason);
+   its header says "NOT REVIEWED: standard tier" (code QA only).
 3. **Brief** and **style**.
 4. **Story** — the cut in output order (segment, words, output span, speed, seam, framing), then every
    source sentence marked kept / removed / partial with removed words struck through and the recorded
@@ -296,6 +300,11 @@ def _review_lines(job: Job, rd: Path | None) -> list[str]:
     if rd is not None and st.get("champion_render") not in (None, rd.name):
         return []
     L: list[str] = []
+    if st.get("reviewed") is False and str(st.get("review_note") or "").startswith("standard tier"):
+        # the standard tier never asks a critic: say what was checked, not that a review failed
+        L.append("- **Review:** **NOT REVIEWED: standard tier** — code QA only (the ten invariants on the encoded file "
+                 "and code-only repair); no critic or model watched the rendered video.")
+        return L
     if st.get("reviewed") is False:
         L.append("- **Review:** **NOT REVIEWED** — the critics could not review the shipped version"
                  + (f" ({_esc(st.get('review_note'))})" if st.get("review_note") else "") + ".")
@@ -321,6 +330,176 @@ def _review_lines(job: Job, rd: Path | None) -> list[str]:
         L.append(f"- **Variant {v.get('hook')}:** {v.get('outcome')}"
                  + (f" (delivered alternate: `deliver/alternates/{v['alternate']['label']}/`)" if v.get("alternate")
                     else "") + (f" — {_esc(v.get('note'))}" if v.get("note") else ""))
+    return L
+
+
+def _load(job: Job, rel: str) -> dict[str, Any]:
+    with contextlib.suppress(OSError, ValueError):
+        data = json.loads((job.root / rel).read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    return {}
+
+
+def _range_txt(index: TakeIndex | None, r: Any) -> str:
+    if not isinstance(r, Mapping) or not r.get("from_word"):
+        return "—"
+    a, b = str(r["from_word"]), str(r.get("to_word") or r["from_word"])
+    words = f" \"{_words_text(index, a, b, limit=10)}\"" if index is not None else ""
+    return f"{a}–{b}{words}"
+
+
+def _decision_lines(d: Mapping[str, Any], index: TakeIndex | None) -> list[str]:
+    """The planner's decision, one line per field it filled (IDs, with the words they name)."""
+    style = str(d.get("style_primary") or "?") + (f" + {d['style_secondary']}" if d.get("style_secondary") else "")
+    L = [f"- **Decision:** style {_esc(style)}; goal: {_esc(d.get('goal'))}; "
+         f"hook promise: {_esc(d.get('hook_promise'))}"]
+    drops = d.get("drop_sentences") or []
+    L.append("  - drops: " + (", ".join(f"{x.get('sentence_id')} ({x.get('reason')})" for x in drops) or "none"))
+    if d.get("choose_take"):
+        L.append("  - take choices: " + ", ".join(f"{x.get('cluster_id')} → {x.get('sentence_id')}"
+                                                   for x in d["choose_take"]))
+    L.append(f"  - payoff: {_range_txt(index, d.get('payoff'))}; CTA: {_range_txt(index, d.get('cta'))}")
+    if d.get("must_keep"):
+        L.append("  - must keep: " + "; ".join(_range_txt(index, r) for r in d["must_keep"]))
+    if d.get("deliberate_beat_gap_ids"):
+        L.append("  - pauses kept as beats: " + ", ".join(map(str, d["deliberate_beat_gap_ids"])))
+    if d.get("cut_filler_word_ids"):
+        L.append("  - fillers cut: " + ", ".join(map(str, d["cut_filler_word_ids"])))
+    pi = d.get("punch_in")
+    L.append("  - punch-in: " + (f"{pi.get('anchor_word')} ({_esc(pi.get('reason'))})" if isinstance(pi, Mapping)
+                                 else "none"))
+    if d.get("caption_emphasis_word_ids"):
+        L.append("  - caption emphasis: " + ", ".join(map(str, d["caption_emphasis_word_ids"])))
+    if d.get("caption_text_fixes"):
+        L.append("  - caption text fixes: " + ", ".join(f"{x.get('word_id')} → \"{_esc(x.get('text'))}\""
+                                                         for x in d["caption_text_fixes"]))
+    if d.get("structure_markers"):
+        L.append("  - structure labels: " + ", ".join(f"\"{_esc(x.get('label'))}\" on {x.get('anchor_from_word')}"
+                                                      for x in d["structure_markers"]))
+    if d.get("notes"):
+        L.append(f"  - planner notes: {_esc(d['notes'])}")
+    return L
+
+
+def _seam_rows(doc: CutDocument, index: TakeIndex, timeline: Timeline | None) -> list[list[str]]:
+    """One row per join between consecutive segments: where it plays, the words either side and what the join removes
+    (the document's recorded reasons)."""
+    rows: list[list[str]] = []
+    for k, (a, b) in enumerate(zip(doc.segments, doc.segments[1:], strict=False), start=1):
+        at = ""
+        if timeline is not None:
+            pieces = [p for p in timeline.segments if p.seg_id == b.id]
+            if pieces:
+                at = _t(pieces[0].out_start)
+        try:
+            pa, pb = index.word_pos(a.to_word), index.word_pos(b.from_word)
+        except (KeyError, ValueError):
+            continue
+        if pb <= pa:
+            cause = "reordered (the next segment comes earlier in the source)"
+        else:
+            between = index.words[pa + 1:pb]
+            ids = {w.id for w in between}
+            spoken = [w for w in between if w.is_spoken]
+            reasons: list[str] = []
+            for r in doc.removed:
+                try:
+                    rng = set(index.word_ids(r.from_word, r.to_word))
+                except (KeyError, ValueError):
+                    continue
+                why = r.reason or "no reason recorded"
+                if rng & ids and why not in reasons:
+                    reasons.append(why)
+            cause = (f"{len(spoken)} word(s) removed" if spoken else "no spoken words removed") + \
+                (f": {'; '.join(reasons)}" if reasons else "")
+        seam = b.seam_in.kind + (f" {b.seam_in.lead_ms} ms" if b.seam_in.lead_ms else "")
+        rows.append([str(k), at, f"{a.to_word} \"{index.word(a.to_word).display()}\"",
+                     f"{b.from_word} \"{index.word(b.from_word).display()}\"", seam, cause])
+    return rows
+
+
+def _section_plan(job: Job, doc: CutDocument | None, index: TakeIndex | None, timeline: Timeline | None) -> list[str]:
+    """The standard tier's plan (``logs/standard.json`` from the pipeline, ``logs/plan.json`` from the planner): where
+    the plan came from, the planner's decision, the digest it read, what the call cost, repair, and the seams."""
+    rec, plan = _load(job, "logs/standard.json"), _load(job, "logs/plan.json")
+    if not rec and not plan:
+        return []
+    L = ["## Plan (standard tier)", ""]
+    tier = str((job.meta.get("meta") or {}).get("tier") or "standard")
+    if tier != "standard":
+        L += [f"_This job was upgraded to the {tier} tier: below is the standard tier's first pass, whose render the "
+              "review rounds started from._", ""]
+    source = rec.get("plan_source")
+    if source:
+        L.append(f"- **Plan:** {_esc(source)}")
+    for n in rec.get("plan_notes") or []:
+        L.append(f"  - {_esc(n)}")
+    pr = rec.get("planner") or {}
+    note = pr.get("note") or plan.get("note")
+    decision = plan.get("decision")
+    if isinstance(decision, Mapping) and (not source or str(source).startswith("planner")):
+        L += _decision_lines(decision, index)
+    else:
+        L.append("- **Decision:** none — pure-code plan" + (f" ({_esc(note)})" if note else ""))
+    dg = rec.get("digest") or {}
+    if not dg and isinstance(plan.get("digest"), Mapping):
+        dg = {"chars": plan["digest"].get("chars"), "tokens_est": plan["digest"].get("tokens_est")}
+    if dg:
+        extra = ", ".join(f"{k.replace('_', ' ')} {_num(dg.get(k), '{:g}')}"
+                          for k in ("wpm", "energy", "pause_median_ms", "snr_db") if dg.get(k) is not None)
+        omitted = dg.get("omitted") or []
+        L.append(f"- **Digest:** {dg.get('chars', '?')} characters (≈{dg.get('tokens_est', '?')} tokens)"
+                 + (f", {dg['sentences']} sentences" if dg.get("sentences") is not None else "")
+                 + (f", {len(omitted)} omitted ({', '.join(map(str, omitted[:8]))})" if omitted
+                    else ", nothing omitted")
+                 + (f"; {extra}" if extra else "") + ("; music in the room" if dg.get("music_in_room") else ""))
+    if rec.get("colour"):
+        L.append(f"- **Colour (digest line):** {_esc(rec['colour'])}")
+    usage = plan.get("usage") or pr.get("usage") or {}
+    model = (plan.get("model") or {}).get("model") if isinstance(plan.get("model"), Mapping) else pr.get("model")
+    if usage or model:
+        attempts = plan.get("attempts", pr.get("attempts"))
+        cost = ""
+        with contextlib.suppress(Exception):
+            from studio.agent.cost import format_usd, job_cost
+
+            calls = [e for e in job.read_trace() if e.get("event") == "model_call" and e.get("role") == "planner"]
+            cs = job_cost(calls)
+            if cs.priced_calls:
+                by = ", ".join(f"{k.split(':', 1)[1]} {format_usd(v)}" for k, v in cs.by_stage.items())
+                cost = f"; {format_usd(cs.total_usd)} at list prices ({by})"
+        L.append(f"- **Planner:** {_esc(model or '?')}, {attempts if attempts is not None else '?'} call(s); "
+                 + ", ".join(f"{_num(usage.get(k), '{:,.0f}', '0')} {k.replace('_tokens', '').replace('_', ' ')}"
+                             for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"))
+                 + " tokens" + cost + (" (answer reused from logs/plan.json)" if pr.get("reused") else ""))
+        if note and isinstance(decision, Mapping):
+            L.append(f"  - {_esc(note)}")
+    rp = rec.get("repair")
+    if isinstance(rp, Mapping):
+        L.append(f"- **Repair:** {rp.get('mode')} pass on {rp.get('from')} → {rp.get('render')}; "
+                 f"{'passes' if rp.get('passed') else 'still fails'}; "
+                 f"fixed: {', '.join(rp.get('fixed') or []) or '—'}; "
+                 f"remaining: {', '.join(rp.get('remaining') or []) or '—'}")
+        L += [f"  - {_esc(n)}" for n in (rp.get("notes") or [])[:12]]
+    sa = rec.get("second_attempt")
+    if isinstance(sa, Mapping) and sa:
+        L.append("- **Second attempt (pure-code plan):** " + (
+            f"failed to run ({_esc(sa['error'])})" if sa.get("error") else
+            f"not run: {_esc(sa['skipped'])}" if sa.get("skipped") else
+            f"v{sa.get('doc_version')} rendered as {sa.get('render')}: "
+            + ("passes" if sa.get("passed") else f"still fails ({', '.join(sa.get('remaining') or [])})")))
+    if rec.get("stop_reason"):
+        L.append(f"- **Outcome:** {_esc(rec['stop_reason'])}")
+    if doc is not None and index is not None and len(doc.segments) > 1:
+        rows = _seam_rows(doc, index, timeline)
+        if rows:
+            L += ["", "### Seams", ""]
+            L += _table(["#", "Out", "Last word before", "First word after", "Seam", "What the join removes"],
+                        rows[:60])
+            if len(rows) > 60:
+                L += ["", f"_… {len(rows) - 60} more seams._"]
+    L.append("")
     return L
 
 
@@ -791,6 +970,7 @@ def _section_history(job: Job, doc: CutDocument | None) -> list[str]:
     trace = job.read_trace()
     calls = [e for e in trace if e.get("event") == "model_call"]
     asr_calls = [e for e in trace if e.get("event") == "asr" and e.get("status") != "failed"]
+    iso_calls = [e for e in trace if e.get("event") == "audio_isolation"]
     if calls:
         agg: dict[tuple[str, str], dict[str, float]] = defaultdict(lambda: defaultdict(float))
         for e in calls:
@@ -805,14 +985,14 @@ def _section_history(job: Job, doc: CutDocument | None) -> list[str]:
                     [[r, m, f"{a['calls']:.0f}", f"{a['input_tokens']:.0f}", f"{a['output_tokens']:.0f}",
                       f"{a['latency_ms'] / 1000:.0f} s"] for (r, m), a in sorted(agg.items())])
         L.append("")
-    if calls or asr_calls:
-        # ---- cost: model calls at list prices, ASR by the audio hour (studio.agent.cost)
-        from studio.agent.cost import ASR_PRICES_PER_HOUR, PRICES_AS_OF, format_usd, job_cost
+    if calls or asr_calls or iso_calls:
+        # ---- cost: model calls at list prices, ASR by the audio hour, paid isolation by the minute (studio.agent.cost)
+        from studio.agent.cost import ASR_PRICES_PER_HOUR, ISOLATION_PRICES_PER_MIN, PRICES_AS_OF, format_usd, job_cost
 
-        cs = job_cost([*calls, *asr_calls])
+        cs = job_cost([*calls, *asr_calls, *iso_calls])
         if cs.priced_calls:
             t = cs.tokens
-            model_usd = sum(v for r, v in cs.by_role.items() if r != "asr")
+            model_usd = cs.model_usd
             L += [f"**Estimated model cost: ${model_usd:.2f}** (Anthropic list prices as of {PRICES_AS_OF}; "
                   f"{t.get('output', 0):,} output, {t.get('cache_read', 0):,} cache-read, "
                   f"{t.get('cache_write', 0):,} cache-write and {t.get('uncached_input', 0):,} uncached input tokens"
@@ -826,8 +1006,13 @@ def _section_history(job: Job, doc: CutDocument | None) -> list[str]:
             L += [f"**Estimated ASR cost: {format_usd(cs.by_role.get('asr', 0.0))}** "
                   f"({cs.asr_seconds:.0f} s of audio over {cs.asr_calls} call{'s' if cs.asr_calls != 1 else ''}"
                   f"{cached}; {purposes}; {prices}, exact seconds, as of {PRICES_AS_OF})", ""]
-        if cs.priced_calls or cs.asr_calls:
-            if cs.priced_calls and cs.asr_calls:
+        if cs.isolation_calls:
+            prices = ", ".join(f"{p} ${v:.2f}/min" for p, v in ISOLATION_PRICES_PER_MIN.items())
+            L += [f"**Estimated paid voice isolation cost: {format_usd(cs.by_role.get('isolation', 0.0))}** "
+                  f"({cs.isolation_seconds:.0f} s of audio over {cs.isolation_calls} pass"
+                  f"{'es' if cs.isolation_calls != 1 else ''}; {prices}, as of {PRICES_AS_OF})", ""]
+        if cs.priced_calls or cs.asr_calls or cs.isolation_calls:
+            if sum(1 for n in (cs.priced_calls, cs.asr_calls, cs.isolation_calls) if n) > 1:
                 L += [f"**Estimated total: ${cs.total_usd:.2f}**", ""]
             L += _table(["Role: stage", "USD"], [[k, format_usd(v).lstrip("$")] for k, v in cs.by_stage.items()])
             L.append("")
@@ -880,6 +1065,10 @@ def render_report(job: Job, *, render_dir: str | os.PathLike[str] | None = None,
                   "what is on screen._", ""]
         except Exception as e:
             notes.append(f"contact sheet failed ({type(e).__name__}: {str(e)[:120]})")
+    try:
+        L += _section_plan(job, doc, index, timeline)
+    except Exception as e:  # the plan section is reproducible from logs; it must never break the report
+        notes.append(f"plan section failed ({type(e).__name__}: {str(e)[:120]})")
     L += _section_brief(doc)
     L += _section_story(doc, index, timeline)
     L += _section_inserts(doc, index, timeline)

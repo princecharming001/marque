@@ -220,3 +220,43 @@ def test_bad_studio_tier_env_is_a_clean_error(video: Path, capsys, monkeypatch):
 def test_edit_result_prints_its_tier(calls, video: Path, capsys):
     assert cli.main(["edit", str(video)]) == 0
     assert "tier: director" in capsys.readouterr().out
+
+
+def test_nothing_delivered_exits_4_and_says_so(calls, video: Path, tmp_path: Path, capsys, monkeypatch):
+    """A standard edit (or chat) whose render still fails the invariants after repair delivers nothing: scripts that
+    drive the CLI must not read it as success, and the printed result names the missing finals."""
+    jd = tmp_path / "job"
+    monkeypatch.setattr(pipeline, "edit", lambda *a, **k: pipeline.EditResult(
+        job_dir=jd, invariants_passed=False, tier="standard", reviewed=False,
+        stop_reason="standard tier: the render fails invariants after repair (7 text_safe); nothing delivered"))
+    assert cli.main(["edit", str(video), "--tier", "standard"]) == cli.EXIT_NOT_DELIVERED == 4
+    cap = capsys.readouterr()
+    assert "finals: none (NOT DELIVERED" in cap.out and "invariants_passed: False" in cap.out
+    assert "NOT DELIVERED" in cap.err
+    monkeypatch.setattr(pipeline, "chat", lambda *a, **k: pipeline.ChatResult(
+        job_dir=jd, summary="Tighter. — NOT DELIVERED: the render still fails invariants", invariants_passed=False))
+    jd.mkdir()
+    assert cli.main(["chat", str(jd), "tighten it"]) == 4
+    capsys.readouterr()
+    # --json prints the result and still exits 4
+    assert cli.main(["--json", "chat", str(jd), "tighten it"]) == 4
+    assert json.loads(capsys.readouterr().out)["result"]["invariants_passed"] is False
+    # a delivered result, an unchanged chat (invariants_passed None) and a Director champion that ships exit 0
+    monkeypatch.setattr(pipeline, "chat", lambda *a, **k: pipeline.ChatResult(job_dir=jd, summary="as it is"))
+    assert cli.main(["chat", str(jd), "keep it"]) == 0
+    monkeypatch.setattr(pipeline, "edit", lambda *a, **k: pipeline.EditResult(
+        job_dir=jd, invariants_passed=False, finals={"tiktok": jd / "final_tiktok.mp4"}))
+    assert cli.main(["edit", str(video)]) == 0
+
+
+def test_index_tier_and_chat_spend_cap_flags(calls, video: Path, tmp_path: Path):
+    jd = tmp_path / "some_job"
+    jd.mkdir()
+    assert cli.main(["index", str(video), "--tier", "standard"]) == 0
+    assert calls[0][2]["tier"] == "standard"
+    assert cli.main(["index", str(video)]) == 0
+    assert calls[1][2]["tier"] is None
+    assert cli.main(["chat", str(jd), "shorter", "--max-usd", "0.05"]) == 0
+    assert calls[2][2]["max_usd"] == 0.05
+    assert cli.main(["chat", str(jd), "shorter"]) == 0
+    assert calls[3][2]["max_usd"] is None

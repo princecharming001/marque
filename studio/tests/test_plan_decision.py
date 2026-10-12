@@ -227,6 +227,15 @@ def test_is_cta_sentence_lexicon() -> None:
     for text in ("Most people cut their videos way too much.", "The real secret is restraint.", "They buy the outcome.",
                  "Market share fell.", "I followed the recipe."):
         assert not is_cta_sentence(text), text
+    # the misses a creator actually says, and the ordinary content the bare patterns used to take for a CTA
+    for text in ("Let me know in the comments.", "Save it for later.", "Send this to a friend who needs it.",
+                 "Rate that version 7 out of 10.", "Follow along for part two.", "Grab your free guide below.",
+                 "Download my template.", "Book a call with me."):
+        assert is_cta_sentence(text), text
+    for text in ("If you follow this rule, you never burn garlic.", "Grab a pan and heat the oil.",
+                 "Next week I tried it again.", "There's a link between sleep and mood.",
+                 "Check out the difference in texture.", "I download every recipe I see."):
+        assert not is_cta_sentence(text), text
 
 
 def test_filler_cuts_only_name_fillers_or_events(take_index: TakeIndex) -> None:

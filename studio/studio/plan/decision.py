@@ -43,13 +43,17 @@ MAX_EMPHASIS_WORDS = 8
 
 #: Spoken call-to-action markers (lower-cased sentence text, punctuation stripped). A sentence matching one is the
 #: creator's CTA: the doctrine protects it ("never invent a CTA or drop the one they say"), so it is dropped only
-#: as a ``repeat`` (a retake of the same line exists).
+#: as a ``repeat`` (a retake of the same line exists). The patterns are the imperative forms: a bare "follow",
+#: "link", "download", "check out" or "next week" is ordinary content ("if you follow this rule", "a link between
+#: sleep and mood", "next week I tried it again") and must not be pinned or protected as a CTA.
 CTA_LEXICON: tuple[str, ...] = (
-    r"\bfollow\b", r"\bsubscribe\b", r"\bcomment\b", r"\blike and share\b", r"\bshare (this|it|with)\b",
-    r"\blink\b", r"\bin (my|the) bio\b", r"\bpart (two|2|ii)\b", r"\bnext (video|part|episode|week)\b",
-    r"\bsave this\b", r"\bdm me\b", r"\bcheck out\b", r"\bsign up\b", r"\bturn on (post )?notifications\b",
-    r"\btag (a|some|your)\b", r"\bdownload\b", r"\bpre-?order\b", r"\bjoin (the|my|our)\b",
-    r"\bgrab (the|my|your|a)\b", r"\bbook a\b",
+    r"\bfollow (me|us|for|along)\b", r"\bsubscribe\b", r"\bcomments?\b", r"\blet me know\b",
+    r"\blike and share\b", r"\bshare (this|it|with)\b", r"\blink (in|below)\b", r"\bin (my|the) bio\b",
+    r"\bpart (two|2|ii)\b", r"\bnext (video|part|episode)\b", r"\bsave (this|it)\b", r"\bsend this\b",
+    r"\bdm me\b", r"\bcheck out (my|our|the link)\b", r"\bsign up\b", r"\bturn on (post )?notifications\b",
+    r"\btag (a|some|your)\b", r"\bdownload (my|our|the|this|it)\b", r"\bpre-?order\b", r"\bjoin (the|my|our)\b",
+    r"\bgrab (a|my|your|the) (free|copy|guide|course|spot|seat|tickets?|template|discount|link|freebie)\b",
+    r"\bbook (a|your) (call|session|consult\w*|demo|spot|appointment)\b", r"\brate (this|that|it)\b",
 )
 _CTA_RE = re.compile("|".join(CTA_LEXICON))
 

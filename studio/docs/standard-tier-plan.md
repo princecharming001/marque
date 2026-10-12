@@ -1,6 +1,19 @@
 # Studio standard tier: an edit for under $0.20
 
-_Owner requirement (2026-10-09): total marginal cost per video under $0.20 with a margin, the way the mass-market editors do it. This is the investigated answer and the build plan; nothing here is implemented yet except the no-regret steps noted in HANDOFF.md._
+_Owner requirement (2026-10-09): total marginal cost per video under $0.20 with a margin, the way the mass-market editors do it. This is the investigated answer and the build plan; see the Status note for what is built._
+
+> **Status (2026-10-12).** Built and keyless-tested. Nothing in the tier has been run against a real model or real ASR yet, because the API credits are exhausted. Every cost and quality figure below is still an estimate until the section 4 probe runs.
+>
+> | Steps (section 3) | State |
+> |---|---|
+> | 0 (prices, capabilities), 1 (tier plumbing), 2 (digest), 4 (planner), 5 (render profile, Remotion concurrency, 1080p30 conform at ingest), 9 (ASR accounting) | Built in phase A (commit `6bb7358`) |
+> | 3 (code plan), 6 (repair), 11 (offline eval harness, keyless half) | Built in phase B |
+> | 7 (pipeline branch), 8 (standard chat), and the upgrade from a standard job to the Director (step 10) | Phase C, being wired as this note is written |
+> | 10, the rest | `max_model_usd` / `--max-usd` is built. The one-round "Pro review" add-on and the notes-only rung are not |
+> | 12 (docs) | Done |
+> | P2 | Not started |
+>
+> The as-built signatures are in `standard-tier-interfaces.md` ("As built" notes). What was built and measured is in HANDOFF.md section 6c.
 
 
 ## 1. Why the engine costs $5-36 and the mass-market apps cost cents

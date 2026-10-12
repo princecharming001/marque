@@ -95,8 +95,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 @pytest.fixture(autouse=True)
 def _director_tier(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The whole suite edits in the ``director`` tier (the default ``STUDIO_TIER`` is ``standard``, which refuses until
-    phase C lands). ``_isolate_settings`` depends on this so the env var is set before settings are reloaded."""
+    """The whole suite edits in the ``director`` tier unless a test asks for another (the default ``STUDIO_TIER`` is
+    ``standard``; tests/test_pipeline_standard.py covers that tier with ``tier="standard"`` or its own
+    ``STUDIO_TIER``). ``_isolate_settings`` depends on this so the env var is set before settings are reloaded."""
     monkeypatch.setenv("STUDIO_TIER", "director")
 
 

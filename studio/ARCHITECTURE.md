@@ -9,6 +9,12 @@ doctrine in `skills/editing/` wins.
 **Only goal: the quality of the final video.** Ignore cost and latency. Never trade quality for speed
 in the default path. (Previews may be faster; finals may not.)
 
+**Tiers (owner requirement, 2026-10-09).** That goal is the **director** tier. The **standard** tier, the default
+for new jobs, must cost under $0.20 a video. It keeps the same document, compiler, renderer and all ten invariants
+(§7), and gives up the review: no model watches the rendered file, and it ships marked "NOT REVIEWED: standard
+tier". It trades encode speed (x264 `medium`, a 1080p30 working copy) and the critic loop for cost, never the hard
+gates. See §11, `docs/standard-tier-plan.md` and `docs/standard-tier-interfaces.md`.
+
 **Standalone.** Studio is not wired into the app or the old backend (`backend/`). Do not import from
 `backend/` or modify anything outside `studio/`. The old static engine is frozen at git tag
 `static-engine-v1`.
@@ -21,8 +27,11 @@ in the default path. (Previews may be faster; finals may not.)
    timestamp that becomes an edit coordinate. Models address **word IDs** (`w0001`…), **gap IDs**
    (`g0001`…), **sentence IDs** (`s001`…), **take-cluster IDs** (`c01`…), **insert IDs** (`i001`…) and
    **segment IDs** (`seg001`…). Code converts IDs to times using measured boundaries.
-2. **One writer.** Only the Director's ops mutate the CutDocument, through `studio.doc.ops.apply_ops`.
-   Specialists and critics return proposals/notes, never documents.
+2. **One writer.** Only ops mutate the CutDocument, through `studio.doc.ops.apply_ops` (via
+   `studio.agent.tools.EditSession`, which writes the versions and the oplog). The writer is the Director in
+   the director tier, and in the standard tier code: the code plan, which applies the planner's ID-only
+   decision, the code repair, and the standard chat's op list. Specialists, critics and the planner return
+   proposals, notes or decisions, never documents.
 3. **Guidance, not rules.** Craft numbers live in `skills/editing/` and `skills/editing/constants.yaml`
    as priors. Only the invariants in §7 are hard gates.
 4. **Keys.** All secrets come from `studio.config.Settings` (env vars, optionally loaded from the file
@@ -59,22 +68,35 @@ in the default path. (Previews may be faster; finals may not.)
 - `studio.timebase`: all media times are **integer microseconds** (`int`, name suffix `_us`) in the
   Take Index; the compiler works in `fractions.Fraction` seconds and snaps each edit once to the output
   frame grid; audio sample positions derive from the same instants (no float drift).
-- Output frame rate = source frame rate (29.97/30/59.94/60 preserved; VFR conformed to nearest CFR).
+- Output frame rate = source frame rate (29.97/30/59.94/60 preserved; VFR conformed to nearest CFR) in the
+  director tier. The standard tier caps it at 30 fps by dropping whole frames in a regular pattern (60 → 30,
+  59.94 → 29.97, 50 → 25; never resampled); slower sources keep their rate. See §3.
 
 ## 3. Ingest (`studio.media`)
 
-`ingest(src_path, job) -> MediaInfo` produces in the job dir:
+`ingest(src_path, job, *, max_height=None, max_fps=None) -> MediaInfo` produces in the job dir:
 - `media/original.<ext>` (hard link or copy; never modified)
 - `media/probe.json` (ffprobe), `MediaInfo`: width/height after rotation, display aspect, fps
   (Fraction), vfr flag, duration_us, color (primaries/transfer/matrix/range; `hdr: bool`), audio
   (codec, sample rate, channels), rotation, edit-list/priming notes.
 - `media/mezz.mov` — the **mezzanine**: rotated upright, SDR BT.709 (HLG/PQ tone-mapped exactly once
-  with zscale+tonemap, 203-nit reference white, dither), CFR at source fps, full resolution,
-  ProRes 422 HQ (or FFV1) — every later video operation reads this, never the original. When the disk budget
-  (`studio.storage`: the mezzanine *plus* the edit's renders) does not fit, the codec steps down ProRes 422 →
-  the lean intermediate (HEVC 4:2:2 10-bit VideoToolbox q85, x264 4:2:2 10-bit CRF 4 fallback; ≥ 56 dB PSNR).
+  with zscale+tonemap, 203-nit reference white, dither). Every later video operation reads this, never the
+  original. Its size and rate depend on the tier:
+  - **Director tier: full resolution**, CFR at the source fps, ProRes 422 HQ (or FFV1).
+  - **Standard tier: 1080p30, lean.** The pipeline passes `max_height` (1920 for a portrait picture, 1080 for a
+    landscape one) and `max_fps=30`. The height is capped (aspect kept, even width). The rate is divided by the
+    smallest integer that brings it under 30 (60 → 30, 59.94 → 29.97). A cap also selects the lean intermediate
+    codec as the tier's budget rather than a disk fallback. The resize is one more zscale step in the same graph,
+    so HDR is still tone-mapped exactly once (invariant 6). `MediaInfo` width/height/fps describe the mezzanine,
+    and `MediaInfo.conform` records the source geometry and rate. A 4K60 source costs ~165-180 vCPU-min through a
+    full-resolution mezzanine, which is the reason for the cap; the output canvas is 1080x1920 either way.
+
+  In the director tier, when the disk budget (`studio.storage`: the mezzanine *plus* the edit's renders) does
+  not fit, the codec steps down ProRes 422 → the lean intermediate (HEVC 4:2:2 10-bit VideoToolbox q85, x264
+  4:2:2 10-bit CRF 4 fallback; ≥ 56 dB PSNR).
   A delivered (or idle) job's mezzanine is regenerable: it may be reclaimed and is rebuilt frame-identically
-  from `media/original.*` before the next render (`storage.ensure_mezz`).
+  from `media/original.*` before the next render (`storage.ensure_mezz`, at the size and rate it was first
+  built with, so a standard job stays 1080p30).
 - `media/audio.wav` — 48 kHz float32 mono (and stereo if source is stereo) dialogue track.
 - `media/proxy.mp4` — 540x960 H.264 with burned timecode, for fast frame grabs and previews.
 
@@ -172,20 +194,24 @@ grid snapping happens once here.
 Render stages (each writes into `renders/r{n}/`):
 1. **A-roll video** — ffmpeg filtergraph from `mezz.mov`: trims, speed (setpts), framing transforms
    (crop+scale with Lanczos from the full-res mezz, face-tracked centers smoothed), b-roll layers
-   (full / split / pip / card-underlay), output 1080x1920 @ source fps, ProRes 422 HQ intermediate (the lean
-   intermediate when the disk budget says so; recorded as `aroll_codec` in `render.json`).
+   (full / split / pip / card-underlay), output 1080x1920 @ the mezzanine's fps, ProRes 422 HQ intermediate (the
+   lean intermediate when the disk budget says so, and always in the standard tier; recorded as `aroll_codec` in
+   `render.json`).
 2. **Overlays** — Remotion project `studio/overlay/` renders captions, text overlays, designed cards
    and graphics from `overlay_props.json` as ProRes 4444 with alpha (bt709, png intermediates), same
-   fps/duration.
+   fps/duration; `STUDIO_REMOTION_CONCURRENCY` browser tabs at once (default: the CPU count).
 3. **Audio** — dialogue segments cut from `audio.wav` with 10–30 ms equal-power crossfades and
    room-tone fill; speed via `rubberband -3` (pitch preserved); voice chain (pedalboard: HPF, EQ,
    de-ess, compression, optional denoise/isolation); music bed (ducked under speech by sidechain
    envelope), SFX; loudness normalize to target with a 4x-oversampled true-peak limiter. Outputs
    `mix.wav` and `mix_nomusic.wav` (48 kHz).
 4. **Master** — ffmpeg composite A-roll + overlays + audio → `final_<platform>.mp4`: x264 High
-   8-bit 4:2:0 BT.709 tagged, CRF 14–16, preset veryslow (preview: faster preset), `+faststart`, AAC
-   ≥256 kbps 48 kHz; also `final_nomusic.mp4`, `cover.jpg`, `captions.srt`.
-Preview renders use the proxy and a fast preset; the champion and finals always use full quality.
+   8-bit 4:2:0 BT.709 tagged, `+faststart`, AAC ≥256 kbps 48 kHz; also `final_nomusic.mp4`, `cover.jpg`,
+   `captions.srt`. Preset and CRF come from the render profile (`master.RENDER_PROFILES`, threaded through
+   `render_full`/`render_document`/`master(profile=...)` and recorded in `render.json`): `final` = veryslow
+   CRF 15 (the director tier's champion and finals), `standard` = medium CRF 16 (the standard tier's one render),
+   `preview` = faster CRF 20. GOP, VBV caps and colour tags are shared, so invariant 10 is the same for all.
+Preview renders use the proxy and a fast preset; the director tier's champion and finals always use full quality.
 
 ## 7. Invariants (the only hard gates; `studio.qa`)
 
@@ -203,19 +229,28 @@ Preview renders use the proxy and a fast preset; the champion and finals always 
 9. No digital silence under speech.
 10. Delivery format checks (codec, pix_fmt, color tags, fps, duration, faststart).
 
+The ten invariants are **the same in both tiers**. They gate every render that ships: the director tier's
+champion, and the standard tier's one render, its repair render and its chat renders. The standard tier does not
+relax, skip or add any of them. Its repair (§11) is code that edits the document or re-renders a layer until they
+pass. It never waives one.
+
 ## 8. Job directory
 
 `$STUDIO_WORK_DIR/<job_id>/` (default `/Users/home/studio-work/`):
 `media/`, `index/`, `doc/`, `renders/`, `critique/`, `assets/` (b-roll, music, sfx with licence
-json), `logs/`, `trace.jsonl` (every model call: role, provider, model, tokens, latency, tool calls),
-`report.md`.
+json), `logs/`, `trace.jsonl` (every model call: role, provider, model, tokens, latency, tool calls; every ASR
+call as an `asr` event with its audio seconds), `report.md`. The standard tier adds `logs/plan.json` (the
+planner's decision, attempts, rejections, usage). `job.json` records the tier, the planner (model, effort) and
+the Director, so a resume or a chat stays in the tier and on the models it started with.
 
 ## 9. Agents (`studio.agent`)
 
 - Providers (`providers.py`): `ModelSpec{provider: anthropic|openai|google|openai_compat, model,
   api_key (in-memory), base_url, capabilities{vision, video_input, strict_tools}}`; house default
   Anthropic; BYOK supplies a spec for the **Director** role; critics stay house. Built on
-  pydantic-ai native model classes.
+  pydantic-ai native model classes. Roles and their efforts are in `ROLE_EFFORT`: director `max`, critic `high`,
+  planner `low`, among others. The planner role uses a 5-minute cache TTL (one call plus at most one retry);
+  the others use 1 h.
 - Director (`director.py`): stages brief → story cut → fine cut → finishing → finalize; tools are
   thin wrappers over the Take Index query API, `contact_sheet`, `load_skill(name)`, `apply_ops`,
   `render_preview(scope)`, `ask_creator` (returns "no answer" in batch mode), and critique requests.
@@ -234,14 +269,109 @@ json), `logs/`, `trace.jsonl` (every model call: role, provider, model, tokens, 
   confirmed P0/P1 wins when nothing regresses and no judge prefers the champion; ties = keep
   champion) → keep/stop after 2 winless rounds (guard 12); recorded hook alternates are built,
   rendered and judged as variants; the closing watch's confirmed P0/P1 opens one more round; a
-  champion the critics could not review ships marked NOT REVIEWED.
+  champion the critics could not review ships marked NOT REVIEWED. `LoopConfig.max_model_usd`
+  (`--max-usd`, `STUDIO_MAX_MODEL_USD`) stops opening rounds once the job's model spend at list prices
+  reaches the cap; the champion ships with stop reason `model spend cap`.
+- Planner (`studio/plan/planner.py`, standard tier only): one structured-output call returning a
+  `PlanDecision` of IDs, one retry carrying the rejection text, then the pure-code plan; never a tool
+  loop, never images, never a critic. See §11.
 
 ## 10. CLI (`studio.cli`, entry point `studio`)
 
-- `studio edit <video> [--brief TEXT] [--style NAME] [--platform tiktok|reels|shorts]
+- `studio edit <video | job_dir> [--brief TEXT] [--style NAME] [--platform tiktok|reels|shorts]
+  [--tier standard|director] [--planner-model M] [--max-usd USD]
   [--director-provider P --director-model M --director-key-env VAR | --house] [--rounds N] [--out DIR]`
-  → runs everything, prints the job dir and final file paths.
-- `studio chat <job_dir> "<instruction>"` → Director applies ops for the instruction, re-renders,
-  re-judges, prints what changed.
+  → runs everything in the tier (`--tier`, else the job's recorded tier, else `STUDIO_TIER`, default
+  `standard`), prints the job dir, the tier and final file paths. A job directory resumes it. A standard job given
+  `--tier director` is upgraded to the Director (§11).
+- `studio chat <job_dir> "<instruction>" [--planner-model M]` → in the job's tier. Director tier: the Director
+  applies ops for the instruction, re-renders, re-judges, prints what changed. Standard tier: one planner-model
+  call returns ops (§11).
 - `studio index <video>`, `studio render <job_dir> [--version N] [--preview]`, `studio report <job_dir>`,
   `studio qa <job_dir>`.
+
+## 11. The standard tier (`studio.plan`)
+
+The default tier for new jobs. It is the deterministic engine above plus **one** model call, **one** render, the ten
+invariants and **code-only** repair, shipped marked "NOT REVIEWED: standard tier". The target is a marginal model +
+ASR cost of about $0.04 a video (Sonnet 5.5 planner), about $0.01 with Haiku 5.5, and under $0.20 all-in with
+compute. These figures are estimated from list prices and the measured digest sizes, and are not yet verified with
+real credits (`docs/standard-tier-plan.md` §4). The binding signatures, with "As built" notes, are in
+`docs/standard-tier-interfaces.md`.
+
+**Flow** (`pipeline.edit` with tier `standard`; `pipeline._edit_standard`):
+1. **Ingest** with `max_height`/`max_fps`: the 1080p30 lean mezzanine (§3).
+2. **Take Index**, unchanged (§4).
+3. **Digest** (`plan/digest.py`, `build_digest`). A text view of the index, typically 0.8-1.3k estimated tokens and
+   capped at 12k:
+   - one line per sentence, with every word ID inline, fillers `{um}`, cut-offs, `[cNN rec]` retake tags,
+     `[incomplete]` and `[chopped]`, and pauses `[g0012 0.62s]`;
+   - the measured stats: energy, wpm, pauses, SNR, music in the room;
+   - the top emphasis words, the caption placement options and the voice-chain note;
+   - the colour line, when a mezzanine exists.
+4. **Planner** (`plan/planner.py`, `plan`). One `pydantic_ai.Agent(output_type=NativeOutput(PlanDecision))` call,
+   role `planner` (Sonnet 5.5 at effort `low` by default, 8k max tokens, 5 m cache TTL, no server-side refusal
+   fallback, a $0.15 spend cap per plan unless `--max-usd` says otherwise). The cached prefix is
+   a doctrine checklist of under 1k tokens plus the compact schema; the digest is the user turn.
+   - `validate_decision` rejects what code cannot apply or the doctrine forbids: unknown IDs, drops past half the
+     spoken words, dropping the spoken CTA, a repeat with no later take, more than one punch-in, more than eight
+     accents.
+   - One retry carries the rejection lines.
+   - A refusal, a provider error, a missing key or a second rejection gives `decision=None`. Nothing escalates unless
+     `STUDIO_PLANNER_FALLBACK` names a model.
+   - Everything is written to `logs/plan.json` and traced.
+5. **Code plan** (`plan/code_plan.py`, `plan_document`). The ordered op list, applied through `EditSession` to a
+   fresh document. Story:
+   - one take per retake cluster (the decision's choice, else the index's recommendation);
+   - false starts and abandoned lines dropped, plus the decision's drops;
+   - cut-off and dropout-chopped words removed back to the nearest clause edge, else the sentence dropped.
+
+   Everything else:
+   - fillers and pauses from the `constants.yaml` priors, never below the speaker's median pause;
+   - pins for the payoff, the CTA and must-keep words;
+   - at most one punch-in, only where the source's clean scale allows it;
+   - structure-marker labels;
+   - captions at one uniform size: the largest in 88-64 px that pages cleanly, re-paging rather than shrinking;
+   - the measured voice chain (paid isolation only for music in the room on a source of at most 60 s);
+   - colour only on a measured fault;
+   - music, SFX and b-roll never.
+
+   The radio test (`validate.radio_blockers`) is a gate before compiling. With no decision, the same code builds the
+   pure-code plan.
+6. **One render**, `render_full(profile="standard")`: lean A-roll, Remotion overlays at
+   `STUDIO_REMOTION_CONCURRENCY`, x264 medium CRF 16.
+7. **QA**: `evaluate_render`, the ten invariants on the encoded file (§7).
+8. **Repair** (`plan/repair.py`, `repair`). Code only, at most one re-render, before any prune:
+   - invariant 1: cut the fragment at the join, then a full render;
+   - invariant 4: restore the pins, then a full render;
+   - invariant 7: re-place the caption pages, then an overlay + master pass on the failed render's hard-linked
+     `aroll.mov` and mixes;
+   - invariant 8: re-master the mix and re-mux onto the stream-copied video.
+
+   Failures with no code fix render nothing and are reported. If repair does not pass, the second attempt is the
+   pure-code plan; otherwise the job FAILS. It never ships a failing render.
+9. **Deliver** one final (no byte-identical `final_nomusic.mp4`, since there is never music). `LoopState` is written
+   with the champion render and document, `reviewed=False` and `review_note="standard tier: code QA only"`. The
+   report has the Plan section, the seams table and the NOT REVIEWED line.
+
+**Chat** (`pipeline._chat_standard`). One planner-model call turns the instruction into an op list, given the
+document summary, the cut transcript and the caption geometry. The ops are allowed for the cut, captions, text,
+framing and audio levels. Music, b-roll and isolation get a priced refusal. Then `apply_ops`, with one retry on
+rejected ops, and an overlay + master render when the cut is unchanged, else a full standard render. Then the
+invariants, repair and delivery.
+
+**Upgrade.** `studio edit <job> --tier director` resumes a standard job into the Director's champion loop from the
+standard champion. The media and Take Index are reused (so a 4K source stays at the 1080p30 mezzanine), and the first
+pass is not paid again.
+
+**What it keeps and what it gives up.** It keeps the verbatim Take Index, retake clusters, gap snap points,
+crossfades and room tone, the face-aware caption placer, the measured voice chain, loudness, the CutDocument and
+oplog (so chat, `studio qa` and the upgrade are resumes), and all ten invariants. It gives up any review of the
+rendered file: taste defects can ship, which is what "NOT REVIEWED: standard tier" says. It also gives up a heard
+pacing pass, b-roll, cards, music, SFX, looks, variants and pairwise judging.
+
+**Status (2026-10-12).** Every stage above exists as a module and is keyless-tested: the ingest conform, the digest,
+the planner, the code plan, the render profile and repair. Phase C is being wired as this is written. It covers
+`_edit_standard`, which chains the stages and passes the ingest caps, `_chat_standard`, and the upgrade. Nothing has
+run against a real model or real ASR. `scripts/plan_eval.py` compares the code plan with the Director's delivered
+documents offline (HANDOFF §6c).

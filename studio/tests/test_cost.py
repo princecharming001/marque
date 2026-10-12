@@ -103,3 +103,24 @@ def test_asr_rides_along_with_model_calls_in_the_summary() -> None:
         f"${planner + asr:.2f} over 1 calls and 2 ASR calls (planner ${planner:.2f}, asr $0.007 (114 s audio);")
     # sub-cent figures keep their digits instead of rounding a real charge to $0.00
     assert [C.format_usd(v) for v in (0.0, 0.0275, 0.00275, 0.00012)] == ["$0.00", "$0.03", "$0.003", "$0.0001"]
+
+
+def test_paid_isolation_is_priced_and_kept_out_of_model_spend() -> None:
+    """ElevenLabs isolation ($0.12/min) is the largest line of a standard video when it runs: it is in the total,
+    the summary line and the report, and left out of model spend (the Director's cap and the planner's)."""
+    events = [_call("claude-sonnet-5-5", "planner", "plan", 3_500, 2_000), _asr("elevenlabs", "index", 60.0),
+              {"event": "audio_isolation", "provider": "elevenlabs", "seconds": 45.0},
+              {"event": "audio_isolation", "provider": "nobody", "seconds": 10.0}]
+    cs = C.job_cost(events)
+    planner, asr, iso = (3_500 * 2 + 2_000 * 10) / 1e6, 60.0 / 3600 * 0.22, 45.0 / 60 * 0.12
+    assert C.isolation_cost(events[2]) == pytest.approx(0.09) and C.isolation_cost(events[3]) is None
+    assert cs.total_usd == pytest.approx(planner + asr + iso) and cs.model_usd == pytest.approx(planner)
+    assert cs.by_role["isolation"] == pytest.approx(iso) and cs.by_stage["isolation:elevenlabs"] == pytest.approx(iso)
+    assert cs.isolation_calls == 1 and cs.isolation_seconds == 45.0 and "isolation:nobody" in cs.unpriced_models
+    line = C.format_cost(cs)
+    assert "isolation $0.09 (45 s audio)" in line and "and 1 isolation pass" in line
+    assert C.model_spend(events) == pytest.approx(planner)
+    d = cs.to_dict()
+    assert d["isolation_usd"] == pytest.approx(iso, abs=1e-4) and d["model_usd"] == pytest.approx(planner, abs=1e-4)
+    # isolation alone is still a priced summary
+    assert C.format_cost(C.job_cost(events[2:3])).startswith("$0.09 over 0 calls and 1 isolation pass")

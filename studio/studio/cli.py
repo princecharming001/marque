@@ -6,8 +6,8 @@
                 [--tier standard|director] [--planner-model M]
                 [--media FILE …] [--director-provider P --director-model M --director-key-env VAR]
                 [--rounds N] [--out DIR] [--asr-provider elevenlabs|assemblyai]
-    studio chat <job_dir> "<instruction>" [--planner-model M] [--director-…] [--out DIR]
-    studio index <video> [--asr-provider elevenlabs|assemblyai]
+    studio chat <job_dir> "<instruction>" [--planner-model M] [--max-usd USD] [--director-…] [--out DIR]
+    studio index <video> [--tier standard|director] [--asr-provider elevenlabs|assemblyai]
     studio render <job_dir> [--version N] [--preview]
     studio report <job_dir>
     studio qa <job_dir> [--render N]
@@ -19,7 +19,9 @@ output). Keys are never read here: ``--director-key-env`` passes the *name* of a
 ``--tier`` picks the edit path (default ``STUDIO_TIER``, ``standard``); a resume and ``studio chat`` reuse the tier
 the job was edited with, and the flags given now win.
 
-Exit codes: 0 ok · 1 error (including too little free disk for a render) · 2 usage · 3 stage not implemented yet.
+Exit codes: 0 ok · 1 error (including too little free disk for a render) · 2 usage · 3 stage not implemented yet ·
+4 nothing delivered (a standard edit or a chat whose render still fails the invariants after repair: the result is
+printed, ``deliver/`` is untouched and the previous champion, if any, stays).
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ PLATFORMS = ("tiktok", "reels", "shorts")
 PROVIDERS = ("anthropic", "openai", "google", "openai_compat")
 TIERS = ("standard", "director")
 
-EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_NOT_IMPLEMENTED = 0, 1, 2, 3
+EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_NOT_IMPLEMENTED, EXIT_NOT_DELIVERED = 0, 1, 2, 3, 4
 
 
 def _positive_int(v: str) -> int:
@@ -93,11 +95,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("job_dir", type=Path)
     p.add_argument("instruction")
     p.add_argument("--planner-model", metavar="M", help="Planner model for a standard job (default: the job's)")
+    p.add_argument("--max-usd", type=float, metavar="USD", help="Cap this standard-tier chat's model spend (list "
+                   "prices; default $0.15): a retry that could pass it is skipped")
     _add_director_flags(p)
     p.add_argument("--out", type=Path, metavar="DIR", help="Copy the new deliverables into DIR")
 
     p = sub.add_parser("index", help="Ingest a video and build its Take Index")
     p.add_argument("video", type=Path)
+    p.add_argument("--tier", choices=TIERS, default=None,
+                   help="Ingest for this tier's edit: standard caps the mezzanine at 1080p30 (default STUDIO_TIER)")
     p.add_argument("--asr-provider", choices=("elevenlabs", "assemblyai"))
 
     p = sub.add_parser("render", help="Render a document version")
@@ -138,9 +144,12 @@ def _print_result(command: str, result: Any, as_json: bool) -> None:
     if not isinstance(data, dict):
         print(data)
         return
+    undelivered = _not_delivered(result)
     for key, value in data.items():
         if isinstance(value, dict):
             if not value:
+                if key == "finals" and undelivered:
+                    print("finals: none (NOT DELIVERED: the render fails the invariants after repair)")
                 continue
             print(f"{key}:")
             for k, v in value.items():
@@ -154,6 +163,12 @@ def _print_result(command: str, result: Any, as_json: bool) -> None:
                 print(f"{key}: {len(value)} item(s)")
         elif value is not None:
             print(f"{key}: {value}")
+
+
+def _not_delivered(result: Any) -> bool:
+    """An edit or chat result whose render failed the invariants and delivered nothing (the standard tier never ships
+    a failing render; a Director edit always ships its champion, so it has finals)."""
+    return getattr(result, "invariants_passed", None) is False and not getattr(result, "finals", None)
 
 
 def _settings(args: argparse.Namespace) -> Any:
@@ -194,10 +209,10 @@ def _dispatch(args: argparse.Namespace) -> Any:
         return pipeline.chat(
             args.job_dir, args.instruction, director_provider=args.director_provider,
             director_model=args.director_model, director_key_env=args.director_key_env, house=args.house,
-            planner_model=args.planner_model, settings=settings, **kw,
+            planner_model=args.planner_model, max_usd=args.max_usd, settings=settings, **kw,
         )
     if cmd == "index":
-        return pipeline.index(args.video, asr_provider=args.asr_provider, settings=settings)
+        return pipeline.index(args.video, asr_provider=args.asr_provider, tier=args.tier, settings=settings)
     if cmd == "render":
         return pipeline.render(args.job_dir, version=args.doc_version, preview=args.preview, settings=settings)
     if cmd == "report":
@@ -249,6 +264,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"studio {args.command}: error: {redact(f'{type(e).__name__}: {e}')}", file=sys.stderr)
         return EXIT_ERROR
     _print_result(args.command, result, args.json)
+    if _not_delivered(result):
+        print(f"studio {args.command}: NOT DELIVERED (the render fails the invariants after repair)", file=sys.stderr)
+        return EXIT_NOT_DELIVERED
     return EXIT_OK
 
 

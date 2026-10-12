@@ -469,7 +469,9 @@ def house_spec(role: Role, *, settings: Settings | None = None) -> ModelSpec:
       Google key exists, else the house critic model watching burned-ID frames;
     * helper: the Director's model at ``high``;
     * planner: Anthropic ``Settings.planner_model`` at ``Settings.planner_effort`` (default ``claude-sonnet-5-5`` at
-      ``low``): the standard tier's one structured-output call over the Take Index digest.
+      ``low``): the standard tier's one structured-output call over the Take Index digest. Server-side refusal
+      fallbacks are off: a refusal takes the documented pure-code path (studio.plan.planner: "never a silent
+      escalation"), and a fallback's extra attempt would be billed while the trace counts only the one that answered.
     """
     s = _settings(settings)
     if role == "director":
@@ -491,7 +493,7 @@ def house_spec(role: Role, *, settings: Settings | None = None) -> ModelSpec:
                          effort=ROLE_EFFORT["helper"])
     if role == "planner":
         return ModelSpec(provider="anthropic", model=s.planner_model, api_key=s.key("anthropic"),
-                         effort=s.planner_effort or ROLE_EFFORT["planner"])
+                         effort=s.planner_effort or ROLE_EFFORT["planner"], server_fallbacks=False)
     raise ValueError(f"unknown role {role!r}")
 
 
@@ -515,7 +517,7 @@ def spec_from_cli(provider: str, model: str, key_env: str | None, *, settings: S
 
     ``key_env=None`` uses the house key for that provider (not BYOK). ``openrouter`` implies its base URL. An unset
     ``effort`` falls back to the role's configured default (``Settings.director_effort`` / ``planner_effort``, then
-    :data:`ROLE_EFFORT`).
+    :data:`ROLE_EFFORT`). A planner spec never opts into server-side refusal fallbacks (see :func:`house_spec`).
     """
     s = _settings(settings)
     raw_provider = (provider or "").strip().lower()
@@ -542,7 +544,8 @@ def spec_from_cli(provider: str, model: str, key_env: str | None, *, settings: S
         key = s.key(_key_name(prov)) if prov != "openai_compat" else None
     configured = s.planner_effort if role == "planner" else s.director_effort
     return ModelSpec(provider=prov, model=model, api_key=key, base_url=base_url,
-                     effort=effort or configured or ROLE_EFFORT.get(role, ROLE_EFFORT["director"]), byok=byok)
+                     effort=effort or configured or ROLE_EFFORT.get(role, ROLE_EFFORT["director"]), byok=byok,
+                     server_fallbacks=False if role == "planner" else None)
 
 
 # ============================================================================================ settings
@@ -687,8 +690,11 @@ def build_model(spec: ModelSpec, *, role: str | None = None, job: Job | None = N
     ``fallback`` (e.g. :func:`director_fallback_spec`) is tried when the primary model is unavailable
     to the key (404/403) or blocked by the org's retention setting. Anthropic models (``spec.stream``) are
     wrapped in :class:`StreamingRequestModel`. With ``job`` the result is wrapped in :class:`TracedModel`
-    so every request is traced (role/stage/provider/model/tokens/latency/tools).
+    so every request is traced (role/stage/provider/model/tokens/latency/tools). Role ``planner`` never opts into
+    server-side refusal fallbacks unless the spec explicitly asks (see :func:`house_spec`).
     """
+    if role == "planner" and spec.provider == "anthropic" and spec.server_fallbacks is None:
+        spec = spec.model_copy(update={"server_fallbacks": False})
     model: Model = _native_model(spec, role)
     if fallback is not None:
         from pydantic_ai.models.fallback import FallbackModel

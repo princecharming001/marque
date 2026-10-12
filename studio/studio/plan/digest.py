@@ -36,7 +36,7 @@ from typing import Any
 from studio.perception.index import Cluster, Gap, Sentence, TakeIndex, Word
 
 __all__ = [
-    "CHARS_PER_TOKEN", "EMPHASIS_TOP_N", "INLINE_PAUSE_MIN_MS", "STANDARD_MAX_OUTPUT_S",
+    "CHARS_PER_TOKEN", "EMPHASIS_TOP_N", "INLINE_PAUSE_MIN_MS", "STANDARD_MAX_OUTPUT_S", "STANDARD_MAX_SOURCE_S",
     "Digest", "build_digest", "estimate_tokens",
 ]
 
@@ -49,6 +49,10 @@ INLINE_PAUSE_MIN_MS = 250.0
 EMPHASIS_TOP_N = 12
 #: The standard tier ships at most this long (standard-tier-plan.md §2: "output <= 90 s, prefer 75 s").
 STANDARD_MAX_OUTPUT_S = 90
+#: The standard tier edits sources up to this long (standard-tier-plan.md §2 hard rules: "source <= 10 min"). Every
+#: per-video cost but the planner grows with length (index ASR per source minute, QA ASR and the render per output
+#: minute), so a longer upload goes to the Director tier instead of quietly costing more than the tier promises.
+STANDARD_MAX_SOURCE_S = 600
 
 # Platform facts the length line falls back on when constants.yaml is unavailable (skills/editing/platforms.md).
 _PLATFORM_LENGTH: dict[str, dict[str, Any]] = {

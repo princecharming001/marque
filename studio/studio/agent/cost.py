@@ -12,6 +12,12 @@ purpose as its stage (``asr:index`` | ``asr:fill`` | ``asr:qa``); a cached re-pa
 tenths of a cent per video, which is exactly why the standard tier can afford to measure it rather than guess: the
 providers bill by the started minute in some plans, so the exact-seconds figure here is the floor, not the invoice.
 
+Paid voice isolation (ElevenLabs audio isolation, :func:`studio.audio.voice.process_dialogue`) is traced as an
+``audio_isolation`` event with its ``seconds`` of audio; it is priced by the minute (:data:`ISOLATION_PRICES_PER_MIN`,
+$0.12) under the role ``isolation`` (stage ``isolation:<provider>``). When it runs it is the largest line of a
+standard-tier video, so it must be in the total (and, like ASR, it is not model spend: the Director's spend cap leaves
+both out).
+
 The figure is an estimate for the report and the CLI summary, not a bill: check the provider console for the invoice.
 """
 
@@ -26,8 +32,9 @@ from studio.agent.providers import CACHE_TTL
 if TYPE_CHECKING:  # pragma: no cover
     from studio.jobs import Job
 
-__all__ = ["PRICES", "PRICES_AS_OF", "ASR_PRICES_PER_HOUR", "CostSummary", "call_cost", "asr_cost", "job_cost",
-           "format_cost", "format_usd"]
+__all__ = ["PRICES", "PRICES_AS_OF", "ASR_PRICES_PER_HOUR", "ISOLATION_PRICES_PER_MIN", "NON_MODEL_ROLES",
+           "CostSummary", "call_cost", "asr_cost", "isolation_cost", "job_cost", "model_spend", "format_cost",
+           "format_usd"]
 
 PRICES_AS_OF = "2026-10-09"
 
@@ -36,6 +43,12 @@ ASR_PRICES_PER_HOUR: dict[str, float] = {
     "elevenlabs": 0.22,  # Scribe v2 (elevenlabs.io/pricing/api)
     "assemblyai": 0.15,  # Universal (assemblyai.com/pricing)
 }
+#: USD per minute of audio sent to a paid voice-isolation provider (standard-tier plan §2: $0.12/min).
+ISOLATION_PRICES_PER_MIN: dict[str, float] = {
+    "elevenlabs": 0.12,  # audio isolation (elevenlabs.io/pricing/api)
+}
+#: Cost roles that are not model calls (a model-spend cap leaves them out).
+NON_MODEL_ROLES: tuple[str, ...] = ("asr", "isolation")
 #: ASR models whose provider an ``asr`` event may leave out (older traces, hand-written events).
 _ASR_PROVIDER_OF_MODEL: dict[str, str] = {
     "scribe_v2": "elevenlabs", "scribe_v1": "elevenlabs",
@@ -51,6 +64,8 @@ PRICES: dict[str, tuple[float, float, float]] = {
     "claude-opus-4-8": (5.0, 25.0, 0.50),
     "claude-opus-4-7": (5.0, 25.0, 0.50),
     "claude-opus-4-6": (5.0, 25.0, 0.50),
+    # cache read $0.10 from the platform pricing page (read 2026-10-09); the bundled API reference (cached 2026-10-06)
+    # says $0.20. Under $0.001 a video either way; the standard-tier probe's invoice (plan section 4) decides.
     "claude-sonnet-5-5": (2.0, 10.0, 0.10),
     "claude-sonnet-5": (2.0, 10.0, 0.20),
     "claude-sonnet-4-6": (3.0, 15.0, 0.30),
@@ -125,6 +140,21 @@ def asr_cost(event: dict[str, Any]) -> float | None:
     return seconds / 3600.0 * ASR_PRICES_PER_HOUR[p]
 
 
+def isolation_cost(event: dict[str, Any]) -> float | None:
+    """USD for one ``audio_isolation`` trace event: ``seconds`` at the provider's per-minute price; None when it names
+    an unpriced provider or carries no length."""
+    p = str(event.get("provider") or "").strip().lower()
+    if p not in ISOLATION_PRICES_PER_MIN:
+        return None
+    try:
+        seconds = float(event.get("seconds"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if seconds < 0:
+        return None
+    return seconds / 60.0 * ISOLATION_PRICES_PER_MIN[p]
+
+
 @dataclass
 class CostSummary:
     total_usd: float = 0.0
@@ -138,6 +168,13 @@ class CostSummary:
     asr_calls: int = 0  # successful ASR calls, cached re-parses included
     asr_cached_calls: int = 0
     asr_seconds: float = 0.0  # audio seconds actually sent to a provider (cached re-parses excluded)
+    isolation_calls: int = 0  # paid voice-isolation passes
+    isolation_seconds: float = 0.0
+
+    @property
+    def model_usd(self) -> float:
+        """Model calls only (ASR and paid isolation are not model spend)."""
+        return self.total_usd - sum(self.by_role.get(r, 0.0) for r in NON_MODEL_ROLES)
 
     def to_dict(self) -> dict[str, Any]:
         return {"total_usd": round(self.total_usd, 2), "calls": self.calls, "priced_calls": self.priced_calls,
@@ -147,12 +184,14 @@ class CostSummary:
                 "unpriced_models": list(self.unpriced_models), "tokens": dict(self.tokens),
                 "asr_calls": self.asr_calls, "asr_cached_calls": self.asr_cached_calls,
                 "asr_seconds": round(self.asr_seconds, 1), "asr_usd": round(self.by_role.get("asr", 0.0), 4),
-                "prices_as_of": PRICES_AS_OF, "cache_ttl": CACHE_TTL}
+                "isolation_calls": self.isolation_calls, "isolation_seconds": round(self.isolation_seconds, 1),
+                "isolation_usd": round(self.by_role.get("isolation", 0.0), 4), "model_usd": round(self.model_usd, 4),
+                "total_usd_exact": round(self.total_usd, 4), "prices_as_of": PRICES_AS_OF, "cache_ttl": CACHE_TTL}
 
 
 def job_cost(job: Job | list[dict[str, Any]], *, ttl: str = CACHE_TTL) -> CostSummary:
-    """Sum :func:`call_cost` over the ``model_call`` events and :func:`asr_cost` over the ``asr`` events of a
-    job's trace (or a list of trace events)."""
+    """Sum :func:`call_cost` over the ``model_call`` events, :func:`asr_cost` over the ``asr`` events and
+    :func:`isolation_cost` over the ``audio_isolation`` events of a job's trace (or a list of trace events)."""
     events = job if isinstance(job, list) else job.read_trace()
     cs = CostSummary()
     role: dict[str, float] = defaultdict(float)
@@ -178,6 +217,19 @@ def job_cost(job: Job | list[dict[str, Any]], *, ttl: str = CACHE_TTL) -> CostSu
             role["asr"] += c
             stage[f"asr:{e.get('purpose') or '?'}"] += c
             model[m] += c
+            continue
+        if e.get("event") == "audio_isolation":
+            prov = str(e.get("provider") or "?")
+            c = isolation_cost(e)
+            if c is None:
+                unpriced.add(f"isolation:{prov}")
+                continue
+            cs.isolation_calls += 1
+            cs.isolation_seconds += float(e.get("seconds") or 0.0)
+            cs.total_usd += c
+            role["isolation"] += c
+            stage[f"isolation:{prov}"] += c
+            model[f"isolation:{prov}"] += c
             continue
         if e.get("event") != "model_call":
             continue
@@ -214,12 +266,26 @@ def format_usd(v: float) -> str:
     return f"${v:.3f}" if v >= 0.001 else f"${v:.4f}"
 
 
+def model_spend(job: Job | list[dict[str, Any]]) -> float:
+    """The job's model spend at list prices (ASR and paid isolation left out), for spend caps."""
+    return job_cost(job).model_usd
+
+
 def format_cost(cs: CostSummary) -> str:
     """One line for the CLI summary."""
-    if not cs.priced_calls and not cs.asr_calls:
+    if not cs.priced_calls and not cs.asr_calls and not cs.isolation_calls:
         return "no priced model calls"
-    roles = ", ".join(f"asr {format_usd(v)} ({cs.asr_seconds:.0f} s audio)" if r == "asr" else f"{r} ${v:.2f}"
-                      for r, v in cs.by_role.items())
-    calls = f"{cs.priced_calls} calls" + (f" and {cs.asr_calls} ASR calls" if cs.asr_calls else "")
+
+    def role_part(r: str, v: float) -> str:
+        if r == "asr":
+            return f"asr {format_usd(v)} ({cs.asr_seconds:.0f} s audio)"
+        if r == "isolation":
+            return f"isolation {format_usd(v)} ({cs.isolation_seconds:.0f} s audio)"
+        return f"{r} ${v:.2f}"
+
+    roles = ", ".join(role_part(r, v) for r, v in cs.by_role.items())
+    calls = f"{cs.priced_calls} calls" + (f" and {cs.asr_calls} ASR calls" if cs.asr_calls else "") \
+        + (f" and {cs.isolation_calls} isolation pass{'es' if cs.isolation_calls != 1 else ''}"
+           if cs.isolation_calls else "")
     note = f"; unpriced: {', '.join(cs.unpriced_models)}" if cs.unpriced_models else ""
     return f"${cs.total_usd:.2f} over {calls} ({roles}; list prices {PRICES_AS_OF}{note})"
