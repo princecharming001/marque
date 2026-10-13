@@ -271,4 +271,5 @@ def test_a_failed_chat_keeps_the_last_cut_and_typed_ops_are_refused(studio_on):
     assert clip["last_render_failed"] is True
     r = client.post(f"/v1/clips/{jid}/tweak", json={"clip_id": clip["clip_id"], "instruction": "",
                                                    "ops": [{"op": "trim"}]})
-    assert r.status_code == 409 and r.json()["detail"]["error"] == "not_supported"
+    # 200 + error + reply: shipped builds show any 409 as "still rendering" (QA 2026-10-13)
+    assert r.status_code == 200 and r.json()["error"] is True and r.json()["skipped"]

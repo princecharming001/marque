@@ -3407,6 +3407,7 @@ async def _restore_clip_job(job_id: str) -> dict | None:
         if EDIT_THEMES and not job.get("_theme") and job.get("theme_id"):
             job["_theme"] = themes_mod.get_theme(job["theme_id"])
         _reattach_in_flight_renders(job)
+        _reattach_studio_chats(job)
     return job
 
 
@@ -3476,10 +3477,15 @@ async def _mint_supabase_upload(filename: str) -> dict | None:
     Supabase isn't configured or the sign call fails — never raises into the request."""
     if not (SUPABASE_URL and SUPABASE_KEY):
         return None
-    key = f"uploads/{uuid.uuid4()}/{filename}"
+    key = f"uploads/{uuid.uuid4()}/{multipart_mod.safe_upload_filename(filename)}"
     base = SUPABASE_URL.rstrip("/")
     sign_url = f"{base}/storage/v1/object/upload/sign/{SUPABASE_STORAGE_BUCKET}/{key}"
-    headers = {"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY}
+    # x-upsert: the token then allows re-PUTting the same key. The client retries a PUT
+    # whose response was lost on the SAME signed URL; without upsert a retry of an upload
+    # that had actually landed failed as a duplicate and the take showed "couldn't upload"
+    # (QA 2026-10-13). Safe only because the key is uploads/<fresh uuid>/<sanitized name>:
+    # the filename can't climb out of that folder (safe_upload_filename).
+    headers = {"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY, "x-upsert": "true"}
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(sign_url, headers=headers)
@@ -3551,7 +3557,7 @@ async def mint_upload_url(req: UploadMintRequest):
     # deliberately empty (not a real-looking dead domain) so a client can tell this apart
     # from a live mint and fall back to local/mock clips instead of creating a live job whose
     # source can never be fetched.
-    key = f"mock/{uuid.uuid4()}/{req.filename}"
+    key = f"mock/{uuid.uuid4()}/{multipart_mod.safe_upload_filename(req.filename)}"
     return {"mode": "mock", "upload_url": "", "key": key, "public_url": "",
             "max_upload_bytes": _advertised_upload_cap_bytes(),
             "expires_in": SUPABASE_UPLOAD_TTL, "server_time": time.time()}
@@ -4038,6 +4044,11 @@ async def get_clip_job(job_id: str, include_words: int = 0):
         # UX: honest remaining-time estimate for the poller ("Ready in ~2 min");
         # None once the job is terminal.
         "eta_seconds": _job_eta_seconds(job),
+        # Which editor made this cut, and what the app can do with it. Shipped builds ignore
+        # these; the next build hides manual edit / restore / retheme where they're False
+        # instead of opening a Pro editor that can only say "isn't ready yet".
+        "engine": job.get("engine") or "legacy",
+        "edit_capabilities": _edit_capabilities(job),
     }
     if job.get("edit_brief"):                     # analyze-first: surface the brief + toggles
         out["edit_brief"] = job["edit_brief"]
@@ -4065,6 +4076,15 @@ async def get_clip_job(job_id: str, include_words: int = 0):
         # is polled every 5s; the manual editor is the only caller that needs them.
         out["words"] = job.get("words") or []
     return out
+
+
+def _edit_capabilities(job: dict) -> dict:
+    """What a finished job supports: a Studio cut has no legacy EDL, so it takes chat
+    tweaks (re-edited by the Studio worker) but not typed editor ops, restore or retheme."""
+    has_edl = bool(job.get("edl"))
+    studio = job.get("engine") == "studio" and not has_edl
+    return {"chat_tweak": has_edl or studio, "manual_edit": has_edl, "restore": has_edl,
+            "retheme": has_edl}
 
 
 def _apply_confirm_to_job(job: dict, toggles: dict | None = None,
@@ -4126,6 +4146,13 @@ async def confirm_clip_job(job_id: str, req: ConfirmRequest):
     if job["status"] in ("transcribing", "analyzing", "editing", "rendering") \
             or any(c.get("status") == "rendering" for c in job.get("clips") or []):
         raise HTTPException(status_code=409, detail="confirm_in_progress")
+    if job["status"] in ("ready", "mock_ready", "processing") or job.get("auto_confirm"):
+        # Idempotent for a job that's already confirmed: a late or retried confirm used to
+        # mint a NEW clip id and re-edit from scratch, so the clip the app tracks vanished
+        # and a tweaked cut was overwritten (QA 2026-10-13). Return the current clips (a 200:
+        # the app treats any non-200 confirm as "offline" and falls back to the mock editor).
+        return {"mode": "mock" if job["status"] == "mock_ready" else "live", "job_id": job_id,
+                "status": job["status"], "clips": job["clips"]}
     brief = job.get("edit_brief") or {}
     if not brief:
         raise HTTPException(status_code=409, detail="no edit brief — analyze the video first")
@@ -4167,6 +4194,10 @@ async def retry_clip_job(job_id: str):
         raise HTTPException(status_code=409, detail="retry_in_progress")
     if job["status"] == "mock_ready":
         return {"mode": "mock", "job_id": job_id, "status": job["status"], "clips": job["clips"]}
+    if job["status"] == "brief_ready":
+        # Parked on the creator's brief review: a retry here used to spawn the legacy
+        # pipeline and skip the review + toggles entirely (QA 2026-10-13).
+        raise HTTPException(status_code=409, detail="awaiting_confirm")
 
     for key in ("error", "error_detail", "error_stage"):
         job.pop(key, None)
@@ -4304,58 +4335,102 @@ async def suggested_edits(job_id: str):
     return {"chips": chips[:4]}
 
 
-async def _studio_tweak(job: dict, clip: dict, req: "TweakRequest") -> dict:
+def _tweak_refusal(reply: str, ops: list | None = None) -> dict:
+    """A tweak the server won't apply, in the shape every shipped app build already renders:
+    HTTP 200 with error=true + a reply. The chat sheet shows `reply`; the manual editor's Save
+    reads `skipped[].reason`. (Shipped builds turn ANY 409 into "still rendering", so a 409
+    would hide the real reason.)"""
+    return {"mode": "live", "error": True, "reply": reply, "applied": [], "changed": False,
+            "needs_render": False, "undo_available": False,
+            "skipped": [{"type": (o.get("type") or o.get("op") or "edit") if isinstance(o, dict) else "edit",
+                         "applied": False, "reason": reply} for o in (ops or [])]}
+
+
+async def _studio_tweak(job: dict, clip: dict, req: "TweakRequest", preview: int = 0) -> dict:
     """A chat tweak on a Studio-edited clip: the Studio worker re-edits the job in place
     (one planner call + a re-render). The manual editor's typed ops need the legacy EDL,
     which a Studio job doesn't have, so they are refused with a readable reason."""
-    if req.ops or not req.instruction.strip():
-        raise HTTPException(status_code=409, detail={
-            "error": "not_supported",
-            "message": "Manual edits aren't available for this clip yet. Describe the change in chat instead."})
+    if req.ops:
+        return _tweak_refusal("Manual edits aren't available for this clip yet. "
+                              "Describe the change in chat instead.", req.ops)
+    if preview:
+        # The chat sheet asks for a preview first; Studio re-edits have no cheap proof
+        # render, so decline the preview and let the app send the direct commit (it does,
+        # on preview_requested=false). Starting the re-edit HERE made the app's follow-up
+        # commit hit 409 "still rendering" and the new cut was never picked up.
+        return {"mode": "live", "reply": "", "preview_requested": False, "applied": [], "skipped": [],
+                "changed": False, "needs_render": False, "undo_available": False}
     request_id = str(uuid.uuid4())
     try:
         await studio_mod.chat(job, clip, req.instruction.strip(), request_id=request_id)
     except studio_mod.StudioUnavailable as e:
         logging.warning("[studio] chat submit failed for %s: %s", job.get("job_id"), e)
-        raise HTTPException(status_code=409, detail={
-            "error": "edit_unavailable",
-            "message": "This clip can't be re-edited right now. Try again in a few minutes."})
+        if e.reason == "worker_http_404":
+            return _tweak_refusal("This clip can't be changed anymore. "
+                                  "Record or upload it again to keep editing.")
+        return _tweak_refusal("I can't re-edit this clip right now. Try again in a few minutes.")
     job.setdefault("tweaks", []).append({"instruction": req.instruction.strip()[:500], "engine": "studio",
                                          "request_id": request_id, "at": time.time()})
-    prev_url = clip.get("render_url")
+    clip["prev_render_url"] = clip.get("render_url")
+    clip["studio_request_id"] = request_id
     gen = _bump_render_gen(clip)
     clip["status"] = "rendering"
     clip["render_started_at"] = time.time()
-    clip["render_budget_s"] = studio_mod.RENDER_BUDGET_S
+    clip["render_budget_s"] = studio_mod.MAX_S + 300.0
     clip.pop("last_render_failed", None)
     job_id = job["job_id"]
-
-    async def _finish() -> None:
-        try:
-            rec = await studio_mod.wait_chat(job, request_id=request_id,
-                                             owns=lambda: _is_current_render(clip, gen))
-        except Exception as e:
-            rec = {"chat": {"status": "failed", "error": str(e)[:200]}}
-        if not rec or not _is_current_render(clip, gen):
-            return
-        ch = rec.get("chat") or {}
-        if ch.get("status") == "ready" and rec.get("render_url"):
-            clip["render_url"] = rec["render_url"]
-            if rec.get("thumbnail_url"):
-                clip["thumbnail_url"] = rec["thumbnail_url"]
-        else:
-            clip["render_url"] = prev_url
-            clip["last_render_failed"] = True
-            clip["last_render_error"] = ch.get("error_detail") or ch.get("error") or "re-edit failed"
-        clip["status"] = "ready"
-        clip.pop("render_started_at", None)
-        await _persist_clip_job(job_id)
-
-    _spawn(_finish())
+    _spawn(_studio_watch_chat(job, clip, request_id, gen))
     _spawn(_persist_clip_job(job_id))
     return {"mode": "live", "reply": "On it, re-editing your clip with that change.",
             "applied": [req.instruction.strip()[:200]], "skipped": [], "changed": True, "needs_render": True,
             "clip_status": "rendering", "undo_available": False}
+
+
+#: A chat instruction longer than this is refused with a readable reply (about 150 words).
+TWEAK_INSTRUCTION_MAX_CHARS = 1000
+
+
+async def _studio_watch_chat(job: dict, clip: dict, request_id: str, gen: int) -> None:
+    """Wait for a Studio chat re-edit and land it on the clip (or restore the previous cut).
+    Spawned by _studio_tweak, and again by a restore after an API restart, so a re-edit in
+    flight across a deploy still lands instead of spinning until the watchdog fails it."""
+    try:
+        rec = await studio_mod.wait_chat(job, request_id=request_id,
+                                         owns=lambda: _is_current_render(clip, gen))
+    except Exception as e:
+        logging.warning("[studio] chat wait failed for %s: %s", job.get("job_id"), e)
+        rec = {"chat": {"status": "failed", "error": "studio_unavailable"}}
+    if not rec or not _is_current_render(clip, gen):
+        return
+    ch = rec.get("chat") or {}
+    if ch.get("status") == "ready" and rec.get("render_url"):
+        clip["render_url"] = rec["render_url"]
+        if rec.get("thumbnail_url"):
+            clip["thumbnail_url"] = rec["thumbnail_url"]
+    else:
+        clip["render_url"] = clip.get("prev_render_url") or clip.get("render_url")
+        clip["last_render_failed"] = True
+        # A readable reason only (the worker's error text can be a raw exception).
+        clip["last_render_error"] = ("That change couldn't be made to this clip."
+                                     if ch.get("error") == "chat_no_change" else "The re-edit didn't finish.")
+    clip["status"] = "ready"
+    for k in ("render_started_at", "prev_render_url", "studio_request_id"):
+        clip.pop(k, None)
+    await _persist_clip_job(job["job_id"])
+
+
+def _reattach_studio_chats(job: dict) -> None:
+    """After a restore: re-attach to a Studio chat re-edit that was in flight."""
+    if job.get("engine") != "studio":
+        return
+    for clip in job.get("clips", []):
+        if clip.get("status") == "rendering" and clip.get("studio_request_id"):
+            clip["render_started_at"] = time.time()
+            gen = _bump_render_gen(clip)
+            try:
+                _spawn(_studio_watch_chat(job, clip, clip["studio_request_id"], gen))
+            except RuntimeError:
+                pass
 
 
 @app.post("/v1/clips/{job_id}/tweak")
@@ -4391,13 +4466,18 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0, defer_ren
             raise HTTPException(status_code=404, detail="clip_not_found")
     if not req.instruction.strip() and not req.ops:
         raise HTTPException(status_code=422, detail="empty_instruction")
+    if len(req.instruction) > TWEAK_INSTRUCTION_MAX_CHARS:
+        # 200 + error, not 422: shipped builds parse a 422 as a reply-less success
+        # ("Something went sideways"). The cap also keeps the stored tweak history (fed back
+        # into every later prompt) from ballooning.
+        return _tweak_refusal("That's a lot to take in. Can you sum up the change in a sentence or two?")
     # Concurrency guard: asyncio is single-threaded, so status checks + the
     # later synchronous status set (before any await) are atomic per request.
     if clip.get("status") == "rendering" \
             or job["status"] in ("transcribing", "analyzing", "processing", "editing", "rendering"):
         raise HTTPException(status_code=409, detail="render_in_progress")
     if job.get("engine") == "studio" and not job.get("edl"):
-        return await _studio_tweak(job, clip, req)
+        return await _studio_tweak(job, clip, req, preview=preview)
     if not job.get("edl"):
         raise HTTPException(status_code=409, detail="no_edl")
 
@@ -5424,11 +5504,24 @@ async def _render_slot(clip: dict, is_current, prefix: str = "render"):
             clip.pop(queued_key, None)
 
 
+def _public_error_detail(code: str, detail: str) -> str:
+    """The error_detail the app may show. For internal_error the app prints the detail
+    verbatim ("Something unexpected happened (KeyError: 'segments')"), so raw exception
+    text stays server-side (logs + error_debug) and the creator gets the plain sentence."""
+    if code == "internal_error" and detail:
+        logging.warning("[internal_error] %s", detail[:500])
+        return ""
+    return detail
+
+
 def _fail_clip(clip: dict, code: str, detail: str = "") -> None:
     clip["status"] = "failed"
     clip["error"] = code
-    if detail:
-        clip["error_detail"] = detail[:300]
+    public = _public_error_detail(code, detail)
+    if detail and public != detail:
+        clip["error_debug"] = detail[:300]
+    if public:
+        clip["error_detail"] = public[:300]
 
 
 # Stage-based remaining-time estimate (seconds) for the full live pipeline:
@@ -5440,6 +5533,11 @@ _STAGE_ETA_S = {
     # brief_ready is deliberately ABSENT: the job is parked on a USER action there —
     # any countdown would be a lie (review finding: dwell time counted as progress).
 }
+
+
+#: Studio-engine stage baselines (seconds; measured 2026-10-12 on 4 vCPU: a 30 s take is
+#: about 8 min end to end): queue + download, then index + plan, then render + QA + upload.
+_STUDIO_STAGE_ETA_S = {"processing": 90, "editing": 300, "rendering": 300}
 
 
 def _mark_stage(job: dict, status: str) -> None:
@@ -5527,17 +5625,25 @@ def _job_eta_seconds(job: dict) -> int | None:
     (EDL over more words, more cuts, more render frames), and a countdown that hits
     "20s left" and sits there for four minutes reads as 'stuck' even when the pipeline
     is fine. Scale those two stages by known footage duration once words exist."""
-    base = _STAGE_ETA_S.get(job.get("status") or "")
+    studio = job.get("engine") == "studio"
+    base = (_STUDIO_STAGE_ETA_S if studio else _STAGE_ETA_S).get(job.get("status") or "")
     if base is None:
         return None
     if job.get("status") in ("editing", "rendering"):
         words = job.get("words") or []
         dur_s = (words[-1].get("end_ms", 0) / 1000.0) if words else 0.0
+        if not dur_s and studio:
+            dur_s = float(_source_duration_s(job) or 0.0)   # Studio jobs carry no word list
         if dur_s > 60:
             base = int(base * min(3.0, dur_s / 60.0))
     anchor = float(job.get("stage_started_at") or job.get("created_at") or time.time())
     elapsed = max(0.0, time.time() - anchor)
-    return max(20, int(base - min(elapsed, base - 20)))
+    if elapsed >= base:
+        # Overdue: no number at all. A floored "about 1 min" that never moves read as stuck
+        # (QA 2026-10-13); with no estimate the app says "The AI is on it. You'll get a
+        # notification when it's done."
+        return None
+    return max(20, int(base - elapsed))
 
 
 # --- pipeline ownership + orphan resume (beta 2026-08-22: ">1min footage stuck") -----
@@ -5634,7 +5740,10 @@ def _fail_job(job: dict, code: str, detail: str = "", stage: str = "") -> None:
     """Fail the job AND every non-terminal clip — nothing is ever left mid-flight."""
     job["status"] = "failed"
     job["error"] = code
-    job["error_detail"] = detail[:300]
+    public = _public_error_detail(code, detail)
+    if detail and public != detail:
+        job["error_debug"] = detail[:300]
+    job["error_detail"] = public[:300]
     if stage:
         job["error_stage"] = stage
     for c in job["clips"]:
@@ -5743,7 +5852,14 @@ def _live_pipeline_ceiling_s(job: dict, budget: float) -> float:
     never below the orphan backstop (2×budget). Unknown duration → 2×budget."""
     base = float(budget) * 2
     dur_s = _source_duration_s(job) or 0.0
-    return max(base, min(JOB_LIVE_CEIL_S, base + JOB_LIVE_PER_SOURCE_S * dur_s))
+    ceiling = max(base, min(JOB_LIVE_CEIL_S, base + JOB_LIVE_PER_SOURCE_S * dur_s))
+    if job.get("engine") == "studio":
+        # The Studio client owns its own time limits (queue wait, then the whole edit) and
+        # FALLS BACK to the legacy pipeline when they pass. The watchdog must not fail the
+        # job first: a kill here took the job over, so the fallback never ran and the
+        # creator saw "a brief server restart" (QA 2026-10-13).
+        ceiling = max(ceiling, studio_mod.QUEUE_MAX_S + studio_mod.MAX_S + 300.0)
+    return ceiling
 
 
 def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
@@ -5801,7 +5917,18 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
                     # discarded (_is_current_render fails) — else it could flip the clip back
                     # to ready with contradictory state (audit D8).
                     _bump_render_gen(c)
-                    _fail_clip(c, "render_stalled", f"render exceeded {int(_clip_budget(c))}s watchdog")
+                    if c.get("prev_render_url"):
+                        # A Studio chat re-edit that ran out its window: the previous cut is
+                        # still good — restore it (the app shows "your previous cut is
+                        # untouched") instead of failing a clip that was ready a minute ago.
+                        c["render_url"] = c.pop("prev_render_url")
+                        c["status"] = "ready"
+                        c["last_render_failed"] = True
+                        c["last_render_error"] = "The re-edit didn't finish."
+                        c.pop("studio_request_id", None)
+                        c.pop("render_started_at", None)
+                    else:
+                        _fail_clip(c, "render_stalled", f"render exceeded {int(_clip_budget(c))}s watchdog")
                     if job.get("job_id"): _touched.add(job["job_id"])
             if c.get("preview_status") == "rendering":
                 pwaited = _queued_s(c, "preview")
@@ -6071,7 +6198,10 @@ async def _analyze_to_brief(job_id: str, briefless_on_error: bool = False) -> li
     job = _clip_jobs[job_id]
     # LV-27: validate + learn the source duration BEFORE the gather, so the parallel
     # loudness probe and the transcription poll both get duration-scaled budgets.
-    await _prepare_source(job)
+    # (A Studio job that fell back already did this; a second HEAD + probe only adds a
+    # failure point.)
+    if not job.pop("_source_prepared", False):
+        await _prepare_source(job)
     # P0.6: measure the take's loudness IN PARALLEL with transcription (user accepts
     # the wait; overlapping it costs no extra wall-clock). Fails soft to None → no
     # gain. transcribe raising propagates to the caller; probe never raises.
@@ -6134,6 +6264,12 @@ async def _run_auto_pipeline(job_id: str) -> None:
     confirm mutation runs with reset_clips=False. Always leaves the job terminal."""
     job = _clip_jobs[job_id]
     my_pgen = job.get("pipeline_gen", 0)
+    if job.get("engine") == "studio" and not studio_mod.routing_enabled():
+        _studio_fallback(job, "kill_switch")     # resumed/retried after STUDIO_ENGINE went off
+    elif job.get("engine") == "studio" and (job.get("studio") or {}).get("status") == "failed":
+        # A retry after a Studio failure the API never saw land (watchdog, restart): the
+        # worker would re-queue the same edit (and repeat a deterministic failure) — go legacy.
+        _studio_fallback(job, "studio_failed_before", (job.get("studio") or {}).get("error") or "")
     if job.get("engine") == "studio":
         if await _run_studio(job_id, my_pgen):
             return                    # delivered, failed terminally, or taken over
@@ -6165,7 +6301,13 @@ async def _run_auto_pipeline(job_id: str) -> None:
 
 
 def _studio_fallback(job: dict, reason: str, detail: str = "") -> None:
-    """Send a Studio job back to the legacy pipeline (the per-job kill switch)."""
+    """Send a Studio job back to the legacy pipeline (the per-job kill switch). The worker's
+    copy is cancelled so an edit nobody waits for doesn't hold the queue."""
+    if job.get("job_id") and studio_mod.configured():
+        try:
+            _spawn(studio_mod.cancel(job["job_id"]))
+        except RuntimeError:
+            pass                       # no running loop (sync test caller)
     job["engine"] = "legacy"
     job["engine_fallback"] = {"reason": reason, "detail": (detail or "")[:300], "at": time.time()}
     for c in job["clips"]:
@@ -6191,6 +6333,7 @@ async def _run_studio(job_id: str, my_pgen: int) -> bool:
     except Exception as e:
         _studio_fallback(job, "source_probe_failed", str(e))
         return False
+    job["_source_prepared"] = True     # a fallback from here on skips the second probe
     dur = _source_duration_s(job)
     if dur and dur > studio_mod.MAX_SOURCE_S:
         _studio_fallback(job, "source_too_long", f"{dur:.0f}s")
@@ -6204,7 +6347,7 @@ async def _run_studio(job_id: str, my_pgen: int) -> bool:
         if status == "rendering":
             clip["status"] = "rendering"
             clip["render_started_at"] = time.time()
-            clip["render_budget_s"] = studio_mod.RENDER_BUDGET_S
+            clip["render_budget_s"] = studio_mod.MAX_S + 300.0  # the Studio client owns the limit
         else:
             clip["status"] = "editing" if status == "editing" else "queued"
 
@@ -6230,7 +6373,9 @@ async def _run_studio(job_id: str, my_pgen: int) -> bool:
         clip["thumbnail_url"] = rec["thumbnail_url"]
     clip["status"] = "ready"
     clip["error"] = None
-    clip.pop("render_started_at", None)
+    for k in ("error_detail", "error_debug", "render_started_at"):
+        clip.pop(k, None)
+    job.pop("_source_prepared", None)
     job["status"] = "ready"
     job["knowledge_version"] = knowledge_mod.knowledge_version()
     if job.get("creator_id") and not job.get("push_sent"):

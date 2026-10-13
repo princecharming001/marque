@@ -31,6 +31,7 @@ import datetime
 import logging
 import math
 import os
+import re
 import uuid
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -61,13 +62,26 @@ def _client():
         config=Config(signature_version="s3v4", s3={"addressing_style": "path"}))
 
 
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def safe_upload_filename(filename: str | None) -> str:
+    """The last path segment of a client-supplied filename, reduced to [A-Za-z0-9._-] and at
+    most 120 characters. Storage keys are built as uploads/<uuid>/<name>; a raw name like
+    "../../posters/x.jpg" (or "../../../other-bucket/x") let a caller sign an upload anywhere
+    the service key reaches (QA 2026-10-13)."""
+    name = os.path.basename(str(filename or "").replace("\\", "/"))
+    name = _UNSAFE_NAME.sub("_", name)[-120:].lstrip(".")
+    return name or "footage.mov"
+
+
 async def create(filename: str, size_bytes: int, content_type: str) -> dict | None:
     """CreateMultipartUpload + presign every part URL. None when keyless/failed —
     the caller then serves the single-PUT mint exactly as before."""
     if not armed() or size_bytes <= 0:
         return None
     n_parts = min(MAX_PARTS, max(1, math.ceil(size_bytes / PART_SIZE)))
-    key = f"uploads/{uuid.uuid4()}/{filename}"
+    key = f"uploads/{uuid.uuid4()}/{safe_upload_filename(filename)}"
 
     def _sync() -> dict:
         c = _client()

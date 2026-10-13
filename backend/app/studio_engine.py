@@ -37,8 +37,6 @@ MAX_S = float(os.environ.get("STUDIO_MAX_S") or 2400)
 POLL_S = float(os.environ.get("STUDIO_POLL_S") or 5)
 #: The standard tier refuses sources over 10 minutes; longer ones never route.
 MAX_SOURCE_S = 600.0
-#: The per-clip watchdog budget while the worker renders (the API's own sweep honours ``render_budget_s``).
-RENDER_BUDGET_S = 1800.0
 
 
 class StudioUnavailable(Exception):
@@ -53,11 +51,21 @@ def configured() -> bool:
     return bool(WORKER_URL and WORKER_TOKEN)
 
 
+def routing_enabled() -> bool:
+    """The kill switch: False sends every job (new, resumed or retried) down the legacy path."""
+    return MODE in ("on", "allowlist") and configured()
+
+
 def choose_engine(*, creator_id: str | None, auto_confirm: bool, style: str | None, react_source_url: str | None,
                   config: dict[str, Any] | None, mode: str | None = None) -> str:
     """``"studio"`` or ``"legacy"`` for a new job (see the module docstring for the rules)."""
     mode = (mode or MODE).lower()
     if mode not in ("on", "allowlist") or not configured() or not auto_confirm:
+        return "legacy"
+    if str((config or {}).get("is_pro")) == "0":
+        # Free tier: legacy renders carry the "powered by Yunicorn" watermark and Studio
+        # renders don't have one yet, so free-tier jobs stay on legacy (revenue leak, QA
+        # 2026-10-13). Older clients that send no is_pro are treated like legacy does: Pro.
         return "legacy"
     if react_source_url or (style or "") == "duet_split" or (config or {}).get("edl_only"):
         return "legacy"

@@ -133,8 +133,11 @@ def test_job_eta_by_stage():
     assert 85 <= main._job_eta_seconds({"status": "rendering", "created_at": now}) <= 90
     assert main._job_eta_seconds({"status": "ready"}) is None
     assert main._job_eta_seconds({"status": "failed"}) is None
-    # elapsed eats the estimate but never below the 20s floor
-    assert main._job_eta_seconds({"status": "processing", "created_at": now - 10_000}) == 20
+    # elapsed eats the estimate down to a 20s floor while inside the stage's window ...
+    assert main._job_eta_seconds({"status": "processing", "created_at": now - 225}) == 20
+    # ... and once the stage overruns, no number at all (a frozen "about 1 min" read as
+    # stuck; the app then says "The AI is on it" — QA 2026-10-13)
+    assert main._job_eta_seconds({"status": "processing", "created_at": now - 10_000}) is None
 
 
 def test_eta_in_create_and_get(monkeypatch):
