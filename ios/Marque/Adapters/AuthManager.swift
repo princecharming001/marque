@@ -256,8 +256,15 @@ final class AuthManager {
 
     /// Push identity into the shared backend client so every AI call is creator-scoped.
     private func propagate() {
+        let previous = BackendClient.shared.creatorId
         BackendClient.shared.creatorId = state?.userId ?? "default"
         BackendClient.shared.token = (state?.accessToken.isEmpty == false) ? state?.accessToken : nil
+        // The onboarding notifications step registers the device BEFORE sign-in, under "default";
+        // pushes look tokens up by the real creator id, so a new user's first "clip ready" push went
+        // nowhere until the next cold launch. Re-register whenever the creator id changes (QA 2026-10-13).
+        if BackendClient.shared.creatorId != previous {
+            PushManager.shared?.registerIfAuthorized()
+        }
     }
 }
 

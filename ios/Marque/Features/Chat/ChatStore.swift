@@ -408,7 +408,7 @@ final class ChatStore {
 
         guard let result else {
             appendAssistant(ChatMessage(role: .assistant,
-                                        content: "Hit a snag, tap to try again."),
+                                        content: "That didn't go through. Send it again?"),
                             to: convoId, in: store)
             return
         }
@@ -439,7 +439,7 @@ final class ChatStore {
 
         guard let analysis else {
             appendAssistant(ChatMessage(role: .assistant,
-                                        content: "Hit a snag, tap to try again."),
+                                        content: "That didn't go through. Send it again?"),
                             to: convoId, in: store)
             return
         }

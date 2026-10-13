@@ -337,8 +337,8 @@ enum EditorSaveOutcome: Equatable {
 
     static let unreachableCopy = "Couldn't reach Yunicorn, so your edits aren't saved yet. They're safe on this phone."
     static let serverErrorCopy = "Yunicorn hit a problem saving your edits. They're safe on this phone."
-    static let busyCopy = "Still rendering your last change, try again in a minute."
-    static let unavailableCopy = "Couldn't reach the studio just now, try again in a moment."
+    static let busyCopy = "Still working on your last change. Give it a minute, then try again."
+    static let unavailableCopy = "Couldn't reach Yunicorn just now. Try again in a moment."
     static let goneCopy = "This edit session has expired, so these edits can't be saved to it. They stay on this phone in case the session comes back."
     static let rejectedCopy = "These edits couldn't be applied. Undo the last change and save again."
     /// Retry found the server EDL changed since the editor opened: the earlier attempt most

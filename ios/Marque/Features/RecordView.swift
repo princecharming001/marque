@@ -44,6 +44,9 @@ struct RecordView: View {
     // task otherwise inserted clips, bumped the streak, and yanked navigation minutes
     // after the user left this screen.
     @State private var submitTask: Task<Void, Never>? = nil
+    /// The one-tap submit dismisses without a task, so `submitTask` never guarded it: a second
+    /// tap before the dismiss animation started a second upload + job (QA 2026-10-13).
+    @State private var didSubmitInstant = false
     @State private var analyzeJobId: String? = nil
     @State private var brief: EditBrief? = nil
     @State private var briefToggles = EditToggles()
@@ -1188,7 +1191,8 @@ struct RecordView: View {
     /// show the brief (immediately keyless; after a short poll live). Any failure
     /// falls back to the legacy local mock pipeline — the creator is never stranded.
     private func makeClips() {
-        guard submitTask == nil else { return }               // AF-I3: no double-submit
+        guard submitTask == nil, !didSubmitInstant else { return }   // AF-I3: no double-submit
+        didSubmitInstant = true
         submitFailedMessage = nil
         // Keep the raw take in the Library so it can be re-cut later — ONCE per take.
         if let footagePath, footagePath != savedFootagePath {
