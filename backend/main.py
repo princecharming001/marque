@@ -3933,7 +3933,7 @@ async def _create_clip_job_impl(req: ClipJobRequest):
     # Studio failure falls back to the legacy pipeline below (app/studio_engine.py).
     job["engine"] = studio_mod.choose_engine(
         creator_id=req.creator_id, auto_confirm=bool(req.auto_confirm), style=style,
-        react_source_url=req.react_source_url, config=job.get("config"))
+        react_source_url=req.react_source_url, config=job.get("config"), toggles=req.toggles)
     # WS6 (build 49): decide + LOG the bandit-owned editing knobs. Propensities are
     # recorded on every job (offline-replay data from day one); values only change
     # behavior when EDIT_BANDIT is on AND the creator didn't set the knob explicitly.
@@ -4335,6 +4335,39 @@ async def suggested_edits(job_id: str):
     return {"chips": chips[:4]}
 
 
+#: Skip reasons the editor and chat show verbatim ("None of your changes could be applied (…)"), rewritten for a
+#: creator: no frames, indexes or validation talk (QA 2026-10-13). Unlisted reasons pass through unchanged.
+_FRIENDLY_SKIP = {
+    "invalid or out-of-bounds range": "that part of the video couldn't be found",
+    "change failed validation": "that change didn't fit this video",
+    "undo can't be previewed": "undo applies right away, so there's nothing to preview",
+    "handled by the server history stack": "undo is handled separately",
+    "punch-ins aren't rendered in this video style": "zooms aren't available for this style",
+    "text cards aren't rendered in this video style": "text cards aren't available for this style",
+    "cut would leave less than 2 seconds of footage": "that cut would leave less than 2 seconds of video",
+    "trim would leave less than 2 seconds of footage": "that trim would leave less than 2 seconds of video",
+    "at_frame must be strictly inside the segment": "pick a moment inside that part of the video",
+    "order must be a permutation of segment indices": "that new order is missing a part of the video",
+    "index out of range": "that part of the video couldn't be found",
+    "no transcript available to rebuild captions": "captions can't be rebuilt for this clip",
+    "pick a track to add music (a search term alone can't be played yet)": "pick a song from the list to add music",
+}
+
+
+def _friendly_skip_reason(reason: str) -> str:
+    r = (reason or "").strip()
+    if r in _FRIENDLY_SKIP:
+        return _FRIENDLY_SKIP[r]
+    if r.startswith(("no segment at index", "malformed op", "unknown op", "bad ")):
+        return "that change couldn't be applied"
+    return r
+
+
+def _friendly_skips(skipped: list) -> list:
+    return [{**x, "reason": _friendly_skip_reason(x.get("reason", ""))} if isinstance(x, dict) else x
+            for x in skipped or []]
+
+
 def _tweak_refusal(reply: str, ops: list | None = None) -> dict:
     """A tweak the server won't apply, in the shape every shipped app build already renders:
     HTTP 200 with error=true + a reply. The chat sheet shows `reply`; the manual editor's Save
@@ -4368,6 +4401,8 @@ async def _studio_tweak(job: dict, clip: dict, req: "TweakRequest", preview: int
         if e.reason == "worker_http_404":
             return _tweak_refusal("This clip can't be changed anymore. "
                                   "Record or upload it again to keep editing.")
+        if e.reason == "worker_http_422" and e.detail:
+            return _tweak_refusal(e.detail)          # e.g. "I can't add background music to this clip yet…"
         return _tweak_refusal("I can't re-edit this clip right now. Try again in a few minutes.")
     job.setdefault("tweaks", []).append({"instruction": req.instruction.strip()[:500], "engine": "studio",
                                          "request_id": request_id, "at": time.time()})
@@ -4649,7 +4684,7 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0, defer_ren
 
     if not preview:                     # AF-6: a preview committed nothing to persist
         _spawn(_persist_clip_job(job_id))   # F15: durable after every tweak
-    return {"mode": mode, "reply": reply, "applied": applied, "skipped": skipped,
+    return {"mode": mode, "reply": reply, "applied": applied, "skipped": _friendly_skips(skipped),
             "changed": changed, "needs_render": needs_render, "clip_status": clip["status"],
             "undo_available": bool(job["edl_history"]), "degraded": degraded,
             "preview_requested": preview_requested,
@@ -6356,6 +6391,12 @@ async def _run_studio(job_id: str, my_pgen: int) -> bool:
             rec = await studio_mod.run(job, on_stage=on_stage, owns=owns)
     except studio_mod.StudioUnavailable as e:
         if not owns():
+            return True
+        if e.reason in studio_mod.TERMINAL_ERRORS:
+            # e.g. no speech: legacy would transcribe again and fail the same way after another wait
+            code, detail = studio_mod.TERMINAL_ERRORS[e.reason]
+            _fail_job(job, code, detail, "studio")
+            _spawn(_persist_clip_job(job_id))
             return True
         _studio_fallback(job, e.reason, e.detail)
         _spawn(_persist_clip_job(job_id))

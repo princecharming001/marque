@@ -317,3 +317,68 @@ def test_a_studio_success_clears_a_stale_watchdog_error(studio_on):
     asyncio.run(main._run_auto_pipeline(jid))
     c = main._clip_jobs[jid]["clips"][0]
     assert c["status"] == "ready" and c["error"] is None and "error_detail" not in c
+
+
+def test_a_take_with_no_speech_ends_with_the_audio_message_instead_of_a_second_wait(studio_on):
+    """Studio found no speech; falling back made legacy transcribe again and fail the same way minutes later."""
+    _no_spawn(studio_on)
+    studio_on.setattr(se, "_call", FakeWorker([{"status": "failed", "error": "studio_no_speech"}]))
+    calls = []
+    _legacy_stub(studio_on, calls)
+    jid = _submit()["job_id"]
+    asyncio.run(main._run_auto_pipeline(jid))
+    job = main._clip_jobs[jid]
+    assert calls == [] and job["status"] == "failed" and job["error"] == "transcribe_failed"
+    assert job["clips"][0]["status"] == "failed"
+
+
+def test_a_studio_chat_refusal_reaches_the_chat_as_a_reply(studio_on):
+    jid, job = _ready_studio_job(studio_on)
+    clip = job["clips"][0]
+
+    async def refuse(method, path, **k):
+        raise se.StudioUnavailable("worker_http_422", "I can't add background music to this clip yet.")
+    studio_on.setattr(se, "_call", refuse)
+    r = client.post(f"/v1/clips/{jid}/tweak", json={"clip_id": clip["clip_id"], "instruction": "add music"})
+    assert r.status_code == 200 and r.json()["error"] is True and "background music" in r.json()["reply"]
+    assert clip["status"] == "ready"
+
+
+def test_jobs_that_ask_for_what_studio_cannot_do_stay_on_legacy(monkeypatch):
+    monkeypatch.setattr(se, "WORKER_URL", "http://w")
+    monkeypatch.setattr(se, "WORKER_TOKEN", "t")
+    base = dict(creator_id="c1", auto_confirm=True, react_source_url=None, config={"is_pro": "1"}, mode="on")
+    assert se.choose_engine(**base, style="green_screen") == "legacy"
+    assert se.choose_engine(**base, style="talking_head", toggles={"broll": True}) == "legacy"
+    assert se.choose_engine(**base, style="talking_head", toggles={"music": True}) == "legacy"
+    assert se.choose_engine(**base, style="talking_head", toggles={"broll": False, "music": False,
+                                                                     "punch_ins": True}) == "studio"
+
+
+def test_only_short_takes_route_to_studio_until_longer_ones_are_measured(studio_on):
+    _no_spawn(studio_on)
+
+    async def three_and_a_half_min(job):
+        job["source_duration_s"] = 210.0
+    studio_on.setattr(main, "_prepare_source", three_and_a_half_min)
+    studio_on.setattr(se, "_call", FakeWorker([READY]))
+    _legacy_stub(studio_on, [])
+    jid = _submit()["job_id"]
+    asyncio.run(main._run_auto_pipeline(jid))
+    assert main._clip_jobs[jid]["engine_fallback"]["reason"] == "source_too_long"
+
+
+def test_skip_reasons_shown_to_creators_are_plain_language():
+    """The editor shows skip reasons verbatim: "invalid or out-of-bounds range", "change failed validation"."""
+    out = main._friendly_skips([{"type": "cut", "applied": False, "reason": "invalid or out-of-bounds range"},
+                                {"type": "x", "applied": False, "reason": "malformed op (KeyError)"},
+                                {"type": "undo", "applied": False, "reason": "nothing to undo yet"}])
+    assert [o["reason"] for o in out] == ["that part of the video couldn't be found",
+                                          "that change couldn't be applied", "nothing to undo yet"]
+    jid = client.post("/v1/clips", json={"source_url": "mock://take.mov", "analyze_first": True, "auto_confirm": True,
+                                         "script": {"hook": "h", "body": "b", "cta": "c"}}).json()["job_id"]
+    cid = main._clip_jobs[jid]["clips"][0]["clip_id"]
+    r = client.post(f"/v1/clips/{jid}/tweak", json={"clip_id": cid, "instruction": "",
+                                                   "ops": [{"type": "cut", "start_frame": 999999, "end_frame": 9999999}]})
+    reasons = [x["reason"] for x in r.json().get("skipped", [])]
+    assert reasons and "out-of-bounds" not in " ".join(reasons)

@@ -35,8 +35,12 @@ WORKER_TOKEN = os.environ.get("STUDIO_WORKER_TOKEN") or ""
 QUEUE_MAX_S = float(os.environ.get("STUDIO_QUEUE_MAX_S") or 300)
 MAX_S = float(os.environ.get("STUDIO_MAX_S") or 2400)
 POLL_S = float(os.environ.get("STUDIO_POLL_S") or 5)
-#: The standard tier refuses sources over 10 minutes; longer ones never route.
-MAX_SOURCE_S = 600.0
+#: Longest source routed to Studio. The engine's own limit is 10 min, but its output cap (90 s) refuses takes with
+#: more than about 150 s of speech only AFTER paid ASR, and a 4-vCPU worker needs about 8 min per 30 s of take, so
+#: until longer takes are measured only short ones route (STUDIO_MAX_SOURCE_S).
+MAX_SOURCE_S = float(os.environ.get("STUDIO_MAX_SOURCE_S") or 180)
+#: Worker error codes that end the job (the legacy pipeline would only fail the same way, after another wait).
+TERMINAL_ERRORS = {"studio_no_speech": ("transcribe_failed", "no speech found in the take")}
 
 
 class StudioUnavailable(Exception):
@@ -57,7 +61,8 @@ def routing_enabled() -> bool:
 
 
 def choose_engine(*, creator_id: str | None, auto_confirm: bool, style: str | None, react_source_url: str | None,
-                  config: dict[str, Any] | None, mode: str | None = None) -> str:
+                  config: dict[str, Any] | None, mode: str | None = None,
+                  toggles: dict[str, Any] | None = None) -> str:
     """``"studio"`` or ``"legacy"`` for a new job (see the module docstring for the rules)."""
     mode = (mode or MODE).lower()
     if mode not in ("on", "allowlist") or not configured() or not auto_confirm:
@@ -67,7 +72,11 @@ def choose_engine(*, creator_id: str | None, auto_confirm: bool, style: str | No
         # renders don't have one yet, so free-tier jobs stay on legacy (revenue leak, QA
         # 2026-10-13). Older clients that send no is_pro are treated like legacy does: Pro.
         return "legacy"
-    if react_source_url or (style or "") == "duet_split" or (config or {}).get("edl_only"):
+    if react_source_url or (style or "") in ("duet_split", "green_screen") or (config or {}).get("edl_only"):
+        return "legacy"
+    if any((toggles or {}).get(k) for k in ("broll", "music")):
+        # The creator explicitly asked for b-roll or music; the standard Studio tier adds neither, so honouring the
+        # request means the legacy pipeline (QA 2026-10-13: Studio silently ignored these toggles).
         return "legacy"
     if mode == "allowlist" and (creator_id or "") not in ALLOWLIST:
         return "legacy"
@@ -82,7 +91,13 @@ async def _call(method: str, path: str, *, json: dict[str, Any] | None = None, t
     async with httpx.AsyncClient(timeout=timeout) as c:
         r = await c.request(method, f"{WORKER_URL}{path}", json=json, headers=_headers())
     if r.status_code >= 400:
-        raise StudioUnavailable(f"worker_http_{r.status_code}", r.text[:200])
+        detail = r.text[:200]
+        if r.status_code == 422:  # a refusal with a creator-facing message (chat_refused)
+            try:
+                detail = str((r.json().get("detail") or {}).get("message") or detail)
+            except Exception:
+                pass
+        raise StudioUnavailable(f"worker_http_{r.status_code}", detail)
     return r.json()
 
 
@@ -124,8 +139,11 @@ async def run(job: dict, *, on_stage, owns) -> dict:
         if not owns():
             return {}
         st = rec.get("status") or ""
-        job["studio"] = {k: rec.get(k) for k in ("status", "stage", "revision", "error", "cost")}
+        job["studio"] = {k: rec.get(k) for k in ("status", "stage", "revision", "error", "cost", "planner_used")}
         if st == "ready" and rec.get("render_url"):
+            if rec.get("planner_used") is False:
+                logging.warning("[studio] job %s shipped without the planner (pure-code plan): check the planner key "
+                                "and credits", job.get("job_id"))
             return rec
         if st in ("failed", "cancelled"):
             raise StudioUnavailable(rec.get("error") or "studio_failed", rec.get("error_detail") or "")

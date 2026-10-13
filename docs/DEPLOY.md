@@ -105,9 +105,18 @@ job still polls the same `GET /v1/clips/{id}` fields (`status`, `clips[].render_
   the Render dashboard shows), `STUDIO_WORKER_TOKEN`. Optional: `STUDIO_QUEUE_MAX_S` (300), `STUDIO_MAX_S` (2400).
 - **Kill switch**: set `STUDIO_ENGINE=off` and redeploy marque-api. New jobs go legacy; jobs already on Studio
   finish there or fall back.
-- **What routes**: `auto_confirm` talking-head jobs. Split screen / react, analyze-first (brief review) and eval
-  `edl_only` jobs stay legacy. Sources over 10 min fall back.
+- **What routes**: `auto_confirm` talking-head jobs from Pro creators (`config.is_pro != "0"`: free-tier renders need
+  the watermark, which only legacy draws) that don't ask for b-roll or music. Split screen, green screen, react,
+  analyze-first (brief review) and eval `edl_only` jobs stay legacy. Sources over `STUDIO_MAX_SOURCE_S` (180 s
+  until longer takes are measured) fall back. A take with no speech fails as `transcribe_failed` (no fallback: legacy
+  would fail the same way).
+- **Worker safety**: it downloads sources only from `STUDIO_SOURCE_HOSTS` (default: the `SUPABASE_URL` host), never
+  follows redirects, and refuses to start with half-set S3/Supabase credentials. `DELETE /jobs/{id}` stops a running
+  edit at its next stage; the API sends it on every fallback. A job that shipped without the planner (key or credits
+  problem) logs a warning on both sides (`planner_used: false`).
 - **Known gap**: a Studio clip has no legacy EDL, so the manual Pro editor can't open it (the app shows "isn't
-  ready yet"); chat tweaks re-edit it through the worker (`POST /jobs/{id}/chat`). Retheme returns `no_edl`.
+  ready yet"); chat tweaks re-edit it through the worker (`POST /jobs/{id}/chat`), and requests it can't do (added
+  music, SFX, cutaways) get a reply up front. `GET /v1/clips/{id}` reports `engine` and `edit_capabilities` so the
+  next app build can hide manual edit / restore / retheme for these clips.
 - **Outputs**: finals in the Remotion S3 bucket under `studio/<job>/<clip>-r<n>.mp4`, posters in
   `marque-clips/posters/`, same places the legacy pipeline writes.

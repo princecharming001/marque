@@ -803,3 +803,17 @@ def test_render_uses_the_jobs_tier_profile_and_index_caps_the_standard_mezzanine
     with pytest.raises(Stop):
         pipeline.index(video, tier="director")
     assert seen == [{"max_height": 1920, "max_fps": 30}, {}]
+
+
+def test_a_take_with_no_speech_is_refused_before_the_planner(ready_job: Job, keyed: None,
+                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    """QA 2026-10-13: a silent or no-audio take ran the planner (a paid call) and only then failed in the code plan
+    ("the take has no words"); the backend then fell back and failed again."""
+    fk = Fakes().install(monkeypatch)
+    script = _planner(VALID)
+    install(monkeypatch, script)
+    ix = ready_job.load_index()
+    ready_job.save_index(ix.model_copy(update={"words": [w.model_copy(update={"kind": "event"}) for w in ix.words]}))
+    with pytest.raises(pipeline.PipelineError, match="the take has no words"):
+        pipeline.edit(ready_job.root, tier="standard")
+    assert script.calls == [] and fk.renders == []

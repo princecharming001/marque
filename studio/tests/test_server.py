@@ -133,10 +133,16 @@ def test_chat_re_edits_a_ready_job_and_reports_no_change(make) -> None:
         done = wait(c, "job-1", until=lambda r: (r["chat"] or {}).get("status") in ("ready", "failed"))
         assert done["chat"]["status"] == "ready" and done["revision"] == 1
         assert done["render_url"].endswith("clip-1-r1.mp4") and done["chat"]["summary"] == "captions bigger"
-        c.post("/jobs/job-1/chat", json={"instruction": "add music", "request_id": "q2"}, headers=H)
-        bad = wait(c, "job-1", until=lambda r: r["chat"]["request_id"] == "q2" and r["chat"]["status"] == "failed")
-        assert bad["chat"]["error"] == "chat_no_change" and bad["revision"] == 1  # the last good cut stands
-        assert eng.chats == ["bigger captions", "add music"]
+        # an instruction the standard tier can't do is refused up front with a creator-facing reason (QA 2026-10-13)
+        r = c.post("/jobs/job-1/chat", json={"instruction": "add some background music", "request_id": "q2"},
+                   headers=H)
+        assert r.status_code == 422 and r.json()["detail"]["error"] == "chat_refused"
+        assert "background music" in r.json()["detail"]["message"]
+        assert eng.chats == ["bigger captions"] and worker.store.get("job-1")["revision"] == 1
+        # an engine-side no-change still fails the chat and keeps the last good cut
+        c.post("/jobs/job-1/chat", json={"instruction": "music please, then shorter", "request_id": "q3"}, headers=H)
+        bad = wait(c, "job-1", until=lambda r: r["chat"]["request_id"] == "q3" and r["chat"]["status"] == "failed")
+        assert bad["chat"]["error"] == "chat_no_change" and bad["revision"] == 1
 
 
 def test_a_restart_fails_running_work_and_requeues_queued_work(make) -> None:
@@ -155,3 +161,140 @@ def test_cancel_only_touches_queued_jobs(make) -> None:
     assert worker.cancel("job-1")["status"] == "cancelled"
     worker._run_edit("job-1")  # a cancelled job never runs
     assert worker.store.get("job-1")["status"] == "cancelled"
+
+
+# ============================================================================================ QA pass 2026-10-13
+class BareEngine(FakeEngine):
+    """Emits progress the way studio.pipeline really does: bare lines (only the CLI prefixes "studio: ")."""
+
+    def __init__(self, tmp: Path, lines: list[str] | None = None, **kw: Any):
+        super().__init__(tmp, **kw)
+        self.lines = lines or [f"job {tmp}/data/engine/qa-job (standard tier)", "ingest", "perception (Take Index)",
+                               "code plan (planner decision)", "render (standard profile) of document v1", "deliver"]
+        self.seen: list[str] = []
+        self.hook = None
+
+    def edit(self, src, *, platform, brief, out, log_stage):
+        for line in self.lines:
+            if self.hook:
+                self.hook(line)
+            log_stage(line)
+        if self.fail:
+            raise self.fail
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "final.mp4").write_bytes(b"mp4")
+        return {"final": out / "final.mp4", "cover": None, "job_dir": str(self.tmp / "job"), "cost": "$0.02",
+                "invariants_passed": True, "compute_seconds": 1.0}
+
+
+def _worker(tmp_path, monkeypatch, engine=None, **env):
+    cfg = srv.Config.from_env({"STUDIO_WORKER_DATA": str(tmp_path / "data"), "STUDIO_WORKER_TOKEN": TOKEN,
+                               "STUDIO_WORKER_PUBLIC_URL": "http://worker", **env})
+    worker = srv.Worker(cfg, engine=engine or BareEngine(tmp_path))
+
+    def fake_download(url, root):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "source.mov").write_bytes(b"src")
+        return root / "source.mov"
+    monkeypatch.setattr(worker, "_download", fake_download)
+    return worker
+
+
+def test_bare_engine_progress_lines_advance_the_status(tmp_path, monkeypatch) -> None:
+    """The worker matched only "studio: "-prefixed lines, so a real job sat on editing/ingest for the whole edit and
+    the API never gave the clip its render budget."""
+    eng = BareEngine(tmp_path)
+    worker = _worker(tmp_path, monkeypatch, eng)
+    statuses = []
+    eng.hook = lambda line: statuses.append(worker.store.get("job-1")["status"])
+    worker.submit(BODY)
+    worker._run_edit("job-1")
+    rec = worker.store.get("job-1")
+    assert rec["status"] == "ready"
+    assert statuses[-1] == "rendering"  # by "deliver" the job reads rendering (it used to stay on editing)
+    assert rec["planner_used"] is True and rec["engine_job_dir"].endswith("qa-job")
+
+
+def test_a_pure_code_edit_is_flagged_as_shipped_without_the_planner(tmp_path, monkeypatch) -> None:
+    eng = BareEngine(tmp_path, lines=["ingest", "code plan (pure-code: no planner decision)", "render (standard)"])
+    worker = _worker(tmp_path, monkeypatch, eng)
+    worker.submit(BODY)
+    worker._run_edit("job-1")
+    assert worker.store.get("job-1")["planner_used"] is False
+
+
+def test_cancel_stops_a_running_edit_and_cleans_its_folders(tmp_path, monkeypatch) -> None:
+    eng = BareEngine(tmp_path)
+    worker = _worker(tmp_path, monkeypatch, eng)
+    engine_dir = tmp_path / "data" / "engine" / "qa-job"
+    engine_dir.mkdir(parents=True)
+    eng.hook = lambda line: worker.cancel("job-1") if line.startswith("perception") else None
+    worker.submit(BODY)
+    worker._run_edit("job-1")
+    rec = worker.store.get("job-1")
+    assert rec["status"] == "failed" and rec["error"] == "cancelled" and rec["render_url"] is None
+    assert not engine_dir.exists() and not (tmp_path / "data" / "work" / "job-1").exists()
+
+
+def test_a_failed_edit_frees_its_engine_folder(tmp_path, monkeypatch) -> None:
+    eng = BareEngine(tmp_path, fail=RuntimeError("PipelineError: the take has no words: there is no speech"))
+    worker = _worker(tmp_path, monkeypatch, eng)
+    engine_dir = tmp_path / "data" / "engine" / "qa-job"
+    engine_dir.mkdir(parents=True)
+    worker.submit(BODY)
+    worker._run_edit("job-1")
+    rec = worker.store.get("job-1")
+    assert rec["error"] == "studio_no_speech" and not engine_dir.exists()
+
+
+def test_racing_duplicate_submits_queue_the_job_once(tmp_path, monkeypatch) -> None:
+    import threading
+
+    worker = _worker(tmp_path, monkeypatch)
+    barrier = threading.Barrier(8)
+
+    def go():
+        barrier.wait()
+        worker.submit(BODY)
+    ts = [threading.Thread(target=go) for _ in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert worker.q.qsize() == 1
+
+
+def test_chats_jump_ahead_of_queued_edits(tmp_path, monkeypatch) -> None:
+    worker = _worker(tmp_path, monkeypatch)
+    worker.submit(BODY)
+    worker._run_edit("job-1")                       # job-1 is ready
+    worker.submit({**BODY, "job_id": "job-2"})      # a full edit waits in the queue
+    worker.chat("job-1", {"instruction": "bigger captions", "request_id": "q"})
+    first = worker.q.get()
+    assert first[2:] == ("chat", "job-1")
+
+
+def test_downloads_only_from_the_storage_host_and_never_follow_redirects(tmp_path) -> None:
+    cfg = srv.Config.from_env({"STUDIO_WORKER_DATA": str(tmp_path / "d"), "STUDIO_WORKER_TOKEN": TOKEN,
+                               "SUPABASE_URL": "https://abc.supabase.co"})
+    assert cfg.source_hosts == ("abc.supabase.co",)
+    worker = srv.Worker(cfg, engine=FakeEngine(tmp_path))
+    with pytest.raises(srv.EngineError) as e:
+        worker._download("http://169.254.169.254/latest/meta-data/x.mov", tmp_path / "w")
+    assert e.value.code == "source_unreachable" and "not an allowed storage host" in e.value.detail
+
+
+def test_a_half_configured_uploader_refuses_to_start() -> None:
+    assert srv.Config.from_env({"REMOTION_BUCKET": "b", "REMOTION_AWS_ACCESS_KEY_ID": "k"}).problems()
+    assert srv.Config.from_env({"SUPABASE_URL": "https://x"}).problems()
+    ok = srv.Config.from_env({"REMOTION_BUCKET": "b", "REMOTION_AWS_ACCESS_KEY_ID": "k",
+                              "REMOTION_AWS_SECRET_ACCESS_KEY": "s", "SUPABASE_URL": "https://x",
+                              "SUPABASE_SERVICE_KEY": "k"})
+    assert ok.problems() == []
+
+
+def test_a_corrupt_job_record_reads_as_missing_not_a_500(tmp_path, monkeypatch) -> None:
+    worker = _worker(tmp_path, monkeypatch)
+    (tmp_path / "data" / "jobs" / "job-9.json").write_text("{not json")
+    with TestClient(srv.create_app(worker)) as c:
+        assert c.get("/jobs/job-9", headers=H).status_code == 404

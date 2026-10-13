@@ -876,9 +876,11 @@ def transcribe(
     except JobError:
         media = None
     audio = job.audio_path
+    if media is not None and not media.has_audio:
+        # The source has no audio stream: ingest writes a silent audio.wav (flag:no_audio) for the
+        # timeline, and transcribing that silence was paid ASR that could only return no words.
+        return AsrResult(words=[], asr=AsrInfo(provider="none", model="none", params={"reason": "no audio"}))
     if not audio.is_file():
-        if media is not None and not media.has_audio:
-            return AsrResult(words=[], asr=AsrInfo(provider="none", model="none", params={"reason": "no audio"}))
         raise AsrError(f"job {job.id} has no media/audio.wav (run ingest first)")
     jmeta = (job.meta or {}).get("meta", {}) if isinstance(job.meta, dict) else {}
     if keyterms is None and isinstance(jmeta.get("keyterms"), list):

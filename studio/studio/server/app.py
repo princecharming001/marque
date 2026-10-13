@@ -71,6 +71,7 @@ class Config:
     supabase_key: str
     supabase_bucket: str
     public_base: str
+    source_hosts: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Config:
@@ -88,7 +89,45 @@ class Config:
             supabase_key=e.get("SUPABASE_SERVICE_KEY") or e.get("SUPABASE_KEY") or "",
             supabase_bucket=e.get("SUPABASE_STORAGE_BUCKET") or "marque-clips",
             public_base=(e.get("STUDIO_WORKER_PUBLIC_URL") or "").rstrip("/"),
+            source_hosts=_source_hosts(e),
         )
+
+    def problems(self) -> list[str]:
+        """Settings that would ship unplayable URLs: half-set S3 or Supabase credentials, or no public route."""
+        out = []
+        s3 = [self.bucket, self.aws_key, self.aws_secret]
+        if any(s3) and not all(s3):
+            out.append("REMOTION_BUCKET / REMOTION_AWS_ACCESS_KEY_ID / REMOTION_AWS_SECRET_ACCESS_KEY are only "
+                       "partly set")
+        sb = [self.supabase_url, self.supabase_key]
+        if any(sb) and not all(sb):
+            out.append("SUPABASE_URL / SUPABASE_SERVICE_KEY are only partly set")
+        if not all(s3) and not self.public_base:
+            out.append("no S3 credentials and no STUDIO_WORKER_PUBLIC_URL: finished videos would have no public URL")
+        return out
+
+
+def _source_hosts(e: dict[str, str]) -> tuple[str, ...]:
+    """Hosts the worker may download a source from: STUDIO_SOURCE_HOSTS (comma-separated), else the Supabase project
+    host. Empty (neither set: local tests) allows any host."""
+    from urllib.parse import urlparse
+
+    raw = e.get("STUDIO_SOURCE_HOSTS") or ""
+    hosts = [h.strip().lower() for h in raw.split(",") if h.strip()]
+    if not hosts and e.get("SUPABASE_URL"):
+        hosts = [urlparse(e["SUPABASE_URL"]).hostname or ""]
+    return tuple(h for h in hosts if h)
+
+
+#: Source extensions kept on the downloaded file (ffprobe sniffs by content, but an .m3u8 name invited playlist
+#: parsing of whatever the URL returned); anything else is saved as .mov.
+_SOURCE_EXTS = (".mov", ".mp4", ".m4v", ".mkv", ".webm", ".avi", ".mts", ".ts", ".3gp")
+#: The whole download must finish within this (a slow-drip source held the only edit slot).
+DOWNLOAD_DEADLINE_S = 600.0
+
+
+class Cancelled(BaseException):  # BaseException: the engine's `except Exception` blocks must not swallow it
+    """The API stopped waiting for this job (DELETE): the edit stops at the next stage."""
 
 
 # ============================================================================================ state
@@ -108,7 +147,11 @@ class Store:
             p = self._path(job_id)
             if not p.exists():
                 return None
-            return json.loads(p.read_text())
+            try:
+                return json.loads(p.read_text())
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                log.warning("job record %s is unreadable; treating it as missing", job_id)
+                return None
 
     def put(self, rec: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
@@ -199,6 +242,29 @@ class Engine:
         return {"final": Path(final), "summary": res.summary, "cost": res.estimated_cost}
 
 
+class ChatRefused(Exception):
+    """A chat instruction the standard tier can't do (added music, SFX, cutaways, paid isolation); refused up
+    front with a creator-facing reason instead of a re-edit that fails later."""
+
+
+def chat_refusal(instruction: str) -> str | None:
+    """The creator-facing refusal for an instruction that ONLY asks for something the standard tier doesn't add
+    (the engine's own deterministic check, no model call), else None."""
+    try:
+        from studio.plan.chat import has_other_request, refused_topics
+    except Exception:  # pragma: no cover - the engine is always importable in the worker image
+        return None
+    topics = refused_topics(instruction)
+    if not topics or has_other_request(instruction):
+        return None
+    names = {"music": "background music", "sound effects": "sound effects", "b-roll": "cutaway shots",
+             "paid voice isolation": "voice isolation"}
+    listed = [names.get(t, t) for t in topics]
+    what = listed[0] if len(listed) == 1 else ", ".join(listed[:-1]) + " and " + listed[-1]
+    return (f"I can't add {what} to this clip yet. I can change the cut, the pacing or the captions: "
+            "try something like \"tighten the pauses\" or \"make the captions bigger\".")
+
+
 class EngineError(RuntimeError):
     def __init__(self, code: str, detail: str = ""):
         super().__init__(f"{code}: {detail}")
@@ -206,15 +272,26 @@ class EngineError(RuntimeError):
 
 
 def _classify(e: BaseException) -> tuple[str, str]:
-    """An error code the API can act on (all of them make the API fall back to its own pipeline)."""
+    """An error code the API can act on. ``studio_no_speech`` and ``unsupported_media`` are terminal for the API
+    (the legacy pipeline would only fail the same way); everything else makes it fall back to its own pipeline.
+    The detail is for logs; it can hold paths, so it is redacted and the API never shows it to a creator."""
+    if isinstance(e, Cancelled):
+        return "cancelled", "the API stopped waiting for this edit"
     if isinstance(e, EngineError):
         return e.code, e.detail
     msg = f"{type(e).__name__}: {e}"
+    with contextlib.suppress(Exception):
+        from studio.config import redact
+
+        msg = str(redact(msg))
     low = msg.lower()
-    if "limit" in low and ("min" in low or "source" in low):
-        return "studio_rejected", msg[:400]
-    if "no words" in low or "no speech" in low or "every word" in low:
+    if "the take has no words" in low or "no speech" in low:
         return "studio_no_speech", msg[:400]
+    if ("limit" in low and ("min" in low or "source" in low or "output" in low)) or "larger than" in low:
+        return "studio_rejected", msg[:400]
+    if any(k in low for k in ("invalid data found", "no video stream", "could not probe", "ffprobe failed",
+                              "unsupported", "not a video")):
+        return "unsupported_media", msg[:400]
     return "studio_error", msg[:400]
 
 
@@ -225,10 +302,20 @@ class Worker:
         self.store = Store(cfg.data)
         self.engine = engine or Engine()
         self.uploader = uploader or Uploader(cfg)
-        self.q: queue.Queue[tuple[str, str, dict[str, Any]]] = queue.Queue()
+        # Chats (a short planner call + re-render on an existing job) jump the queue: a caption tweak used to wait
+        # behind every queued full edit.
+        self.q: queue.PriorityQueue[tuple[int, int, str, str]] = queue.PriorityQueue()
+        self._seq = 0
+        self._seq_lock = threading.Lock()
         self._threads: list[threading.Thread] = []
         self._stop = threading.Event()
         self._recover()
+
+    def _put(self, kind: str, job_id: str) -> None:
+        with self._seq_lock:
+            self._seq += 1
+            seq = self._seq
+        self.q.put(({"stop": -1, "chat": 0, "edit": 1}[kind], seq, kind, job_id))
 
     # ---- lifecycle
     def start(self) -> None:
@@ -240,7 +327,7 @@ class Worker:
     def stop(self) -> None:
         self._stop.set()
         for _ in self._threads:
-            self.q.put(("stop", "", {}))
+            self._put("stop", "")
 
     def _recover(self) -> None:
         """A job (or chat) that was running when the worker stopped can't be resumed mid-render: mark it failed
@@ -248,13 +335,13 @@ class Worker:
         for rec in sorted(self.store.all(), key=lambda r: r.get("created_at", 0)):
             st = rec.get("status")
             if st == "queued":
-                self.q.put(("edit", rec["job_id"], {}))
+                self._put("edit", rec["job_id"])
             elif st not in TERMINAL:
                 self.store.update(rec["job_id"], status="failed", error="worker_restarted",
                                   error_detail="the worker restarted during this edit")
             chat = rec.get("chat") or {}
             if chat.get("status") == "queued":
-                self.q.put(("chat", rec["job_id"], {}))
+                self._put("chat", rec["job_id"])
             elif chat.get("status") == "running":
                 chat.update(status="failed", error="worker_restarted")
                 self.store.update(rec["job_id"], chat=chat)
@@ -267,16 +354,18 @@ class Worker:
         url = str(body.get("source_url") or "")
         if not url.startswith(("https://", "http://")):
             raise ValueError("source_url must be an http(s) URL")
-        existing = self.store.get(job_id)
-        if existing and existing.get("status") not in ("failed", "cancelled"):
-            return existing
-        rec = {"job_id": job_id, "clip_id": clip_id, "source_url": url,
-               "platform": str(body.get("platform") or "tiktok"), "brief": body.get("brief") or None,
-               "status": "queued", "stage": "queued", "render_url": None, "thumbnail_url": None, "error": None,
-               "error_detail": None, "revision": 0, "chat": None, "created_at": time.time(),
-               "queued_at": time.time()}
-        self.store.put(rec)
-        self.q.put(("edit", job_id, {}))
+        brief = " ".join(str(body.get("brief") or "").split())[:1000] or None  # bounds the planner prompt
+        with self.store._lock:  # check-and-claim: two racing submits of one job never queue it twice
+            existing = self.store.get(job_id)
+            if existing and existing.get("status") not in ("failed", "cancelled"):
+                return existing
+            rec = {"job_id": job_id, "clip_id": clip_id, "source_url": url,
+                   "platform": str(body.get("platform") or "tiktok"), "brief": brief,
+                   "status": "queued", "stage": "queued", "render_url": None, "thumbnail_url": None, "error": None,
+                   "error_detail": None, "revision": 0, "chat": None, "created_at": time.time(),
+                   "queued_at": time.time()}
+            self.store.put(rec)
+        self._put("edit", job_id)
         return rec
 
     def chat(self, job_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -290,22 +379,30 @@ class Worker:
         instruction = " ".join(str(body.get("instruction") or "").split())
         if not instruction:
             raise ValueError("instruction is empty")
+        refusal = chat_refusal(instruction)
+        if refusal:
+            raise ChatRefused(refusal)
         rec["chat"] = {"request_id": str(body.get("request_id") or ""), "instruction": instruction[:1000],
                        "status": "queued", "summary": None, "error": None, "queued_at": time.time()}
         self.store.put(rec)
-        self.q.put(("chat", job_id, {}))
+        self._put("chat", job_id)
         return rec
 
     def cancel(self, job_id: str) -> dict[str, Any] | None:
-        rec = self.store.get(job_id)
-        if rec and rec.get("status") == "queued":
-            rec = self.store.update(job_id, status="cancelled", stage="cancelled")
+        """Cancel a queued job outright; a running one stops at its next stage (the API gave up on it, and an edit
+        nobody waits for must not hold the only slot)."""
+        with self.store._lock:
+            rec = self.store.get(job_id)
+            if rec and rec.get("status") == "queued":
+                rec = self.store.update(job_id, status="cancelled", stage="cancelled")
+            elif rec and rec.get("status") not in TERMINAL:
+                rec = self.store.update(job_id, cancel_requested=True)
         return rec
 
     # ---- the queue
     def _loop(self) -> None:
         while not self._stop.is_set():
-            kind, job_id, _ = self.q.get()
+            _prio, _seq, kind, job_id = self.q.get()
             if kind == "stop":
                 return
             try:
@@ -318,20 +415,31 @@ class Worker:
                 log.error("worker loop crashed on %s %s:\n%s", kind, job_id, traceback.format_exc())
 
     def _run_edit(self, job_id: str) -> None:
-        rec = self.store.get(job_id)
-        if rec is None or rec.get("status") != "queued":
-            return  # cancelled, or already handled
+        with self.store._lock:  # claim: a cancel racing the start either wins (cancelled) or sees "downloading"
+            rec = self.store.get(job_id)
+            if rec is None or rec.get("status") != "queued":
+                return  # cancelled, or already handled
+            self.store.update(job_id, status="downloading", stage="downloading", started_at=time.time())
         root = self.cfg.data / "work" / job_id
         out = root / "out"
+        seen: dict[str, Any] = {}
         try:
-            self.store.update(job_id, status="downloading", stage="downloading", started_at=time.time())
             src = self._download(rec["source_url"], root)
 
             def stage(line: str) -> None:
-                m = re.match(r"studio:\s*([a-z ]+)", line.strip().lower())
-                if not m:
-                    return
-                head = m.group(1).strip()
+                # The engine's progress lines are bare ("render (standard profile) of document v1"); only the CLI
+                # prefixes "studio: ". Matching the prefix alone left every job on "ingest" until it finished.
+                text = re.sub(r"^studio:\s*", "", line.strip())
+                low = text.lower()
+                if low.startswith("job ") and "(" in text:
+                    seen["job_dir"] = text[4:text.rindex(" (")].strip()
+                    self.store.update(job_id, engine_job_dir=seen["job_dir"])
+                if low.startswith("code plan"):
+                    seen["planner_used"] = "pure-code" not in low
+                if (self.store.get(job_id) or {}).get("cancel_requested"):
+                    raise Cancelled()
+                m = re.match(r"[a-z ]+", low)
+                head = m.group(0).strip() if m else ""
                 for prefix, status in _STAGE_STATUS:
                     if head.startswith(prefix):
                         self.store.update(job_id, status=status, stage=head)
@@ -341,17 +449,37 @@ class Worker:
             res = self.engine.edit(src, platform=rec["platform"], brief=rec.get("brief"), out=out, log_stage=stage)
             self.store.update(job_id, status="uploading", stage="uploading")
             url, thumb = self._publish(rec, res, revision=0)
+            planner_used = seen.get("planner_used")
+            if planner_used is False:
+                log.warning("edit %s shipped WITHOUT the planner (pure-code plan): check the planner key/credits",
+                            job_id)
             self.store.update(job_id, status="ready", stage="ready", render_url=url, thumbnail_url=thumb,
                               job_dir=res["job_dir"], cost=res.get("cost"), finished_at=time.time(),
                               invariants_passed=res.get("invariants_passed"),
-                              compute_seconds=res.get("compute_seconds"))
+                              compute_seconds=res.get("compute_seconds"), planner_used=planner_used)
             with contextlib.suppress(OSError):
                 src.unlink()
-        except Exception as e:
+        except (Exception, Cancelled) as e:
             code, detail = _classify(e)
             log.warning("edit %s failed: %s %s", job_id, code, detail)
-            self.store.update(job_id, status="failed", stage="failed", error=code, error_detail=detail,
-                              finished_at=time.time())
+            # a failed edit's folders are never needed again (a retry starts over): free the disk now
+            shutil.rmtree(root, ignore_errors=True)
+            jd = seen.get("job_dir")
+            if jd and self._inside_data(jd):
+                shutil.rmtree(jd, ignore_errors=True)
+            for attempt in range(3):  # the disk may be the problem: keep trying to record the failure
+                try:
+                    self.store.update(job_id, status="failed", stage="failed", error=code, error_detail=detail,
+                                      finished_at=time.time())
+                    break
+                except OSError:
+                    time.sleep(1 + attempt)
+
+    def _inside_data(self, path: str) -> bool:
+        try:
+            return Path(path).resolve().is_relative_to(self.cfg.data.resolve())
+        except (OSError, ValueError):
+            return False
 
     def _run_chat(self, job_id: str) -> None:
         rec = self.store.get(job_id)
@@ -374,12 +502,20 @@ class Worker:
             self.store.update(job_id, chat=chat)
 
     def _download(self, url: str, root: Path) -> Path:
+        """Fetch the creator's source: only from the configured storage hosts, no redirects, a 600 MB cap and an
+        overall deadline. The URL comes from the app, so it is never trusted to point anywhere else."""
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or "").lower()
+        if self.cfg.source_hosts and host not in self.cfg.source_hosts:
+            raise EngineError("source_unreachable", f"source host {host!r} is not an allowed storage host")
         root.mkdir(parents=True, exist_ok=True)
-        name = re.sub(r"[^A-Za-z0-9._-]", "_", url.split("?")[0].rsplit("/", 1)[-1])[-80:] or "source.mov"
-        dest = root / f"source-{name}"
+        ext = Path(urlparse(url).path).suffix.lower()
+        dest = root / f"source{ext if ext in _SOURCE_EXTS else '.mov'}"
         got = 0
+        deadline = time.monotonic() + DOWNLOAD_DEADLINE_S
         try:
-            with httpx.stream("GET", url, timeout=httpx.Timeout(60, read=120), follow_redirects=True) as r:
+            with httpx.stream("GET", url, timeout=httpx.Timeout(60, read=120), follow_redirects=False) as r:
                 if r.status_code != 200:
                     raise EngineError("source_unreachable", f"HTTP {r.status_code} fetching the source")
                 with dest.open("wb") as f:
@@ -387,9 +523,15 @@ class Worker:
                         got += len(chunk)
                         if got > MAX_SOURCE_BYTES:
                             raise EngineError("studio_rejected", "the source is larger than 600 MB")
+                        if time.monotonic() > deadline:
+                            raise EngineError("source_unreachable", "the source download took too long")
                         f.write(chunk)
         except httpx.HTTPError as e:
+            dest.unlink(missing_ok=True)
             raise EngineError("source_unreachable", f"{type(e).__name__}: {e}") from e
+        except EngineError:
+            dest.unlink(missing_ok=True)
+            raise
         if got == 0:
             raise EngineError("source_unreachable", "the source is empty")
         return dest
@@ -407,18 +549,18 @@ class Worker:
     def _prune(self) -> None:
         cutoff = time.time() - self.cfg.ttl_s
         for rec in self.store.all():
-            if rec.get("status") in TERMINAL and (rec.get("updated_at") or 0) < cutoff:
+            if (rec.get("updated_at") or 0) < cutoff:  # finished, or stuck past the TTL
                 shutil.rmtree(self.cfg.data / "work" / rec["job_id"], ignore_errors=True)
-                jd = rec.get("job_dir")
-                if jd and Path(jd).is_dir() and str(Path(jd)).startswith(str(self.cfg.data)):
-                    shutil.rmtree(jd, ignore_errors=True)
+                for jd in {rec.get("job_dir"), rec.get("engine_job_dir")} - {None}:
+                    if Path(jd).is_dir() and self._inside_data(jd):
+                        shutil.rmtree(jd, ignore_errors=True)
                 self.store.delete(rec["job_id"])
 
 
 def public_view(rec: dict[str, Any]) -> dict[str, Any]:
     keys = ("job_id", "clip_id", "status", "stage", "render_url", "thumbnail_url", "error", "error_detail",
             "revision", "chat", "queued_at", "started_at", "finished_at", "cost", "invariants_passed",
-            "compute_seconds")
+            "compute_seconds", "planner_used")
     return {k: rec.get(k) for k in keys}
 
 
@@ -479,6 +621,8 @@ def create_app(worker: Worker | None = None, cfg: Config | None = None):
             return public_view(worker.chat(job_id, body))
         except KeyError as e:
             raise HTTPException(status_code=404, detail="unknown job") from e
+        except ChatRefused as e:
+            raise HTTPException(status_code=422, detail={"error": "chat_refused", "message": str(e)}) from e
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except RuntimeError as e:
@@ -503,6 +647,8 @@ def main() -> None:  # pragma: no cover - the container entry point
     cfg = Config.from_env()
     if not cfg.token:
         raise SystemExit("STUDIO_WORKER_TOKEN is required")
+    if cfg.problems():
+        raise SystemExit("studio worker misconfigured: " + "; ".join(cfg.problems()))
     uvicorn.run(create_app(cfg=cfg), host="0.0.0.0", port=int(os.environ.get("PORT") or 8080))
 
 

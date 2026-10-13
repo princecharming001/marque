@@ -957,6 +957,10 @@ def _edit_standard(job: Job, index: TakeIndex, *, brief: str | None, style: str 
     rec = {"tier": "standard", "platform": platform, "started_at": time.time(),
            **({"planner": rec["planner"]} if reuse else {})}
     _save_standard(job, rec)
+    # a take with nothing said is refused before the planner is paid (it could only fail later, in the code plan)
+    if not any(w.is_spoken for w in index.words):
+        job.trace("pipeline_note", note="standard tier refused: the take has no words")
+        raise PipelineError("the take has no words: there is no speech to edit")
     # a take no plan can bring under the tier's output limit is refused before the planner is paid
     _check_standard_reachable(job, index, s)
     # 1 — digest (+ the colour line when the mezzanine exists)
