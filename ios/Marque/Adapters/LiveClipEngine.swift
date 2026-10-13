@@ -995,11 +995,11 @@ extension BackendClient {
         if status == 422 { return ["error": true, "reply": "That theme isn't available right now."] }
         if status == 409 {
             return ["error": true, "transient": true,
-                    "reply": "Still rendering your last change, try again in a minute."]
+                    "reply": "Still working on your last change. Give it a minute, then try again."]
         }
         if status == 503 {
             return ["error": true, "transient": true,
-                    "reply": "Couldn't reach the studio just now, try again in a moment."]
+                    "reply": "Couldn't reach Yunicorn just now. Try again in a moment."]
         }
         guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return ["error": true, "reply": "Couldn't reach the editor, check your connection."]
@@ -1084,11 +1084,11 @@ extension BackendClient {
         // all staged local edits) instead of treating it as terminal.
         if status == 409 {
             return ["error": true, "transient": true,
-                    "reply": "Still rendering your last change, try again in a minute."]
+                    "reply": "Still working on your last change. Give it a minute, then try again."]
         }
         if status == 503 {
             return ["error": true, "transient": true,
-                    "reply": "Couldn't reach the studio just now, try again in a moment."]
+                    "reply": "Couldn't reach Yunicorn just now. Try again in a moment."]
         }
         guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return ["error": true, "reply": "Couldn't reach the editor, check your connection."]
@@ -1110,10 +1110,10 @@ extension BackendClient {
             return ["error": true, "reply": "This edit session has expired, re-submit the take to tweak it."]
         }
         if status == 409 {
-            return ["error": true, "reply": "Hold on. I'm still rendering your last tweak. Try again in a minute."]
+            return ["error": true, "reply": "Still working on your last change. Give it a minute, then try again."]
         }
         if status == 503 {
-            return ["error": true, "reply": "Couldn't reach the studio just now, try again in a moment."]
+            return ["error": true, "reply": "Couldn't reach Yunicorn just now. Try again in a moment."]
         }
         guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return ["error": true, "reply": "I couldn't reach the editor, check your connection and try again."]
@@ -1132,10 +1132,10 @@ extension BackendClient {
             return ["error": true, "reply": "This edit session has expired, re-submit the take to tweak it."]
         }
         if status == 409 {
-            return ["error": true, "reply": "Hold on. I'm still rendering your last tweak. Try again in a minute."]
+            return ["error": true, "reply": "Still working on your last change. Give it a minute, then try again."]
         }
         if status == 503 {
-            return ["error": true, "reply": "Couldn't reach the studio just now, try again in a moment."]
+            return ["error": true, "reply": "Couldn't reach Yunicorn just now. Try again in a moment."]
         }
         guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return ["error": true, "reply": "I couldn't reach the editor, check your connection and try again."]

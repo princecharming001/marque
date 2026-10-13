@@ -2049,7 +2049,7 @@ final class AppStore {
     func friendlyRenderError(_ code: String?, detail: String? = nil) -> String {
         switch code {
         case "source_unreachable":
-            return "We couldn't reach your uploaded video. Check your connection and try again."
+            return "We couldn't open your video. Tap Try again to send it again."
         case "transcribe_failed", "transcribe_timeout", "transcribe_submit_failed":
             return "We couldn't read the audio in your take. Re-record with clearer sound, or try again."
         case "render_stalled", "render_timeout":
@@ -2059,9 +2059,9 @@ final class AppStore {
             // has almost always produced its own verdict; this is the belt-and-braces copy.
             // The card keeps being re-polled while it has a job, and Try again on a job
             // that's still running just resumes polling it.
-            return "This edit is taking much longer than it should. Tap to try again."
+            return "This edit is taking longer than usual. Tap Try again if it doesn't finish soon."
         case "pipeline_interrupted":
-            return "The edit was interrupted mid-flight (a brief server restart). Tap to restart it."
+            return "Your edit got stuck on our side. Tap Try again to restart it."
         case "render_fatal", "render_no_output", "render_submit_failed", "bridge_error":
             return "Something went wrong while rendering this clip. Tap to try again."
         case "internal_error":
@@ -2070,14 +2070,14 @@ final class AppStore {
             }
             return "Something unexpected happened while processing this clip. Tap to try again."
         case "job_expired":
-            return "This edit session has expired. Re-record and try again."
+            return "This edit expired on our side. Tap Try again to send your video again, no need to re-record."
         case "upload_interrupted":
             return "The upload was interrupted before it finished. Tap Try again to resume."
         case "upload_failed":
-            return "Your take couldn't be uploaded, check your connection and tap Try again."
+            return "We couldn't send your video. Your take is saved, so tap Try again."
         case "retry_unreachable":
             // ED-11: Try again couldn't reach the server; the edit itself is untouched.
-            return "Couldn't reach the studio to restart this edit. Check your connection and tap Try again."
+            return "Couldn't reach Yunicorn to restart this edit. Check your connection and tap Try again."
         case MediaCompressor.tooLargeErrorCode:
             // Build 78: the one upload failure where "check your connection" is actively
             // wrong — no network on earth fixes a body that can't be squeezed under the

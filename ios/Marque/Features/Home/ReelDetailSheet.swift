@@ -344,7 +344,7 @@ struct ReelDetailSheet: View {
                         Image(systemName: "wifi.exclamationmark")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Palette.textPrimary)
-                        Text("Couldn't reach the studio just now, give it another try.")
+                        Text("Couldn't reach Yunicorn just now. Give it another try.")
                             .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                         Spacer(minLength: 0)
                     }

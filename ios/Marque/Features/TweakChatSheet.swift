@@ -223,7 +223,7 @@ struct TweakChatSheet: View {
                 messages.append(Msg(role: .assistant, text: reply))
                 pendingOps = (resp["ops"] as? [[String: Any]]) ?? []
                 rendering = true
-                messages.append(Msg(role: .status, text: "Rendering a quick preview. Nothing's committed yet."))
+                messages.append(Msg(role: .status, text: "Making a quick preview. Nothing's changed yet."))
                 startPreviewPolling(jobId: jobId)
                 return
             }
@@ -369,7 +369,7 @@ struct TweakChatSheet: View {
                     // (last_render_failed / a failed re-render / an expired session). Saying
                     // "the new cut is live" there would be a lie (audit #8/#44).
                     messages.append(Msg(role: .status,
-                                        text: "That re-render didn't take. Your previous cut is untouched, so try rewording the change."))
+                                        text: "That change didn't work. Your video is unchanged, so try saying it another way."))
                 }
                 pollTask = nil
                 return
