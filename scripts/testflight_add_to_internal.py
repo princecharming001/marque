@@ -8,13 +8,16 @@ propagation lag between a build reaching processingState=VALID and it
 becoming visible to the beta-group relationship endpoints.
 """
 import sys
+import os
 import time
 import json
 import urllib.request
 
-KEY_ID = "422MKHNWD5"
-ISSUER_ID = "c4c8d671-d14d-48b8-a605-94c23a63b2fa"
-KEY_PATH = "/Users/home/.appstoreconnect/private_keys/AuthKey_422MKHNWD5.p8"
+KEY_ID = os.environ.get("ASC_KEY_ID", "422MKHNWD5")
+ISSUER_ID = os.environ.get("ASC_ISSUER_ID", "c4c8d671-d14d-48b8-a605-94c23a63b2fa")
+# The CI build (.github/workflows/testflight.yml) writes the key to ASC_KEY_PATH; the Mac default stays.
+KEY_PATH = os.environ.get("ASC_KEY_PATH",
+                          os.path.expanduser(f"~/.appstoreconnect/private_keys/AuthKey_{KEY_ID}.p8"))
 APP_ID = "6787590830"                    # com.getmarque.app
 INTERNAL_GROUP_ID = "c811be00-cd4c-4db6-ace5-38ac0d77377a"   # "Internal Testers"
 
