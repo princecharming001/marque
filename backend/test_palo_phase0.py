@@ -114,8 +114,11 @@ def test_anthropic_cached_keyless_returns_none():
 # --- cost accounting + compile kill-switch -----------------------------------
 
 def test_estimate_cost():
-    assert ai_usage.estimate_cost("claude-opus-4-8", 1_000_000, 0) == 15.0
-    assert ai_usage.estimate_cost("claude-opus-4-8", 0, 1_000_000) == 75.0
+    # List prices (2026-10): Opus 4.8 is $5 / $25 per MTok. The old table said $15 / $75,
+    # which overstated every background-module estimate 3x. Table lives in app/llm_usage.
+    assert ai_usage.estimate_cost("claude-opus-4-8", 1_000_000, 0) == 5.0
+    assert ai_usage.estimate_cost("claude-opus-4-8", 0, 1_000_000) == 25.0
+    assert ai_usage.estimate_cost("claude-haiku-5-5", 1_000_000, 1_000_000) == 0.6
     assert ai_usage.estimate_cost("unknown-model", 1_000_000, 1_000_000) == 0.0
 
 

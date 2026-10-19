@@ -54,7 +54,10 @@ def test_classifier_labels_in_place_and_skips_labeled(monkeypatch):
     seen = []
 
     async def fake(sys, user, schema, model, max_tokens=4000, temperature=None):
-        assert temperature == 0                                # labels must be stable
+        # Haiku 5.5 takes no temperature (a 400); label stability now rests on the schema
+        # + the system prompt's "talking only when clearly addressing the viewer" rule.
+        assert temperature is None
+        assert model == main.HAIKU == "claude-haiku-5-5"
         seen.append(user)
         return {"items": [{"i": 0, "kind": "lyrics"}, {"i": 1, "kind": "talking"},
                           {"i": 7, "kind": "skit"}]}          # out-of-range index ignored
