@@ -265,8 +265,13 @@ push_mod.SUPABASE = _supabase_client   # UX-B2a: device tokens persist when Supa
 # path is a pure no-op; all capabilities gated OFF by app.palo_flags (PALO_PORT unset).
 from app import exemplar, ideas, memory_v2, palo_flags, recall_ledger, strategy_compiler, tiers, track_insights, write_agent  # noqa: E402
 from app.palo_persistence import make_store  # noqa: E402
+from app import llm_usage as _llm_usage  # noqa: E402
 
 _palo_store = make_store(SUPABASE_URL, SUPABASE_KEY)
+# Every Anthropic call (both wrappers + the raw vision posts) meters its real usage into
+# ai_usage through this sink. Keyless => None => in-process counters only.
+if _palo_store is not None:
+    _llm_usage.set_sink(_palo_store.record_ai_usage)
 # Internal cron auth — Render cron jobs POST with this token. Empty => the endpoint is
 # closed (403 to everyone), so it's never publicly triggerable by default.
 INTERNAL_CRON_TOKEN = os.environ.get("INTERNAL_CRON_TOKEN", "")
@@ -1329,6 +1334,9 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
             "messages": [{"role": "user", "content": user}]}
     if temperature is not None:
         body["temperature"] = temperature
+    # 5.x models: drop sampling knobs (a 400 otherwise) and pin the thinking config so a
+    # structured output never spends its max_tokens on thinking (app/llm_usage.py).
+    _llm_usage.prepare_body(body)
     if schema is not None:
         # Native Structured Outputs (GA): the model's text is guaranteed to be valid
         # JSON conforming to `schema`. No beta header; works with anthropic-version
@@ -1360,6 +1368,7 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
                     if _j.get("stop_reason") == "max_tokens":
                         logging.warning("[anthropic] %s hit max_tokens=%d — response truncated",
                                         model, max_tokens)
+                    _llm_usage.record_response(_j, model)   # real tokens → ai_usage
                     return "".join(b.get("text", "") for b in _j.get("content", []))
                 except (ValueError, KeyError, TypeError) as e:
                     # A malformed 200 body must be degradeable (HTTPException), not a raw
@@ -2245,6 +2254,7 @@ def _draft_score(creator_id: str, script: dict) -> int:
     return max(40, min(74, round((1 - w) * base + w * cal)))
 
 
+@_llm_usage.routed("scripts.judge")
 async def quality_scripts(brand: dict, style: str, scripts: list[dict],
                           posts: list[dict] | None = None,
                           creator_id: str = "default",
@@ -2355,6 +2365,7 @@ async def quality_hooks(topic: str, hooks: list[dict]) -> list[dict]:
     return [h for _, h in scored]
 
 
+@_llm_usage.routed("hooks")
 async def best_hooks(brand: dict, topic: str, style: str, creator_id: str,
                      n: int = 2, memory: dict | None = None,
                      emulation: list[dict] | None = None) -> list[dict]:
@@ -2475,6 +2486,7 @@ async def scripts(req: ScriptRequest):
     return await _generate_scripts(req)
 
 
+@_llm_usage.routed("scripts.full")
 async def _generate_scripts(req: ScriptRequest) -> dict:
     """The full quality-gated script pipeline (best-of-N hooks → write → judge →
     repair). Shared by /v1/scripts and the onboarding digest job."""
@@ -2604,6 +2616,7 @@ async def hooks(req: HooksRequest):
 
 
 @app.post("/v1/steer")
+@_llm_usage.routed("steer")
 async def steer(req: SteerRequest):
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "script": req.script}
@@ -2875,7 +2888,8 @@ async def score(req: ScoreRequest):
     try:
         sys, usr = prompts.score_script_prompt(req.hook, req.body, req.style)
         # temperature 0: the score is meant to be deterministic (same script → same read).
-        out = extract_json(await anthropic(sys, usr, HAIKU, 400, temperature=0.0), array=False)
+        # (Haiku 5.5 takes no temperature; the wrapper would drop it anyway.)
+        out = extract_json(await anthropic(sys, usr, HAIKU, 400), array=False)
         if out and out.get("hook") in _RATING_NUM:
             out["overall"] = (int(out["overall"]) if isinstance(out.get("overall"), (int, float))
                               else _score_overall(out.get("hook"), out.get("fluff"), out.get("satisfaction")))
@@ -7678,6 +7692,7 @@ async def _score_edl_vision(frames: list[bytes], plan: dict,
             "system": "You are a strict short-form video QA reviewer. Score against the rubric.",
             "messages": [{"role": "user", "content": content}],
             "output_config": {"format": {"type": "json_schema", "schema": schema}}}
+    _llm_usage.prepare_body(body)
     try:
         client = _get_anthropic_client()
         r = await client.post(ANTHROPIC_URL,
@@ -7685,7 +7700,9 @@ async def _score_edl_vision(frames: list[bytes], plan: dict,
                                        "content-type": "application/json"}, json=body)
         if r.status_code != 200:
             return None
-        text = "".join(b.get("text", "") for b in r.json().get("content", []))
+        _j = r.json()
+        _llm_usage.record_response(_j, SONNET, "edl.vision_score")
+        text = "".join(b.get("text", "") for b in _j.get("content", []))
         return json.loads(text)
     except (httpx.HTTPError, ValueError, KeyError):
         return None
@@ -7729,6 +7746,7 @@ async def _matte_qc(render_url: str, edl_data: dict, style: str) -> dict | None:
             "system": "You are a strict video-compositing QA checker.",
             "messages": [{"role": "user", "content": content}],
             "output_config": {"format": {"type": "json_schema", "schema": schema}}}
+    _llm_usage.prepare_body(body)
     try:
         client = _get_anthropic_client()
         r = await client.post(ANTHROPIC_URL,
@@ -7736,7 +7754,9 @@ async def _matte_qc(render_url: str, edl_data: dict, style: str) -> dict | None:
                                        "content-type": "application/json"}, json=body)
         if r.status_code != 200:
             return None
-        return json.loads("".join(b.get("text", "") for b in r.json().get("content", [])))
+        _j = r.json()
+        _llm_usage.record_response(_j, SONNET, "edl.matte_qc")
+        return json.loads("".join(b.get("text", "") for b in _j.get("content", [])))
     except (httpx.HTTPError, ValueError, KeyError):
         return None
 
@@ -9168,6 +9188,7 @@ def _digest_script_request(req: DigestRequest, scan: dict) -> ScriptRequest:
     )
 
 
+@_llm_usage.routed("onboarding.digest")
 async def _run_digest(job_id: str) -> None:
     job = _digest_jobs[job_id]
     req: DigestRequest = job["req"]
@@ -10055,15 +10076,18 @@ async def _analyze_video_multiframe(url: str, duration_s: float, system: str,
             "data": base64.b64encode(f).decode("ascii")}})
     try:
         client = _get_anthropic_client()
+        body = _llm_usage.prepare_body({"model": HAIKU, "max_tokens": 1000, "system": system,
+                                        "messages": [{"role": "user", "content": content}]})
         r = await client.post(
             ANTHROPIC_URL,
             headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},
-            json={"model": HAIKU, "max_tokens": 1000, "system": system,
-                  "messages": [{"role": "user", "content": content}]})
+            json=body)
         if r.status_code != 200:
             return None
-        out = extract_json("".join(b.get("text", "") for b in r.json().get("content", [])),
+        _j = r.json()
+        _llm_usage.record_response(_j, HAIKU, "media.analyze_multiframe")
+        out = extract_json("".join(b.get("text", "") for b in _j.get("content", [])),
                            array=False)
         return out if isinstance(out, dict) and "broll_suitability" in out else None
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
@@ -10150,19 +10174,26 @@ async def analyze_media(req: MediaAnalyzeRequest):
                                                  system, user_text)
     if result is None:
         try:
+            vbody = _llm_usage.prepare_body(
+                {"model": HAIKU, "max_tokens": 1000, "system": system,
+                 "messages": [{"role": "user", "content": [
+                     {"type": "image", "source": {"type": "url", "url": req.public_url}},
+                     {"type": "text", "text": user_text},
+                 ]}]})
             async with httpx.AsyncClient(timeout=60) as vclient:
                 r = await vclient.post(
                     ANTHROPIC_URL,
                     headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
                              "content-type": "application/json"},
-                    json={"model": HAIKU, "max_tokens": 1000, "system": system,
-                          "messages": [{"role": "user", "content": [
-                              {"type": "image", "source": {"type": "url", "url": req.public_url}},
-                              {"type": "text", "text": user_text},
-                          ]}]},
+                    json=vbody,
                 )
-            result = extract_json("".join(b.get("text", "") for b in r.json().get("content", [])),
-                                  array=False) if r.status_code == 200 else None
+            if r.status_code == 200:
+                _j = r.json()
+                _llm_usage.record_response(_j, HAIKU, "media.analyze")
+                result = extract_json("".join(b.get("text", "") for b in _j.get("content", [])),
+                                      array=False)
+            else:
+                result = None
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
             logging.warning("media vision failed: %s", e)
             result = None
@@ -10523,6 +10554,7 @@ async def _judge_meme_candidate(cue: str, thumb: bytes) -> dict | None:
                 "properties": {"shows": {"type": "string"},
                                "subject_match": {"type": "boolean"},
                                "score": {"type": "integer"}}}}}}
+    _llm_usage.prepare_body(body)
     try:
         client = _get_anthropic_client()
         r = await client.post(ANTHROPIC_URL,
@@ -10530,7 +10562,9 @@ async def _judge_meme_candidate(cue: str, thumb: bytes) -> dict | None:
                                        "content-type": "application/json"}, json=body)
         if r.status_code != 200:
             return None
-        text = "".join(bk.get("text", "") for bk in r.json().get("content", []))
+        _j = r.json()
+        _llm_usage.record_response(_j, SONNET, "broll.meme_audit")
+        text = "".join(bk.get("text", "") for bk in _j.get("content", []))
         out = json.loads(text) or {}
         return out if isinstance(out.get("score"), int) else None
     except (httpx.HTTPError, ValueError, KeyError):
@@ -10596,6 +10630,7 @@ async def _broll_vision_score_one(cue: str, thumb: bytes, spoken: str = "") -> d
                                "engaging": {"type": "boolean"},
                                "direction_ok": {"type": "boolean"},
                                "score": {"type": "integer"}}}}}}
+    _llm_usage.prepare_body(body)
     try:
         client = _get_anthropic_client()
         r = await client.post(ANTHROPIC_URL,
@@ -10603,7 +10638,9 @@ async def _broll_vision_score_one(cue: str, thumb: bytes, spoken: str = "") -> d
                                        "content-type": "application/json"}, json=body)
         if r.status_code != 200:
             return None
-        text = "".join(b.get("text", "") for b in r.json().get("content", []))
+        _j = r.json()
+        _llm_usage.record_response(_j, SONNET, "broll.vision_score")
+        text = "".join(b.get("text", "") for b in _j.get("content", []))
         out = json.loads(text) or {}
         return out if isinstance(out.get("score"), int) else None
     except (httpx.HTTPError, ValueError, KeyError):
@@ -10876,7 +10913,7 @@ async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
                           "meme_intensity": _meme_level,
                           "trending_titles": trends[:10],
                           "trending_clips": klipy_trends, "cues": cues})
-        out = await anthropic_json(sys, usr, prompts.BROLL_QUERY_REWRITE_SCHEMA, model=HAIKU, temperature=0.2)
+        out = await anthropic_json(sys, usr, prompts.BROLL_QUERY_REWRITE_SCHEMA, model=HAIKU)
         _memes_before = _meme_total
         for item in (out.get("queries") or []):
             i, q = item.get("i"), (item.get("query") or "").strip()
@@ -10909,7 +10946,7 @@ async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
                     {"type": "object", "additionalProperties": False,
                      "required": ["i", "query"],
                      "properties": {"i": {"type": "integer"}, "query": {"type": "string"}}},
-                    model=HAIKU, temperature=0.2)
+                    model=HAIKU)
                 _pi, _pq = _pick.get("i"), (_pick.get("query") or "").strip()
                 if isinstance(_pi, int) and 0 <= _pi < len(broll) and _pq \
                         and broll[_pi].get("need") in ("action", "concept"):
@@ -12062,6 +12099,7 @@ def _chat_slots(topic: str, style: str, count: int, angle: str = "") -> list[dic
             for i in range(max(1, count))]
 
 
+@_llm_usage.routed("converse.scripts")
 async def _chain_scripts(req: ConverseRequest, intent_args: dict) -> list[dict]:
     """generate_scripts intent → run the real scripts engine and attach the results.
     Fully guarded: a malformed model-emitted intent_args (non-numeric count) or a
@@ -12122,6 +12160,7 @@ def _parse_intent_args(envelope: dict) -> dict:
 
 
 @app.post("/v1/converse")
+@_llm_usage.routed("converse")
 async def converse(req: ConverseRequest):
     if req.mode not in ("chat", "voice"):
         req.mode = "chat"
@@ -12732,11 +12771,12 @@ async def _classify_reel_speech(posts: list[dict], batch: int = 15) -> None:
             f"transcript: {wcut(p.get('transcript') or '', 700)}"
             for i, p in enumerate(chunk))
         try:
-            # temperature 0: a label must not flip between refreshes (at the default
-            # temperature ~3% of borderline reels changed label run to run).
+            # A label must not flip between refreshes. Haiku 4.5 got temperature 0 for
+            # that (~3% of borderline reels flipped at the default); Haiku 5.5 takes no
+            # temperature, so the guard is now the schema + the "talking only when
+            # clearly addressing the viewer" rule in the system prompt.
             out = await asyncio.wait_for(
-                anthropic_cached_json(_SPEECH_CLASSIFY_SYS, user, _SPEECH_CLASSIFY_JSON, HAIKU, 600,
-                                      temperature=0),
+                anthropic_cached_json(_SPEECH_CLASSIFY_SYS, user, _SPEECH_CLASSIFY_JSON, HAIKU, 600),
                 timeout=float(os.environ.get("REEL_SPEECH_TIMEOUT_S", "25")))
         except asyncio.TimeoutError:
             logging.info("[reels] speech classify skipped: timeout")
@@ -14209,6 +14249,7 @@ async def _write_slot(sreq: "ScriptRequest", slot: dict, *, model: str, schema: 
     return None
 
 
+@_llm_usage.routed("feed.fast")
 async def _fast_feed_scripts(sreq: "ScriptRequest", cursor: int = 0) -> dict:
     """First-paint script generation, PLANNED + PARALLEL: a fast HAIKU planner picks a
     distinct topic per slot (formats assigned in code), then one lean HAIKU writer per
@@ -14425,6 +14466,7 @@ def _feed_sreq(brand: dict, styles: str, cursor: int, creator_id: str, memory: d
     ), why_picked
 
 
+@_llm_usage.routed("feed.upgrade")
 async def _refresh_feed_page(key: str, sreq: "ScriptRequest", niche: str, creator_id: str,
                              watched: str, cursor: int, why_picked: str = "") -> None:
     """Background upgrade: run the full quality-gated pipeline and overwrite the
@@ -14639,6 +14681,7 @@ def _brief_script_item(brief: dict, written: dict) -> dict:
     return {"type": "script", "script": script, "source": "idea_bank", "brief_id": brief.get("id")}
 
 
+@_llm_usage.routed("feed.brief")
 async def _write_brief_bg(creator_id: str, brief: dict, brand: dict | None) -> None:
     key = (creator_id, str(brief.get("id")))
     try:
@@ -14763,6 +14806,7 @@ async def _guard_write_actions(actions: list[dict]) -> list[dict]:
 
 
 @app.post("/v1/write/turn")
+@_llm_usage.routed("write.turn")
 async def write_turn_route(req: _WriteRequest):
     """Palo port (flag WRITE_AGENT): one co-writing turn. Returns the proposed actions
     (exact-substring, accept/reject on iOS via the tweak-ops UI), a preview of the applied
@@ -14937,6 +14981,7 @@ def _mock_mimic(reel: dict, brand: dict) -> dict:
 
 
 @app.post("/v1/mimic")
+@_llm_usage.routed("mimic")
 async def mimic(req: MimicRequest):
     provenance = {"creator_handle": req.reel.get("creator_handle", ""),
                   "platform": req.reel.get("platform", ""), "reel_id": req.reel.get("id", "")}

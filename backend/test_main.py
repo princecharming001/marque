@@ -5207,17 +5207,22 @@ def test_teardown_live_nulls_lift_without_metrics(monkeypatch):
     assert r["liftPercent"] is None                     # model's fabricated 73 is discarded (no metrics)
 
 
-def test_score_pins_temperature_zero(monkeypatch):
+def test_score_sends_no_temperature_to_haiku(monkeypatch):
+    # Pre-5.5 the score call pinned temperature=0 for determinism. Haiku 5.5 rejects any
+    # temperature with a 400 (app/llm_usage.py strips it at the wrapper too); the route
+    # must not ask for one.
     cap = {}
 
-    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None):
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, **kw):
         cap["temperature"] = temperature
+        cap["model"] = model
         return ('{"hook":"High","fluff":"Low","satisfaction":"High","overall":80,'
                 '"strongest":"x","weakest":"y","fix":"z"}')
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
     monkeypatch.setattr(main, "anthropic", fake)
     client.post("/v1/score", json={"hook": "h", "body": "b"})
-    assert cap["temperature"] == 0.0
+    assert cap["temperature"] is None
+    assert cap["model"] == main.HAIKU == "claude-haiku-5-5"
 
 
 # ---------------------------------------------------------------------------

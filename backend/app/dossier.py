@@ -21,6 +21,7 @@ import os
 import asyncio
 import logging
 
+from app import llm_usage
 from app.edl import ms_to_frame
 
 log = logging.getLogger("dossier")
@@ -288,15 +289,17 @@ async def _vision_json(system: str, user: str, images: list[bytes], schema: dict
     # VIDEO_UNDERSTANDING off). We instruct JSON-only + parse the text with _coerce_json,
     # which is exactly what a permissive vision extraction needs.
     system = system + " Return ONLY a single valid JSON object matching the requested fields — no prose, no markdown fences."
-    body = {"model": os.environ.get("DOSSIER_VISION_MODEL", "claude-haiku-4-5-20251001"),
-            "max_tokens": 2000, "system": system,
-            "messages": [{"role": "user", "content": content}]}
+    model = os.environ.get("DOSSIER_VISION_MODEL", "claude-haiku-5-5")
+    body = llm_usage.prepare_body({"model": model, "max_tokens": 2000, "system": system,
+                                   "messages": [{"role": "user", "content": content}]})
     async with httpx.AsyncClient(timeout=90) as client:
         r = await client.post("https://api.anthropic.com/v1/messages",
                               headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
                                        "content-type": "application/json"}, json=body)
         r.raise_for_status()
-        text = "".join(b.get("text", "") for b in r.json().get("content", []))
+        payload = r.json()
+        llm_usage.record_response(payload, model, "dossier.vision")
+        text = "".join(b.get("text", "") for b in payload.get("content", []))
     return _coerce_json(text)
 
 

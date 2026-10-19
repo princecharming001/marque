@@ -23,6 +23,8 @@ import random
 
 import httpx
 
+from app import llm_usage
+
 _KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 _URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com") + "/v1/messages"
 _BACKOFF = (0.5, 2.0, 8.0)
@@ -109,6 +111,9 @@ async def anthropic_cached(system: str, user: str, model: str, max_tokens: int =
         body["temperature"] = temperature
     if schema is not None:
         body["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
+    # Armor item 1 (above) is now enforced centrally: 5.x models get their thinking
+    # config and lose sampling knobs here, and every 200 is metered.
+    llm_usage.prepare_body(body)
     last = None
     for attempt, delay in enumerate(list(_BACKOFF) + [None]):
         try:
@@ -118,7 +123,9 @@ async def anthropic_cached(system: str, user: str, model: str, max_tokens: int =
                          "content-type": "application/json"})
             if r.status_code == 200:
                 try:
-                    return "".join(b.get("text", "") for b in r.json().get("content", []))
+                    payload = r.json()
+                    llm_usage.record_response(payload, model)
+                    return "".join(b.get("text", "") for b in payload.get("content", []))
                 except (ValueError, KeyError, TypeError) as e:
                     logging.warning("[palo_llm] malformed 200 body: %s", e)
                     return None

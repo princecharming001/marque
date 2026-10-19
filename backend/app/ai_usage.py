@@ -16,21 +16,15 @@ from __future__ import annotations
 import logging
 import os
 
-# $ per 1M tokens (input, output). Defaults are approximate list prices; override via
-# env to match real contract pricing without a code change.
-_PRICES: dict[str, tuple[float, float]] = {
-    "claude-opus-4-8": (float(os.environ.get("PRICE_OPUS_IN", "15")),
-                        float(os.environ.get("PRICE_OPUS_OUT", "75"))),
-    "claude-sonnet-4-6": (float(os.environ.get("PRICE_SONNET_IN", "3")),
-                          float(os.environ.get("PRICE_SONNET_OUT", "15"))),
-    "claude-haiku-4-5-20251001": (float(os.environ.get("PRICE_HAIKU_IN", "1")),
-                                  float(os.environ.get("PRICE_HAIKU_OUT", "5"))),
-}
+from app import llm_usage
 
 
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    p_in, p_out = _PRICES.get(model, (0.0, 0.0))
-    return round((input_tokens * p_in + output_tokens * p_out) / 1_000_000, 6)
+    """$ for a call priced at plain input/output rates. The price table (and the
+    PRICE_<MODEL>_IN/OUT env overrides) live in app/llm_usage.py, which is also where
+    the wrappers meter REAL usage; this helper remains for the background modules that
+    still log an estimate before the call returns."""
+    return llm_usage.estimate_cost(model, {"input": input_tokens, "output": output_tokens})
 
 
 async def record(store, creator_id: str, operation: str, model: str,

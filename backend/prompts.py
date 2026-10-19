@@ -16,7 +16,10 @@ from app import knowledge as _kb
 from app import craft as _craft
 
 OPUS = "claude-opus-4-8"
-HAIKU = "claude-haiku-4-5-20251001"
+# Haiku 5.5 (2026-10): same tier, ~10x cheaper than Haiku 4.5 ($0.10/$0.50 vs $1/$5 per
+# MTok). It rejects non-default temperature and thinks by default; app/llm_usage.py
+# strips sampling knobs and pins thinking off for every call, so call sites don't care.
+HAIKU = "claude-haiku-5-5"
 SONNET = "claude-sonnet-4-6"
 
 FORMAT_IDS = [
