@@ -1955,15 +1955,17 @@ SLOT_REGISTERS: dict[str, str] = {
     "warning": "the thing that goes wrong if you keep doing X, and the one thing to change",
     "question": "a real question to the viewer that the script then actually answers",
 }
+# Shapes only, no example sentences: the first eval run found a frame's example line
+# ("Cardio is not the problem.") copied verbatim as a mental-health creator's hook.
 OPENER_FRAMES: dict[str, str] = {
-    "mid-story": "starts inside a specific moment ('So I'm standing in the gym at 6am and...')",
-    "flat-claim": "one plain opinion, no setup, no 'everyone says' ('Cardio is not the problem.')",
-    "number-first": "opens on a specific number, price, time or count the creator can stand behind",
+    "mid-story": "the first words are already inside a specific moment, time and place, no preamble",
+    "flat-claim": "one plain opinion in one short sentence, no setup, no 'everyone says', no 'the truth is'",
+    "number-first": "the first words are a specific number, price, time or count the creator can stand behind",
     "you-situation": "names the exact situation the viewer is in right now, second person, present tense",
-    "object-first": "opens on a thing in the creator's hand or life ('This $12 shirt...')",
-    "command": "starts with the action ('Stop stretching before you lift.')",
-    "question": "a specific question only this niche's viewer can answer, never 'ever wondered'",
-    "confession": "first person past tense, the creator's own slip ('I charged $800 for...')",
+    "object-first": "the first words name a physical thing from the creator's own life or hand",
+    "command": "the first word is a verb: the action to take or stop, as an order",
+    "question": "a specific question only this niche's viewer can answer, never 'ever wondered' or 'did you know'",
+    "confession": "first person, past tense, the creator's own slip or habit, told flat",
 }
 
 SLOT_PLAN_SYSTEM = (

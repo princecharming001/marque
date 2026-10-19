@@ -10,6 +10,7 @@ Each test fails on the pre-slice code:
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -58,6 +59,15 @@ def test_slot_plan_prompt_carries_rules_and_recent_openers():
     assert "PAYOFF FIRST" in sys and "register" in sys and "opener_frame" in sys
     assert "RECENT OPENING LINES" in usr
     assert "Your back hurts because of where you sit." in usr
+
+
+def test_frame_and_register_descriptions_carry_no_quotable_example_lines():
+    # The first live eval saw a frame's example sentence copied verbatim as a hook in
+    # another niche. Descriptions describe a shape; they never contain a sentence the
+    # model could lift.
+    for name, desc in {**prompts.OPENER_FRAMES, **prompts.SLOT_REGISTERS}.items():
+        assert "('" not in desc and '("' not in desc, (name, desc)
+        assert not re.search(r"[.!?]['\")]", desc), (name, desc)
 
 
 def test_slot_line_renders_payoff_register_and_frame():

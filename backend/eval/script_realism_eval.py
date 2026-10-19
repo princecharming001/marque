@@ -101,6 +101,14 @@ JUDGE_SCHEMA = {
 }
 
 AXES = ("spoken", "substance", "specificity", "hook", "honesty", "fit", "talking_head")
+
+# Scripts v2 (2026-10-19): the deterministic AI-tell lint and the planner's per-slot
+# register / opener frame, when the branch has them. Guarded so this harness can also be
+# dropped into a pre-v2 checkout to produce the baseline.
+try:
+    from app.scripts_v2 import lint as _v2lint
+except Exception:   # noqa: BLE001
+    _v2lint = None
 _TELLS = re.compile(r"\b(here's the thing|let me tell you|in today's video|picture this|buckle up|"
                     r"game[- ]changer|unlock|level up|dive in|journey)\b", re.I)
 _STOP = set("the a an and or but to of in on for with is are was be it that this you your i my me we "
@@ -143,6 +151,14 @@ def metrics(scripts: list[dict]) -> dict:
                                and (s.get("title") or "").split()[-1].lower() in main._TITLE_TAIL_WORDS),
         "seconds_off": [abs(int(s.get("targetSeconds") or 0) - round(len(_spoken(s).split()) / 2.75))
                         for s in scripts],
+        # scripts v2: hard/soft tells per script from the deterministic lint (0 when the
+        # checkout predates it), and the first-line shapes the planner assigned.
+        "lint_hard": [(_v2lint.summarize(_v2lint.lint_script(s))["hard"] if _v2lint else 0) for s in scripts],
+        "lint_soft": [(_v2lint.summarize(_v2lint.lint_script(s))["soft"] if _v2lint else 0) for s in scripts],
+        "lint_codes": sorted({c for s in scripts for c in
+                              ((_v2lint.summarize(_v2lint.lint_script(s))["codes"]) if _v2lint else [])}),
+        "hook_signals": [s.get("hookSignal") for s in scripts],
+        "first_words": [" ".join(_spoken(s).split()[:3]).lower() for s in scripts],
     }
 
 
@@ -189,7 +205,9 @@ CHAT_TOPICS = {"fashion-founders": "pricing your first collection", "mental-heal
 
 async def run_path(path: str, persona: dict, cursor: int) -> dict:
     brand = {k: v for k, v in persona.items() if k != "id"}
-    cid = f"qa-eval-{persona['id']}"
+    # Owner rule: anything this harness writes to production (creator_profiles,
+    # ai_usage rows, identity docs) carries the qa-editor- prefix.
+    cid = f"qa-editor-eval-{persona['id']}"
     # A returning account has its identity doc already (built in the background on its
     # first request); build it up front here so the eval measures the steady state.
     await main._ensure_account_context(cid, brand)
@@ -291,6 +309,17 @@ async def main_async(paths: list[str], label: str, cursor: int, only: str | None
         print(f"  honesty: first-person claims={len(claims)} {claims[:4]}  dangling titles="
               f"{sum(x['dangling_titles'] for x in m)}  seconds off median="
               f"{statistics.median([o for x in m for o in x['seconds_off']] or [0])}")
+        n_scripts = sum(len(x["total_words"]) for x in m)
+        hard = sum(h for x in m for h in x.get("lint_hard", []))
+        soft = sum(h for x in m for h in x.get("lint_soft", []))
+        clean = sum(1 for x in m for h in x.get("lint_hard", []) if h == 0)
+        sig = [s for x in m for s in x.get("hook_signals", []) if s]
+        top_sig = max(set(sig), key=sig.count) if sig else None
+        fw = [w for x in m for w in x.get("first_words", [])]
+        print(f"  v2 lint: hard tells/script={hard / max(1, n_scripts):.2f} soft={soft / max(1, n_scripts):.2f} "
+              f"scripts with 0 hard={clean}/{n_scripts}  codes={sorted({c for x in m for c in x.get('lint_codes', [])})}")
+        print(f"  shape: top hookSignal={top_sig} ({sig.count(top_sig) if top_sig else 0}/{len(sig)})  "
+              f"distinct first-3-words={len(set(fw))}/{len(fw)}")
         paged = [r["pages"] for r in pr if r.get("pages")]
         if paged:
             print(f"  cross-page near-duplicates (3 pages): total={sum(cross_page_dupes(p) for p in paged)} "
