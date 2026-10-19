@@ -4,7 +4,7 @@
 
 ## 0. Status
 
-- 2026-10-19: branch `scripts-v2`. **Phase 0 done** (metering in both wrappers + 7 raw posts, `prepare_body` hygiene, Haiku 5.5, `scripts/cost_report.py`). **Phase 1 slice done** (`app/scripts_v2/lint.py` + `_lint_revise` on the full path; voiceprint transcript-first with two full sentences; planner emits payoff / register / opener frame with code-enforced distinctness; first-paint length from the creator's own reels; niche + own opener dedup). Live smoke on the first paint: 3 scripts, 9.5 s, $0.004, three distinct registers/frames, 2 of 3 with zero hard tells. Not deployed.
+- 2026-10-19: branch `scripts-v2`. **Phase 0 done** (metering in both wrappers + 7 raw posts, `prepare_body` hygiene, Haiku 5.5, `scripts/cost_report.py`). **Phase 1 slice done** (`app/scripts_v2/lint.py` + `_lint_revise` on the full path; voiceprint transcript-first with two full sentences; planner emits payoff / register / opener frame with code-enforced distinctness; first-paint length from the creator's own reels; niche + own opener dedup). Realism eval (8 personas, independent Opus judge), old main vs v2: fast path hard tells/script 0.88 → 0.22, tell-free 14/24 → 20/23, spoken 7.5 → 8.0, honesty 8.5 → 9.1, length right 20/24 → 23/23, p50 11.6 s → 7.6 s, cost $0.5 → $0.055 per 24 pages; full path (vs Sept v6) hard tells 0.83 → 0.29, tell-free 8/24 → 17/24, would-film 24/24. The eval caught a frame-example leak (fixed 014b54b). Still open: listicle hooks converge on one shape; planner picks the most obvious topic per niche (phase-2 material step). Not deployed.
 
 ## 1. Why
 
