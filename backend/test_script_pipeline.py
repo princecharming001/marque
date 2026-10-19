@@ -101,7 +101,7 @@ def test_write_slot_drops_empty_body_after_retry(monkeypatch):
 def _wire_fast(monkeypatch, slots, writer):
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "test-key")
 
-    async def plan(sreq, cursor=0, context="", avoid=None):
+    async def plan(sreq, cursor=0, context="", avoid=None, **kw):   # kw: avoid_openers (scripts v2)
         return slots
 
     async def none_str(*a, **kw):
@@ -253,7 +253,7 @@ def test_first_paint_plans_around_what_was_already_pitched(monkeypatch):
     main._remember_titles(main._pitched_titles, cid, ["why desk workers skip leg day"])
     seen = {}
 
-    async def plan(sreq, cursor=0, context="", avoid=None):
+    async def plan(sreq, cursor=0, context="", avoid=None, **kw):   # kw: avoid_openers (scripts v2)
         seen["avoid"] = avoid
         return SLOTS3
 

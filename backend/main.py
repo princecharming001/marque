@@ -2337,6 +2337,63 @@ async def quality_scripts(brand: dict, style: str, scripts: list[dict],
     return scripts
 
 
+@_llm_usage.routed("scripts.lint_revise")
+async def _lint_revise(brand: dict, style: str, scripts: list[dict],
+                       posts: list[dict] | None = None, *,
+                       memory: dict | None = None, slots: list[dict] | None = None,
+                       creator_id: str = "default") -> list[dict]:
+    """Scripts v2 slice: run the deterministic AI-tell lint (app/scripts_v2/lint.py) on
+    every script, stamp `lintCodes` (eval visibility; the app ignores unknown keys),
+    and send the ones with HARD findings through one targeted rewrite. A rewrite is
+    accepted only when it has fewer hard findings than the draft and no stage
+    direction; otherwise the draft stands. Any failure returns the scripts untouched."""
+    from app.scripts_v2 import lint as _lint
+    if not scripts:
+        return scripts
+    recent = _creator_recent_openers(posts)
+    flagged: list[dict] = []
+    before: dict[int, int] = {}
+    for i, sc in enumerate(scripts):
+        if not isinstance(sc, dict):
+            continue
+        findings = _lint.lint_script(sc, recent_openers=recent or None)
+        sc["lintCodes"] = sorted({f.code for f in findings})
+        hard = [f for f in findings if f.severity == _lint.HARD]
+        if hard:
+            before[i] = len(hard)
+            note = ("Reads as written AI copy, not this creator talking. Named tells: "
+                    + "; ".join(f"{f.code}: {f.detail}" for f in hard[:5])
+                    + ". Fix exactly these by cutting or rephrasing in the creator's mouth, "
+                      "never by adding material.")
+            flagged.append({"pos": i, "script": sc, "verdict": {"weakest": "spoken", "note": note}})
+    if not flagged or not ANTHROPIC_KEY:
+        return scripts
+    try:
+        rsys, rusr = prompts.script_revise_prompt(brand, style, flagged, posts, memory=memory,
+                                                  slots=slots if slots and len(slots) == len(scripts) else None)
+        revised = await anthropic_json(rsys, rusr,
+                                       _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
+                                       OPUS, 3800, array_key="scripts")
+    except HTTPException:
+        return scripts
+    for f, new in zip(flagged, revised or []):
+        if not (isinstance(new, dict) and new.get("hook") and new.get("body")):
+            continue
+        if prompts.flag_stage_direction(new["body"], style):
+            continue
+        new_hard = [x for x in _lint.lint_script(new, recent_openers=recent or None)
+                    if x.severity == _lint.HARD]
+        if len(new_hard) >= before.get(f["pos"], 0):
+            logging.info("[lint] rewrite not cleaner at pos=%d (%d -> %d hard); keeping draft",
+                         f["pos"], before.get(f["pos"], 0), len(new_hard))
+            continue
+        new.setdefault("style", style)
+        new["lintCodes"] = sorted({x.code for x in _lint.lint_script(new, recent_openers=recent or None)})
+        new["predictedScore"] = int(f["script"].get("predictedScore", 0) or 0) or new.get("predictedScore", 0)
+        scripts[f["pos"]] = new
+    return scripts
+
+
 async def quality_hooks(topic: str, hooks: list[dict]) -> list[dict]:
     """Re-score generated hooks with an independent critic, drop AI-slop/dupes,
     and re-rank by honest strength. Falls back to the raw hooks on any failure."""
@@ -2516,9 +2573,11 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
         # Planned page: reuse the first paint's slots when this is its background upgrade
         # (the creator keeps the topics they already saw), else plan now. Planning runs
         # concurrently with the context fetches.
+        avoid_openers = (_creator_recent_openers(req.posts) + _niche_openers(req.niche)) or None
         plan_task = (None if (req.slots or req.count < 2) else asyncio.ensure_future(
             _plan_slots(req, 0, await _account_context(req.creator_id),
-                        avoid=_avoid_topics(req.creator_id) or None)))
+                        avoid=_avoid_topics(req.creator_id) or None,
+                        avoid_openers=avoid_openers)))
         stats, emulation = await asyncio.gather(
             _arms_for_prompt(req.creator_id),
             _resolve_emulation_profiles(req.emulation_targets))
@@ -2526,10 +2585,14 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
             req.slots = await plan_task
         _lap("context")
         # Best-of-N: pre-select the strongest openers, then write bodies around them.
-        # With a plan, one vetted hook PER SLOT (its own topic), in parallel.
+        # With a plan, one vetted hook PER SLOT (its own topic), in parallel. The hook is
+        # the promise of the slot's payoff, so the payoff rides along with the topic.
         if req.slots:
             per_slot = await asyncio.gather(*(
-                best_hooks(req.d(), f"{sl.get('topic', '')}. {sl.get('angle', '')}".strip(". "),
+                best_hooks(req.d(),
+                           ". ".join(x for x in (sl.get("topic", ""), sl.get("angle", ""),
+                                                 f"The payoff: {sl['payoff']}" if sl.get("payoff") else "")
+                                     if x).strip(". "),
                            req.style, req.creator_id, n=1, memory=req.memory or None,
                            emulation=emulation or None) for sl in req.slots))
             mandated = [h[0] for h in per_slot if h] if all(per_slot) else []
@@ -2549,7 +2612,7 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
             written = await asyncio.gather(*(
                 _write_slot(req, sl, model=OPUS, schema=prompts.SCRIPT_JSON_ELEMENT,
                             max_tokens=2200, sys_suffix=brain, stats=stats, hook=hooks[i],
-                            emulation=emulation, tag="full")
+                            emulation=emulation, tag="full", avoid_openers=avoid_openers)
                 for i, sl in enumerate(req.slots)))
             out = [w for w in written if w]
         else:
@@ -2557,7 +2620,8 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
                                               req.media_context, req.posts or None,
                                               arm_stats=stats, memory=req.memory or None,
                                               mandated_hooks=mandated or None,
-                                              emulation=emulation or None)
+                                              emulation=emulation or None,
+                                              avoid_openers=avoid_openers)
             out = await anthropic_json(sys + brain, usr,
                                        _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
                                        OPUS, 3800, array_key="scripts")
@@ -2567,6 +2631,14 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
         out = await quality_scripts(req.d(), req.style, out, req.posts or None, slots=req.slots or None,
                                     creator_id=req.creator_id, mandated_hooks=mandated or None,
                                     memory=req.memory or None)
+        # Deterministic AI-tell gate (scripts v2 slice): the judge shares the writer's
+        # rubric and misses "sounds like the last ten". The lint names the tells
+        # (opener cliché, not-X-it's-Y, list markers, wrap-up moral, template CTA...);
+        # anything with a hard finding gets ONE targeted rewrite that must come back
+        # cleaner, else the draft stands.
+        out = await _lint_revise(req.d(), req.style, out, req.posts or None,
+                                 memory=req.memory or None, slots=req.slots or None,
+                                 creator_id=req.creator_id)
         # Final speakability gate on the judged pipeline: the judge's own slop axis
         # shares the old lint's blind spots, so a deterministic drop is the real guard.
         # Never ship fewer than requested — backfill any drop from the mock templates.
@@ -14155,41 +14227,138 @@ async def _ensure_account_context(creator_id: str, brand: dict) -> None:
         logging.warning("[context] ensure identity failed: %s", e)
 
 
-def _fallback_slots(sreq: "ScriptRequest", formats: list[str]) -> list[dict]:
+# --- scripts v2 slice (2026-10-19): variety where viewers feel it ---------------------
+# A page used to vary by formatId only, and every slot got the same register and the
+# same first-line shape (the "X isn't Y. It's Z." page). Now each slot also carries a
+# register (how it feels), an opener frame (the syntactic shape of line one) and a
+# payoff (planned before the words). Distinctness is enforced HERE, in code, so a
+# planner that returns three "flat-claim" slots can't collapse the page.
+
+def _first_sentence(text: str, cap: int = 160) -> str:
+    t = re.sub(r"\s+", " ", (text or "").strip())
+    if not t:
+        return ""
+    first = re.split(r"(?<=[.!?])\s+", t, maxsplit=1)[0].strip()
+    return first[:cap].strip()
+
+
+def _creator_recent_openers(posts: list[dict] | None, k: int = 10) -> list[str]:
+    """First lines of the creator's own stored posts (spoken transcript first, caption as
+    the fallback). `creator_posts` keeps no timestamps, so this is stored order."""
+    out: list[str] = []
+    for p in (posts or [])[:k]:
+        line = _first_sentence(p.get("transcript") or p.get("caption") or "")
+        if len(line) >= 8 and line not in out:
+            out.append(line)
+    return out
+
+
+def _niche_openers(niche: str, k: int = 8) -> list[str]:
+    """Spoken first lines of the niche's current top reels, from the warmed reels cache.
+    TRANSCRIBED reels only: an untranscribed reel's `transcript` field is its caption
+    (written, hashtag-laden), the exact register the writer must not learn. Fewer than
+    three usable lines → [] (the block is omitted rather than shown half-empty).
+    Read-only on the in-memory cache; never triggers a scrape."""
+    if not niche:
+        return []
+    entry = _niche_reels_cache.get(_niche_cache_key(niche)) or {}
+    reels = [r for r in (entry.get("reels") or []) if isinstance(r, dict)
+             and r.get("transcribed") and (r.get("transcript") or "").strip()]
+    reels.sort(key=lambda r: int(r.get("views") or 0), reverse=True)
+    out: list[str] = []
+    for r in reels:
+        line = _first_sentence(r.get("transcript") or "")
+        if len(line) >= 8 and line not in out:
+            out.append(line)
+        if len(out) >= k:
+            break
+    return out if len(out) >= 3 else []
+
+
+def _length_target(posts: list[dict] | None) -> dict:
+    """Word budget for a first-paint script from the creator's OWN spoken lengths.
+    LENGTH_BUDGET pinned everyone to 90-140 words; a creator whose reels run 60 words
+    (or 180) got a template length. Median of their transcripts (≥ 30 words), ±20%,
+    clamped to 60-170; the house default when there is no spoken data."""
+    counts = sorted(len((p.get("transcript") or "").split()) for p in (posts or [])
+                    if len((p.get("transcript") or "").split()) >= 30)
+    if len(counts) >= 2:
+        mid = counts[len(counts) // 2]
+        lo = max(60, min(150, int(round(mid * 0.8))))
+        hi = max(lo + 20, min(170, int(round(mid * 1.2))))
+        return {"lo": lo, "hi": hi, "cap": min(190, hi + 20), "mid": (lo + hi) // 2,
+                "basis": f"measured from {len(counts)} of this creator's own reels"}
+    return {"lo": 90, "hi": 130, "cap": 150, "mid": 110, "basis": "the talking-head default"}
+
+
+def _distinct_assign(wanted: list[str | None], options: list[str], cursor: int = 0) -> list[str]:
+    """Keep each slot's requested value when it is valid and unused; otherwise give it the
+    next unused option, rotating the start by `cursor` so consecutive pages differ."""
+    used: set[str] = set()
+    out: list[str | None] = []
+    for w in wanted:
+        if w in options and w not in used:
+            used.add(w)
+            out.append(w)
+        else:
+            out.append(None)
+    k = len(options)
+    pool = [options[(cursor + i) % k] for i in range(k) if options[(cursor + i) % k] not in used]
+    for i, v in enumerate(out):
+        if v is None:
+            out[i] = pool.pop(0) if pool else options[(cursor + i) % k]
+    return [str(v) for v in out]
+
+
+def _fallback_slots(sreq: "ScriptRequest", formats: list[str], cursor: int = 0) -> list[dict]:
+    regs = _distinct_assign([None] * len(formats), list(prompts.SLOT_REGISTERS), cursor)
+    frames = _distinct_assign([None] * len(formats), list(prompts.OPENER_FRAMES), cursor)
     return [{"formatId": f, "topic": sreq.pillar or sreq.niche or "your next post",
-             "angle": sreq.pillar_angle or ""} for f in formats]
+             "angle": sreq.pillar_angle or "", "payoff": "",
+             "register": regs[i], "opener_frame": frames[i]} for i, f in enumerate(formats)]
 
 
 async def _plan_slots(sreq: "ScriptRequest", cursor: int = 0, context: str = "",
-                      avoid: list[str] | None = None) -> list[dict]:
-    """One fast HAIKU call that picks a DISTINCT, specific topic for each slot. Formats
-    are assigned here in code (the model can't collapse the page back to one format).
-    Falls back to pillar-topic slots (still format-varied) on any failure."""
+                      avoid: list[str] | None = None,
+                      avoid_openers: list[str] | None = None) -> list[dict]:
+    """One fast HAIKU call that picks a DISTINCT, specific topic, payoff, register and
+    opener frame for each slot. Formats are assigned here in code, and register / frame
+    distinctness is enforced here too (the model can't collapse the page back to one
+    shape). Falls back to pillar-topic slots (still varied) on any failure."""
     n = max(1, min(5, sreq.count))
     formats = _page_formats(sreq.style, cursor, n)
     if not ANTHROPIC_KEY:
-        return _fallback_slots(sreq, formats)
+        return _fallback_slots(sreq, formats, cursor)
     pillar = {"name": sreq.pillar, "summary": sreq.pillar_summary, "angle": sreq.pillar_angle}
     try:
         sys, usr = prompts.slot_plan_prompt(sreq.d(), pillar, formats, context=context,
-                                            memory=sreq.memory or None, avoid=avoid)
+                                            memory=sreq.memory or None, avoid=avoid,
+                                            avoid_openers=avoid_openers)
         out = await asyncio.wait_for(
-            anthropic_json(sys, usr, prompts.SLOT_PLAN_JSON, HAIKU, 700),
+            anthropic_json(sys, usr, prompts.SLOT_PLAN_JSON, HAIKU, 900),
             timeout=float(os.environ.get("FEED_PLAN_TIMEOUT_S", "6")))
         planned = (out or {}).get("slots") if isinstance(out, dict) else None
         slots: list[dict] = []
         for i, f in enumerate(formats):
             got = planned[i] if isinstance(planned, list) and i < len(planned) else {}
-            topic = str((got or {}).get("topic") or "").strip()
+            got = got if isinstance(got, dict) else {}
+            topic = str(got.get("topic") or "").strip()
             if not topic:
-                return _fallback_slots(sreq, formats)
+                return _fallback_slots(sreq, formats, cursor)
             slots.append({"formatId": f, "topic": topic,
-                          "subarea": str((got or {}).get("subarea") or "").strip(),
-                          "angle": str((got or {}).get("angle") or "").strip()})
+                          "subarea": str(got.get("subarea") or "").strip(),
+                          "angle": str(got.get("angle") or "").strip(),
+                          "payoff": str(got.get("payoff") or "").strip()[:240],
+                          "register": got.get("register"),
+                          "opener_frame": got.get("opener_frame")})
+        regs = _distinct_assign([s["register"] for s in slots], list(prompts.SLOT_REGISTERS), cursor)
+        frames = _distinct_assign([s["opener_frame"] for s in slots], list(prompts.OPENER_FRAMES), cursor)
+        for s, r, fr in zip(slots, regs, frames):
+            s["register"], s["opener_frame"] = r, fr
         return slots
     except (HTTPException, asyncio.TimeoutError) as e:
         logging.info("[plan] fell back to pillar slots: %s", type(e).__name__)
-        return _fallback_slots(sreq, formats)
+        return _fallback_slots(sreq, formats, cursor)
 
 
 # A retry needs at least this much of the slot's deadline left to be worth starting (a
@@ -14202,7 +14371,8 @@ _SLOT_RETRY_FAST_FAIL_S = 15.0
 async def _write_slot(sreq: "ScriptRequest", slot: dict, *, model: str, schema: dict,
                       max_tokens: int, sys_suffix: str, stats, context: str = "",
                       hook: dict | None = None, emulation: list[dict] | None = None,
-                      timeout: float | None = None, tag: str = "slot") -> dict | None:
+                      timeout: float | None = None, tag: str = "slot",
+                      avoid_openers: list[str] | None = None) -> dict | None:
     """Write ONE planned slot. Used by BOTH paths (first paint = HAIKU + lean schema;
     full pipeline = OPUS + full schema): one call per slot guarantees every planned
     topic is attempted — a single N-script call was measured returning 1 of 3.
@@ -14216,7 +14386,8 @@ async def _write_slot(sreq: "ScriptRequest", slot: dict, *, model: str, schema: 
                                       sreq.posts or None, arm_stats=stats,
                                       memory=sreq.memory or None, slots=[slot], context=context,
                                       mandated_hooks=[hook] if hook else None,
-                                      emulation=emulation or None)
+                                      emulation=emulation or None,
+                                      avoid_openers=avoid_openers)
     system = f"{sys}\n{CACHE_BREAKPOINT}\n{sys_suffix}" if sys_suffix.strip() else sys
     t0 = time.monotonic()
     deadline = t0 + timeout if timeout else None
@@ -14261,31 +14432,38 @@ async def _fast_feed_scripts(sreq: "ScriptRequest", cursor: int = 0) -> dict:
         return {"mode": "mock", "scripts": mock_scripts(sreq)}
     try:
         context = await _account_context(sreq.creator_id)          # cached after first read
+        # First lines already in front of this audience: the creator's own recent posts
+        # and the niche's top reels (in-memory cache, no scrape). The planner picks frames
+        # away from them and the writer must not echo them.
+        avoid_openers = (_creator_recent_openers(sreq.posts) + _niche_openers(sreq.niche)) or None
         # Plan concurrently with the other context reads (arms + compiled strategy) instead
         # of after them: the planner is the long pole of the first paint.
-        plan_coro = (_plan_slots(sreq, cursor, context, avoid=_avoid_topics(sreq.creator_id) or None)
+        plan_coro = (_plan_slots(sreq, cursor, context, avoid=_avoid_topics(sreq.creator_id) or None,
+                                 avoid_openers=avoid_openers)
                      if not sreq.slots
                      else asyncio.sleep(0, result=sreq.slots))
         stats, strategy, sreq.slots = await asyncio.gather(
             _arms_for_prompt(sreq.creator_id), _inject_strategy("", sreq.creator_id), plan_coro)
         # Palo brain on the cold paint too: the compiled strategy (one cheap read) so the
         # first-ever picks reflect it; the full brain rides the background OPUS upgrade.
-        # The explicit range matters: told only "full length", HAIKU drafts ran to ~200 words
-        # (realism eval v5, median 163) while the OPUS pass held the 90-140 budget. Even told
-        # "90 to 140" it landed ~160 (v6/smoke7), so it now aims at ~115 with 140 as a ceiling.
+        # Length comes from the creator's OWN reels when we have them (scripts v2 slice):
+        # the old fixed "about 115 words, exactly THREE paragraphs, ONE-sentence CTA" gave
+        # every creator the same silhouette, which reads as a template after two pages.
+        lt = _length_target(sreq.posts)
         suffix = strategy + (
-            "\n\nFIRST PAINT: write this script at the style's full spoken length. Aim for about 115 "
-            "words across hook, body and CTA, and NEVER more than 140 (over 140 runs past a minute "
-            "on camera). Shape: the hook is ONE sentence; the body is exactly THREE short "
-            "paragraphs of two or three sentences each; the CTA is ONE sentence. Speak it "
-            "the way the creator would say it to a friend: contractions, varied sentence length, no "
-            "chains of clipped fragments.")
+            f"\n\nFIRST PAINT: write this script at this creator's real spoken length: between "
+            f"{lt['lo']} and {lt['hi']} words across hook, body and CTA, aiming near {lt['mid']} "
+            f"({lt['basis']}); never more than {lt['cap']}. Break paragraphs where the creator "
+            "would take a breath, two to four of them, uneven. Speak it the way the creator "
+            "would say it to a friend: contractions, sentences of different lengths, one aside "
+            "is fine, no list of three, no closing moral, and stop when it's said.")
         results = await asyncio.gather(*(
             _write_slot(sreq, slot, model=HAIKU, schema=prompts.FAST_SCRIPT_JSON_ELEMENT,
                         max_tokens=1100, sys_suffix=suffix, stats=stats, context=context,
                         # 13s (was 11): the realism eval lost ~6% of draft slots to the
                         # Haiku latency tail under load; the retry already lives inside it.
-                        timeout=float(os.environ.get("FEED_FAST_TIMEOUT_S", "13")), tag="fast")
+                        timeout=float(os.environ.get("FEED_FAST_TIMEOUT_S", "13")), tag="fast",
+                        avoid_openers=avoid_openers)
             for slot in sreq.slots))
         out = [s for s in results if s]
         if not out:

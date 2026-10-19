@@ -1753,16 +1753,25 @@ def _voice_exemplars(posts: list[dict] | None, k: int = 4) -> str:
     ranked = sorted(posts, key=lambda p: (p.get("likes", 0) + p.get("comments", 0)), reverse=True)
     notes = []
     for p in ranked[:k]:
-        text = (p.get("caption") or p.get("transcript") or "").strip().replace("\n", " ")
-        first = text.split(". ")[0][:120].strip()
-        if len(first) < 8:
+        # 2026-10-19 (scripts v2 slice): the SPOKEN transcript first. A caption is written
+        # text (hashtags, line breaks, "link in bio"), so a voiceprint built from captions
+        # taught the writer a register the creator never speaks in. Captions are the
+        # fallback only when no transcript exists.
+        spoken = bool((p.get("transcript") or "").strip())
+        text = (p.get("transcript") or p.get("caption") or "").strip().replace("\n", " ")
+        text = re.sub(r"\s+", " ", text)
+        sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        if not sents or len(sents[0]) < 8:
             continue
-        line = f'  • opener: "{first}"'
-        rest = text[len(first):].strip(" .")
+        # The opener is the first TWO full sentences (not 120 characters): how they get
+        # from the first line into the second is most of what "their voice" means.
+        opener = " ".join(sents[:2])[:260].strip()
+        line = f'  • opener{"" if spoken else " (caption)"}: "{opener}"'
+        rest = " ".join(sents[2:])[:160].strip()
         if rest:
-            # A compact cadence sample (the next ~100 chars) — sentence length and
-            # rhythm carry more voice than any adjective could.
-            line += f'; cadence: "{rest[:100].strip()}…"'
+            # A cadence sample from the middle: sentence length and rhythm carry more
+            # voice than any adjective could.
+            line += f'; then: "{rest}…"'
         notes.append(line)
     if not notes:
         return ""
@@ -1932,10 +1941,43 @@ TH_FORMAT_SHAPES = (
     "quote or statistic), then the creator's own take."
 )
 
+# Scripts v2 slice (2026-10-19): a page varies where viewers FEEL it. Viewers don't perceive
+# "hook mechanism"; they perceive sameness of content, emotional temperature and the shape of
+# the first line. So each slot carries a REGISTER (how it feels to watch) and an OPENER FRAME
+# (the syntactic shape of the first line), and no two slots on a page share either. The
+# payoff is planned before the words: pros write the ending first and the hook as its promise.
+SLOT_REGISTERS: dict[str, str] = {
+    "how-to": "calm and useful: here's the thing to do and why it works",
+    "rant": "heated: something the niche does that annoys the creator, said plainly",
+    "confession": "a mistake or habit of the creator's own, told without a moral",
+    "story": "one specific moment, told in order, the lesson implied",
+    "reaction": "the creator's take on something the viewer has definitely seen",
+    "warning": "the thing that goes wrong if you keep doing X, and the one thing to change",
+    "question": "a real question to the viewer that the script then actually answers",
+}
+OPENER_FRAMES: dict[str, str] = {
+    "mid-story": "starts inside a specific moment ('So I'm standing in the gym at 6am and...')",
+    "flat-claim": "one plain opinion, no setup, no 'everyone says' ('Cardio is not the problem.')",
+    "number-first": "opens on a specific number, price, time or count the creator can stand behind",
+    "you-situation": "names the exact situation the viewer is in right now, second person, present tense",
+    "object-first": "opens on a thing in the creator's hand or life ('This $12 shirt...')",
+    "command": "starts with the action ('Stop stretching before you lift.')",
+    "question": "a specific question only this niche's viewer can answer, never 'ever wondered'",
+    "confession": "first person past tense, the creator's own slip ('I charged $800 for...')",
+}
+
 SLOT_PLAN_SYSTEM = (
     "You plan short-form TALKING-HEAD videos for ONE creator. They film only themselves talking to "
     "camera in one take; an AI editor adds captions and b-roll. Plan one video per slot.\n"
     "RULES:\n"
+    "- PAYOFF FIRST. For each slot write `payoff`: the one thing the viewer walks away with, as a "
+    "plain sentence the creator could say as the LAST line. The hook will be written as a promise "
+    "of that payoff, so a payoff that is vague ('be more consistent') is a failed slot.\n"
+    "- Give each slot a `register` from this list, no two slots the same: "
+    + "; ".join(f"{k} = {v}" for k, v in SLOT_REGISTERS.items()) + ".\n"
+    "- Give each slot an `opener_frame` from this list, no two slots the same, and never a frame "
+    "whose shape matches one of the recent openers you are shown: "
+    + "; ".join(f"{k} = {v}" for k, v in OPENER_FRAMES.items()) + ".\n"
     "- Every slot gets a DIFFERENT specific topic: a concrete claim, mistake, question, or moment this "
     "creator's audience actually runs into. Not a category ('skincare tips') and not a template ('the "
     "mistake everyone makes'): a specific thing ('why your SPF stops working by lunch').\n"
@@ -1959,18 +2001,34 @@ SLOT_PLAN_JSON = {
     "type": "object", "additionalProperties": False, "required": ["slots"],
     "properties": {"slots": {"type": "array", "items": {
         "type": "object", "additionalProperties": False,
-        "required": ["slot", "formatId", "subarea", "topic", "angle"],
+        "required": ["slot", "formatId", "subarea", "topic", "angle", "payoff", "register",
+                     "opener_frame"],
         "properties": {"slot": _INT, "formatId": _STR, "subarea": _STR, "topic": _STR,
-                       "angle": _STR}}}},
+                       "angle": _STR, "payoff": _STR,
+                       "register": {"type": "string", "enum": list(SLOT_REGISTERS)},
+                       "opener_frame": {"type": "string", "enum": list(OPENER_FRAMES)}}}}},
 }
+
+
+def openers_block(openers: list[str] | None, *, label: str = "RECENT OPENING LINES") -> str:
+    """First lines already in front of this audience (the creator's own recent posts and
+    the niche's current top reels). A hook that shares their shape or wording reads as a
+    template to anyone who scrolls the niche; the writer and the planner both see this."""
+    lines = [f'  "{o.strip()}"' for o in (openers or []) if o and len(o.strip()) >= 8][:14]
+    if not lines:
+        return ""
+    return (f"{label} (the hook must not share the shape OR the wording of any of these, "
+            "and must not open on the same noun):\n" + "\n".join(lines))
 
 
 def slot_plan_prompt(brand: dict, pillar: dict, formats: list[str], *,
                      context: str = "", memory: dict | None = None,
-                     avoid: list[str] | None = None) -> tuple[str, str]:
+                     avoid: list[str] | None = None,
+                     avoid_openers: list[str] | None = None) -> tuple[str, str]:
     mem = memory_block(memory) if memory else ""
     avoid_line = ("\nDo NOT repeat or closely echo these recent topics: "
                   + "; ".join(a for a in (avoid or [])[:12] if a) + "\n") if avoid else ""
+    opener_block = openers_block(avoid_openers)
     slots = "\n".join(f"  slot {i + 1}: formatId = {f}" for i, f in enumerate(formats))
     user = (
         f"{brand_block(brand, None)}\n"
@@ -1979,9 +2037,26 @@ def slot_plan_prompt(brand: dict, pillar: dict, formats: list[str], *,
         + f"\nToday's theme (a starting direction, not a constraint on every slot): "
           f"{pillar.get('name', '')}. {pillar.get('angle', '')}\n"
         + avoid_line
+        + (f"\n{opener_block}\n" if opener_block else "")
         + f"\nSlots:\n{slots}\n\nReturn {{\"slots\": [...]}} with one entry per slot, in order."
     )
     return SLOT_PLAN_SYSTEM, user
+
+
+def _slot_line(i: int, sl: dict) -> str:
+    """One planned slot as the writer sees it. Payoff / register / opener frame are the
+    scripts-v2 slice fields; a slot without them (older plans, fallbacks) renders as before."""
+    line = (f"  • Script {i + 1}: formatId \"{sl.get('formatId', '')}\". Topic: {sl.get('topic', '')}. "
+            f"Angle: {sl.get('angle', '')}")
+    if sl.get("payoff"):
+        line += f" PAYOFF (the last line says this): {sl['payoff']}"
+    reg = sl.get("register")
+    if reg in SLOT_REGISTERS:
+        line += f" REGISTER: {reg} ({SLOT_REGISTERS[reg]})."
+    fr = sl.get("opener_frame")
+    if fr in OPENER_FRAMES:
+        line += f" OPENER FRAME: {fr} ({OPENER_FRAMES[fr]})."
+    return line
 
 
 def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
@@ -1991,13 +2066,17 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
                    mandated_hooks: list[dict] | None = None,
                    emulation: list[dict] | None = None,
                    slots: list[dict] | None = None,
-                   context: str = "") -> tuple[str, str]:
+                   context: str = "",
+                   avoid_openers: list[str] | None = None) -> tuple[str, str]:
     # Retired styles never generate: coerce anything outside ACTIVE_STYLES to talking_head.
     style = style if style in ACTIVE_STYLES else "talking_head"
     s = STYLES.get(style, STYLES["talking_head"])
     voice_ex = _voice_exemplars(posts)
     voice_section = f"\n\n{voice_ex}" if voice_ex else ""
     dedup = _opener_dedup_block(posts)
+    niche_openers = openers_block(avoid_openers, label="OPENING LINES ALREADY IN THIS NICHE'S FEED")
+    if niche_openers:
+        dedup = f"{dedup}\n\n{niche_openers}" if dedup else niche_openers
     dedup_section = f"\n\n{dedup}" if dedup else ""
     system = (
         f"You are Marque's script engine writing {s['label']} short-form videos. "
@@ -2047,13 +2126,14 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
     if slots:
         # Planned page (see SLOT_PLAN_SYSTEM): each script has an assigned format + topic,
         # so the set is varied by construction instead of three takes on the pillar.
-        plan = "\n".join(
-            f"  • Script {i + 1}: formatId \"{sl.get('formatId', '')}\". Topic: {sl.get('topic', '')}. "
-            f"Angle: {sl.get('angle', '')}"
-            for i, sl in enumerate(slots))
+        plan = "\n".join(_slot_line(i, sl) for i, sl in enumerate(slots))
         task = (
             f"Write exactly {len(slots)} {s['label']} script(s), one per assignment below, in order. "
-            "Use the assigned formatId and stay on the assigned topic; the page theme above is background only.\n"
+            "Use the assigned formatId and stay on the assigned topic; the page theme above is background only. "
+            "Where a slot gives a PAYOFF, write its last line first (the payoff, in the creator's words), "
+            "then write the hook as the promise of that last line, then the middle. Where a slot gives a "
+            "REGISTER, the whole script feels that way. Where a slot gives an OPENER FRAME, the first "
+            "sentence has that shape and no other.\n"
             f"{plan}\n"
             f"FORMAT SHAPES (write each script in the shape of its assigned format): {TH_FORMAT_SHAPES}\n"
             f"{LENGTH_BUDGET}\n"

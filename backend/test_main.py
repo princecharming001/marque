@@ -6597,7 +6597,7 @@ def test_fast_paint_never_pads_with_mock_copy(monkeypatch):
     # dropped; only an ALL-failed page falls back to the mock.
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "x")
 
-    async def plan(sreq, cursor=0, context="", avoid=None):
+    async def plan(sreq, cursor=0, context="", avoid=None, **kw):   # kw: avoid_openers (scripts v2)
         return [{"formatId": f, "topic": t, "subarea": "", "angle": ""}
                 for f, t in (("myth-buster", "alpha"), ("pov-story", "bravo"), ("listicle", "charlie"))]
     monkeypatch.setattr(main, "_plan_slots", plan)
