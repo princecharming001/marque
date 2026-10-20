@@ -38,8 +38,14 @@ CHECK_SCHEMA = {
 }
 
 
-def _brief(topic: str, own: list[str], niche: list[str]) -> str:
-    frames = "\n".join(f"  {k}: {v}" for k, v in prompts.OPENER_FRAMES.items())
+def _frames(personal_ok: bool) -> dict[str, str]:
+    """A confession needs a real slip of the creator's; without their reels or memory the
+    model invents one (live 2026-10-20: "I benched the same weight for four months")."""
+    return {k: v for k, v in prompts.OPENER_FRAMES.items() if personal_ok or k != "confession"}
+
+
+def _brief(topic: str, own: list[str], niche: list[str], personal_ok: bool = True) -> str:
+    frames = "\n".join(f"  {k}: {v}" for k, v in _frames(personal_ok).items())
     lines = [f"THE VIDEO: {topic}",
              f"Write {N_HOOKS} different first lines for it, the way you'd actually open on camera. Each "
              "one a different shape from this list (set frame to its name):", frames,
@@ -56,11 +62,12 @@ def _brief(topic: str, own: list[str], niche: list[str]) -> str:
 
 async def generate(topic: str, *, brand: dict, voice_block: str, exemplars: list[dict],
                    own_openers: list[str], niche_openers: list[str],
-                   lint_profile: dict | None = None, voice_confidence: str = "low") -> list[dict]:
+                   lint_profile: dict | None = None, voice_confidence: str = "low",
+                   personal_ok: bool = True) -> list[dict]:
     system = llm.system_block(doctrine.text())
     who = writer.creator_block(brand)
     user = who + ("\n\nHOW THEY TALK:\n" + voice_block if voice_block else "") + "\n\n" + \
-        _brief(topic, own_openers, niche_openers)
+        _brief(topic, own_openers, niche_openers, personal_ok)
     messages = writer.exemplar_turns(exemplars) + [llm.text_turn("user", user)]
     out, _u = await llm.call(model=flags.writer_model(), system=system, messages=messages, schema=SCHEMA,
                              max_tokens=900, effort=flags.effort(), route="scripts_v2.hooklab")
@@ -73,7 +80,7 @@ async def generate(topic: str, *, brand: dict, voice_block: str, exemplars: list
         if not isinstance(h, dict):
             continue
         frame, text = h.get("frame"), " ".join(str(h.get("text") or "").split())
-        if frame not in prompts.OPENER_FRAMES or frame in seen or not text:
+        if frame not in _frames(personal_ok) or frame in seen or not text:
             continue
         seen.add(frame)
         hooks.append({"frame": frame, "text": text[:200], "why": str(h.get("why") or "")[:200],

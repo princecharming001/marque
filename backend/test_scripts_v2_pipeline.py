@@ -594,3 +594,22 @@ def test_min_samples_gate_sends_cold_start_creators_to_v1(monkeypatch):
         raise AssertionError("gated creators never reach the v2 writer")
     monkeypatch.setattr(pipeline, "write_page", page)
     assert asyncio.run(main._v2_page(_sreq(), 0, tier="fast")) is None
+
+
+def test_hooklab_never_offers_a_confession_without_real_material(monkeypatch):
+    seen = {}
+
+    async def fake(**kw):
+        if kw.get("route") == "scripts_v2.hooklab":
+            seen["brief"] = kw["messages"][-1]["content"][0]["text"]
+            return ({"hooks": [
+                {"frame": "confession", "text": "I benched the same weight for four months.", "why": "w", "modeled_on": ""},
+                {"frame": "command", "text": "Write the number down before you walk in.", "why": "w", "modeled_on": ""}]}, {})
+        return ({"checks": []}, {})
+    monkeypatch.setattr(llm, "call", fake)
+    out = asyncio.run(hooklab.generate("bench", brand=BRAND, voice_block="", exemplars=[], own_openers=[],
+                                       niche_openers=[], personal_ok=False))
+    assert [h["frame"] for h in out] == ["command"] and "confession:" not in seen["brief"]
+    out = asyncio.run(hooklab.generate("bench", brand=BRAND, voice_block="", exemplars=[], own_openers=[],
+                                       niche_openers=[], personal_ok=True))
+    assert "confession" in [h["frame"] for h in out]

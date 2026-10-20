@@ -14777,7 +14777,8 @@ async def _v2_hooks(req: "HooksRequest") -> list[dict] | None:
             req.topic or req.niche or "your next video", brand=_brand_only(req.d()),
             voice_block=inp["voice_block"], exemplars=inp["exemplars"],
             own_openers=_creator_recent_openers(inp["posts"]), niche_openers=_niche_openers(req.niche or ""),
-            lint_profile=inp["lint_profile"], voice_confidence=inp["confidence"])
+            lint_profile=inp["lint_profile"], voice_confidence=inp["confidence"],
+            personal_ok=bool(inp["samples"]) or bool(req.memory))
         return [_scrub_voice(h) for h in hooks] or None
     except Exception as e:                         # noqa: BLE001
         logging.warning("[v2] hooks failed, falling back to v1: %s", e)
