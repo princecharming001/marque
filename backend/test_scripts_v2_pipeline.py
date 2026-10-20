@@ -541,3 +541,24 @@ def test_register_post_whitelists_opener_frame(monkeypatch):
                                        "opener_frame": "not-a-frame"})
     assert main._post_registry["qa-editor-p1"].get("opener_frame") == "confession"
     assert main._post_registry["qa-editor-p2"].get("opener_frame") == ""
+
+
+def test_own_reel_words_are_not_flagged_as_exemplar_copying():
+    # Smoke 2026-10-19: the material step handed the writer the creator's own line ("Three
+    # days a week, squat, press, pull, for three months") and the lint flagged reusing it.
+    reel = "Three days a week squat press pull for three months and then we talk honestly"
+    s = {"hook": "Run one plan before you judge it.",
+         "body": "Three days a week squat press pull for three months and then we talk. That's it.",
+         "cta": "Start Monday."}
+    prof = {"exemplar_texts": [reel]}
+    plain = pipeline._lint(s, lint_profile=prof, allowed=[], avoid=None, length={"lo": 5, "hi": 60})
+    assert "exemplar_overlap" in {f.code for f in plain}
+    quoted = pipeline._lint(s, lint_profile=prof, allowed=[], avoid=None, length={"lo": 5, "hi": 60},
+                            quoted=["Three days a week squat press pull for three months and then we talk"])
+    assert "exemplar_overlap" not in {f.code for f in quoted}
+
+
+def test_dto_title_prefers_the_planner_title():
+    r = dict(V2_RESULT[0], slot=dict(SLOTS[0], title="why your bench stalls",
+                                     topic="Why your bench stalls when you add weight on feel instead of a plan"))
+    assert main._v2_to_dto(r, _sreq())["title"] == "why your bench stalls"

@@ -1973,8 +1973,10 @@ SLOT_PLAN_SYSTEM = (
     "camera in one take; an AI editor adds captions and b-roll. Plan one video per slot.\n"
     "RULES:\n"
     "- PAYOFF FIRST. For each slot write `payoff`: the one thing the viewer walks away with, as a "
-    "plain sentence the creator could say as the LAST line. The hook will be written as a promise "
-    "of that payoff, so a payoff that is vague ('be more consistent') is a failed slot.\n"
+    "plain sentence under 15 words the creator could say as the LAST line. The hook will be written "
+    "as a promise of that payoff, so a payoff that is vague ('be more consistent') is a failed slot.\n"
+    "- `title`: what the video is about in 3 to 7 plain spoken words, lowercase except names, no "
+    "colon, no quotes ('why your bench stalls', 'the gym bag you never pack').\n"
     "- Give each slot a `register` from this list, no two slots the same: "
     + "; ".join(f"{k} = {v}" for k, v in SLOT_REGISTERS.items()) + ".\n"
     "- Give each slot an `opener_frame` from this list, no two slots the same, and never a frame "
@@ -2003,9 +2005,9 @@ SLOT_PLAN_JSON = {
     "type": "object", "additionalProperties": False, "required": ["slots"],
     "properties": {"slots": {"type": "array", "items": {
         "type": "object", "additionalProperties": False,
-        "required": ["slot", "formatId", "subarea", "topic", "angle", "payoff", "register",
+        "required": ["slot", "formatId", "subarea", "topic", "title", "angle", "payoff", "register",
                      "opener_frame", "trend_angle"],
-        "properties": {"slot": _INT, "formatId": _STR, "subarea": _STR, "topic": _STR,
+        "properties": {"slot": _INT, "formatId": _STR, "subarea": _STR, "topic": _STR, "title": _STR,
                        "angle": _STR, "payoff": _STR,
                        "register": {"type": "string", "enum": list(SLOT_REGISTERS)},
                        "opener_frame": {"type": "string", "enum": list(OPENER_FRAMES)},

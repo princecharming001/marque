@@ -34,7 +34,7 @@ TELL_CODES: tuple[str, ...] = (
     # hard
     "opener_cliche", "question_hook_generic", "not_x_its_y", "wrapup_ending",
     "template_cta", "list_markers", "stage_direction", "invented_stat", "ai_word",
-    "exemplar_overlap", "duplicate_opener",
+    "exemplar_overlap", "duplicate_opener", "fill_in_question", "long_close", "too_long",
     # soft
     "tricolon", "aphorism_tic", "low_contractions", "uniform_rhythm",
     "address_mismatch", "length_out_of_range", "em_dash", "hedge_stack",
@@ -217,6 +217,20 @@ def lint_script(
                                 f"spoken list markers in a listicle: {markers}", ", ".join(markers)))
         else:
             hard.append(Finding("list_markers", HARD, f"enumerated list markers: {markers}", ", ".join(markers)))
+    # A [fill-in] is a short label the creator completes ("[your number]"). A bracketed
+    # question or note to the creator is a stage direction they would read aloud.
+    for mb in re.finditer(r"\[([^\]]*)\]?", hook_raw + " " + body_raw + " " + cta_raw):
+        inner = mb.group(1)
+        if "?" in inner or len(inner.split()) > 6 or not mb.group(0).endswith("]"):
+            hard.append(Finding("fill_in_question", HARD,
+                                f"bracket is a note or question, not a short fill-in: {mb.group(0)[:80]!r}",
+                                mb.group(0)[:80]))
+            break
+    close = (_sentences(cta_raw) or sentences)[-1:] if (cta_raw or sentences) else []
+    if close and len(_norm_words(close[0])) > 24:
+        hard.append(Finding("long_close", HARD,
+                            f"the closing line runs {len(_norm_words(close[0]))} words; say the payoff once, short",
+                            close[0][:80]))
     m = _STAGE.search(body_raw) or _BEAT_LINE.search(body_raw)
     if m:
         hard.append(Finding("stage_direction", HARD, f"stage direction in read copy: {m.group(0)!r}", m.group(0)))
@@ -302,7 +316,9 @@ def lint_script(
     if target_words:
         lo, hi = target_words
         total = len(script_words)
-        if not (lo * 0.8 <= total <= hi * 1.2):
+        if total > hi * 1.4:
+            hard.append(Finding("too_long", HARD, f"{total} words against a {lo}-{hi} target; cut the weakest beat"))
+        elif not (lo * 0.8 <= total <= hi * 1.2):
             soft.append(Finding("length_out_of_range", SOFT,
                                 f"{total} words, target {lo}-{hi} (tolerance {lo * 0.8:.0f}-{hi * 1.2:.0f})"))
 

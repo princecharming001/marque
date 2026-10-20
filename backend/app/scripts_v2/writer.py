@@ -61,7 +61,7 @@ def slot_brief(slot: dict, *, material_text: str, length: dict, avoid_openers: l
     lines = ["THIS VIDEO:",
              f"- topic: {slot.get('topic', '')}" + (f" ({slot['angle']})" if slot.get("angle") else "")]
     if slot.get("payoff"):
-        lines.append(f"- the last line says this, in their words: {slot['payoff']}")
+        lines.append(f"- the last line delivers this, once, in under 15 of their words (no recap): {slot['payoff']}")
     if register_desc:
         lines.append(f"- how it feels: {register_desc}")
     if frame_desc:

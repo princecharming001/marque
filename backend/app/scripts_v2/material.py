@@ -157,7 +157,8 @@ def render(particulars: list[dict], ask_user: str = "") -> str:
     for p in particulars:
         lines.append(f"- {p['text']} ({label.get(p['source'], p['source'])})")
     if ask_user:
-        lines.append(f"- If the video needs it, leave one [fill-in] for: {ask_user.strip()}")
+        lines.append(f"- If the video needs it, leave ONE short [fill-in] of 2 to 5 words naming what goes "
+                     f"there, like [your number] (never a question, never a note): {ask_user.strip()}")
     return "\n".join(lines)
 
 

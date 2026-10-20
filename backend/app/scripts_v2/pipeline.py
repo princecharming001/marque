@@ -17,18 +17,34 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 import prompts
 from app.scripts_v2 import beats as v2beats, doctrine, flags, judge, lint, material, writer
 
 
+def _norm(t: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9']+", (t or "").lower()))
+
+
 def _lint(s: dict, *, lint_profile: dict, allowed: list[str], avoid: list[str] | None,
-          length: dict) -> list:
+          length: dict, quoted: list[str] | None = None) -> list:
+    """Lint one script. `quoted` = own_reel particulars: the material step hands the writer
+    the creator's own words on purpose, so reusing THOSE is not exemplar copying."""
     prof = dict(lint_profile or {})
     if allowed:
         prof["allowed_claims"] = allowed
-    return lint.lint_script(s, profile=prof, recent_openers=avoid or None,
-                            target_words=(int(length.get("lo", 90)), int(length.get("hi", 130))))
+    found = lint.lint_script(s, profile=prof, recent_openers=avoid or None,
+                             target_words=(int(length.get("lo", 90)), int(length.get("hi", 130))))
+    if quoted:
+        qs = [_norm(q) for q in quoted if q]
+        found = [f for f in found if not (f.code == "exemplar_overlap" and f.span
+                                          and any(_norm(f.span) in q for q in qs))]
+    return found
+
+
+def _quoted(particulars: list[dict]) -> list[str]:
+    return [p.get("text", "") for p in particulars or [] if p.get("source") == "own_reel"]
 
 
 def _as_script(w: dict, slot: dict) -> dict:
@@ -102,7 +118,8 @@ async def write_page(*, brand: dict, slots: list[dict], samples: list[dict], mem
             continue
         s = _as_script(d, slots[i])
         allowed = material.allowed_claims(mats[i]["particulars"])
-        findings = _lint(s, lint_profile=lint_profile, allowed=allowed, avoid=avoid_openers, length=length)
+        findings = _lint(s, lint_profile=lint_profile, allowed=allowed, avoid=avoid_openers, length=length,
+                         quoted=_quoted(mats[i]["particulars"]))
         s.update({"_i": i, "_draft": d, "_allowed": allowed, "_findings": findings})
         out.append(s)
 
@@ -121,7 +138,7 @@ async def write_page(*, brand: dict, slots: list[dict], samples: list[dict], mem
                 return
             cand = _as_script(fixed, slots[s["_i"]])
             cf = _lint(cand, lint_profile=lint_profile, allowed=s["_allowed"], avoid=avoid_openers,
-                       length=length)
+                       length=length, quoted=_quoted(mats[s["_i"]]["particulars"]))
             n_old = sum(1 for f in s["_findings"] if f.severity == lint.HARD)
             n_new = sum(1 for f in cf if f.severity == lint.HARD)
             judged_only = n_old == 0

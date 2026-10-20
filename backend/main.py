@@ -14431,7 +14431,8 @@ def _fallback_slots(sreq: "ScriptRequest", formats: list[str], cursor: int = 0) 
 async def _plan_slots(sreq: "ScriptRequest", cursor: int = 0, context: str = "",
                       avoid: list[str] | None = None,
                       avoid_openers: list[str] | None = None,
-                      angles: list[dict] | None = None) -> list[dict]:
+                      angles: list[dict] | None = None,
+                      timeout: float | None = None) -> list[dict]:
     """One fast HAIKU call that picks a DISTINCT, specific topic, payoff, register and
     opener frame for each slot. Formats are assigned here in code, and register / frame
     distinctness is enforced here too (the model can't collapse the page back to one
@@ -14447,7 +14448,7 @@ async def _plan_slots(sreq: "ScriptRequest", cursor: int = 0, context: str = "",
                                             avoid_openers=avoid_openers, angles=angles)
         out = await asyncio.wait_for(
             anthropic_json(sys, usr, prompts.SLOT_PLAN_JSON, HAIKU, 900),
-            timeout=float(os.environ.get("FEED_PLAN_TIMEOUT_S", "6")))
+            timeout=timeout or float(os.environ.get("FEED_PLAN_TIMEOUT_S", "6")))
         planned = (out or {}).get("slots") if isinstance(out, dict) else None
         slots: list[dict] = []
         for i, f in enumerate(formats):
@@ -14463,6 +14464,7 @@ async def _plan_slots(sreq: "ScriptRequest", cursor: int = 0, context: str = "",
             if mm and 0 < int(mm.group(1)) <= len(rows):
                 ta_id = str(rows[int(mm.group(1)) - 1].get("angle_id") or "")
             slots.append({"formatId": f, "topic": topic,
+                          "title": str(got.get("title") or "").strip().strip("'\"")[:60],
                           "subarea": str(got.get("subarea") or "").strip(),
                           "angle": str(got.get("angle") or "").strip(),
                           "payoff": str(got.get("payoff") or "").strip()[:240],
@@ -14645,7 +14647,7 @@ def _v2_to_dto(r: dict, sreq: "ScriptRequest") -> dict:
     sl = r.get("slot") or {}
     frame = sl.get("opener_frame") or ""
     d = {
-        "title": _clamp_title(str(sl.get("topic") or sreq.pillar or "")),
+        "title": _clamp_title(str(sl.get("title") or sl.get("topic") or sreq.pillar or "")),
         "summary": str(sl.get("angle") or sl.get("payoff") or "")[:220],
         "hook": r.get("hook", ""), "body": r.get("body", ""), "cta": r.get("cta", ""),
         "hookSignal": prompts.FRAME_TO_SIGNAL.get(frame, "curiosity"),
@@ -14673,9 +14675,12 @@ async def _v2_page(sreq: "ScriptRequest", cursor: int = 0, *, tier: str = "fast"
         avoid_openers = (_creator_recent_openers(inp["posts"]) + _niche_openers(niche)) or None
         if not sreq.slots:
             context = await _account_context(sreq.creator_id)
+            # Haiku 5.5 plans in ~4-5 s; the v1 6 s budget left no headroom once v2's context
+            # reads run, and a timeout serves pillar-named fallback slots (seen in the smoke).
             sreq.slots = await _plan_slots(sreq, cursor, context,
                                            avoid=_avoid_topics(sreq.creator_id) or None,
-                                           avoid_openers=avoid_openers, angles=angles)
+                                           avoid_openers=avoid_openers, angles=angles,
+                                           timeout=float(os.environ.get("SCRIPTS_V2_PLAN_TIMEOUT_S", "10")))
         fast = tier != "full"
         res = await pipeline.write_page(
             brand=_brand_only(sreq.d()), slots=list(sreq.slots), samples=inp["samples"],
