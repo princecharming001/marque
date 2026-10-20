@@ -145,7 +145,8 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return r
     }
     private func hook(_ dto: HookDTO) -> Hook {
-        Hook(text: dto.text, signal: signal(dto.signal), strength: min(100, max(0, dto.strength ?? 75)))
+        Hook(text: dto.text, signal: signal(dto.signal), strength: min(100, max(0, dto.strength ?? 75)),
+             extras: dto.extras)
     }
     private func script(_ dto: ScriptDTO, pillar: String, style: VideoStyle) -> Script {
         let fid = formatId(dto.formatId)
@@ -157,7 +158,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                       body: dto.body, cta: dto.cta, shotPlan: dto.shotPlan ?? [],
                       targetSeconds: dto.targetSeconds ?? Catalog.format(fid).targetSeconds,
                       predictedScore: min(100, max(0, dto.predictedScore ?? 80)),
-                      whyPicked: dto.why_picked ?? "")
+                      whyPicked: dto.why_picked ?? "", craft: dto.craft)
     }
     /// Palo port (audit: /v1/write/from-brief had no consumer): the write agent expands a
     /// brief's one-line summary into the FULL filmable script — strategy/memory/exemplar
@@ -200,15 +201,11 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
 
     // MARK: DTOs
 
-    struct HookDTO: Decodable { let text: String; let signal: String?; let strength: Int? }
-    struct ScriptDTO: Decodable {
-        let title: String?; let summary: String?
-        let hook: String; let hookSignal: String?; let formatId: String?
-        let body: String; let cta: String; let shotPlan: [String]?
-        let targetSeconds: Int?; let predictedScore: Int?; let altHooks: [HookDTO]?; let style: String?
-        let why_picked: String?     // UX-G2: optional — absent on old backends
-        let pillar: String?         // the page's real pillar (feed picks); absent on old backends
-    }
+    // Scripts v2: the wire shapes moved to Models/ScriptsV2Wire.swift (Foundation-only, so
+    // LogicTests decodes real payloads). Same required keys as before; the new hook label/
+    // checks and script craft fields are optional and lenient.
+    typealias HookDTO = HookWire
+    typealias ScriptDTO = ScriptWire
     struct PillarDTO: Decodable {
         let name: String; let summary: String?; let angle: String?
         let exampleTopics: [String]?; let weight: Double?; let colorHex: UInt?
@@ -881,7 +878,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         // Creator-helpful stats + linkout (all optional → decode-safe on old payloads).
         let comments: Int?; let duration_s: Int?; let posted_at: String?; let profile_url: String?
     }
-    private struct TrendDTO: Decodable { let title: String; let why: String; let formatId: String? }
+    private typealias TrendDTO = TrendWire     // + promise / asOf / velocity (scripts v2)
     private struct FeedItemDTO: Decodable {
         let type: String?               // OPTIONAL: Palo idea-bank briefs merge in with NO `type`.
         let script: ScriptDTO?          // A non-optional `type` made the whole feed fail to decode
@@ -1025,13 +1022,79 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
 
     /// I-2/I-8: fire-and-forget Today's-picks feedback → the backend learning loop.
     /// 404-tolerant (older backends), so it's safe to call before the endpoint deploys.
-    func sendFeedFeedback(script: Script, niche: String, verdict: String) async {
-        _ = await post("/v1/feed/feedback", [
-            "creator_id": creatorId, "verdict": verdict, "niche": niche, "pillars": pillarNames,
-            "script": ["title": script.title, "hook": script.hook.text,
-                       "pillar": script.pillarName, "style": script.style,
-                       "formatId": script.formatId, "hookSignal": script.hook.signal.rawValue],
-        ])
+    /// Scripts v2 adds three optional signals: `voiceVerdict` ("sounds like me / not me"),
+    /// `editDiff` (an inline reader edit) and `reason` ("topic" = not this topic). A nil
+    /// `verdict` leaves the like/dislike key off — a voice verdict or an edit is not a
+    /// judgment of the pick itself.
+    func sendFeedFeedback(script: Script, niche: String, verdict: String?,
+                          voiceVerdict: VoiceVerdict? = nil, editDiff: EditDiff? = nil,
+                          reason: String? = nil) async {
+        _ = await post("/v1/feed/feedback",
+                       FeedFeedback.body(creatorId: creatorId, niche: niche, pillars: pillarNames,
+                                         script: script, verdict: verdict, voiceVerdict: voiceVerdict,
+                                         editDiff: editDiff, reason: reason))
+    }
+
+    // MARK: - Scripts v2: how the creator talks (/v1/voice)
+
+    /// PUT twin of postWithStatus (the voice profile is edited in place).
+    private func putWithStatus(_ path: String, _ body: [String: Any]) async -> (Data?, Int) {
+        guard let url = URL(string: AppConfig.backendBaseURL + path) else { return (nil, 0) }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.timeoutInterval = 30
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse else { return (nil, 0) }
+        return (data, http.statusCode)
+    }
+
+    /// The learned voice. `.empty` covers no voice yet, a mock backend, and an older
+    /// backend without the route; `.failed` is offline / server error.
+    func getVoice() async -> VoiceFetchResult {
+        let (data, status) = await getWithStatus("/v1/voice?creator_id=\(q(creatorId))")
+        return VoiceFetchResult.from(data: data, status: status)
+    }
+
+    /// Change one part of the voice. Returns the saved profile, or nil when the save
+    /// didn't land (offline, older backend) so the screen can say so and keep the draft.
+    func putVoice(_ update: VoiceUpdate) async -> VoiceProfile? {
+        let (data, status) = await putWithStatus("/v1/voice", update.body(creatorId: creatorId))
+        guard status == 200, let data,
+              let env = try? JSONDecoder().decode(VoiceEnvelope.self, from: data) else { return nil }
+        note(env.mode)
+        return env.voice ?? VoiceProfile()
+    }
+
+    /// Re-learn the voice from the creator's connected account's reels.
+    func buildVoice(handle: String, platform: String) async -> VoiceBuildStatus {
+        var body: [String: Any] = ["creator_id": creatorId]
+        if !handle.isEmpty { body["handle"] = handle }
+        if platform == "instagram" || platform == "tiktok" { body["platform"] = platform }
+        return VoiceBuildStatus.from(data: await post("/v1/voice/build", body))
+    }
+
+    struct VoicePreview { let withVoice: Script; let withoutVoice: Script }
+
+    private struct VoicePreviewResp: Decodable {
+        let mode: String?; let with_voice: ScriptDTO?; let without_voice: ScriptDTO?
+    }
+
+    /// "Hear the difference": the same idea written with and without the learned voice.
+    /// nil on failure / older backend — the section shows its error line.
+    func previewVoice(brand: BrandGraph, topic: String) async -> VoicePreview? {
+        var body = brandBody(brand)
+        body["creator_id"] = creatorId
+        let t = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty { body["topic"] = t }
+        guard let data = await post("/v1/voice/preview", body),
+              let r = try? JSONDecoder().decode(VoicePreviewResp.self, from: data),
+              let with = r.with_voice, let without = r.without_voice else { return nil }
+        note(r.mode)
+        return VoicePreview(withVoice: script(with, pillar: t, style: .talkingHead),
+                            withoutVoice: script(without, pillar: t, style: .talkingHead))
     }
 
     /// I-8: end-of-voice-session memory distill. Returns extracted updates (empty on keyless,
@@ -1084,7 +1147,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                 return .reel(reel(dto))
             case "trend":
                 guard let dto = item.trend else { return nil }
-                return .trend(TrendItem(title: dto.title, why: dto.why, formatId: dto.formatId ?? "myth-buster"))
+                return .trend(dto.item)
             default:
                 // Palo idea-bank brief (no `type`) → surface as a fileable pick card.
                 if item.source == "idea_bank" || item.kind == "idea", let t = item.title, !t.isEmpty {

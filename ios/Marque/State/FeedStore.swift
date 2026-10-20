@@ -283,9 +283,10 @@ final class FeedStore {
     }
 
     // MARK: I-2 — dismiss a pick (✗): remove it, learn from it, top up so the row never empties.
-    func dismiss(_ s: Script, store: AppStore) {
+    /// `reason: "topic"` = "Not this topic" (removed the same way, different signal).
+    func dismiss(_ s: Script, store: AppStore, reason: String? = nil) {
         scriptItems.removeAll { $0.id == s.id }
-        store.dismissPick(s)
+        store.dismissPick(s, reason: reason)
         scheduleSave()
         if scriptItems.count < 3, feedCursor >= 0 {
             Task { await loadMoreScripts(store: store) }

@@ -18,13 +18,17 @@ struct ScriptReaderView: View {
     @State private var ctaDraft = ""
     @FocusState private var bodyFocused: Bool
     @State private var showVersionHistory = false
+    @State private var showHowYouTalk = false
 
     private var live: Script { store.scripts.first { $0.id == script.id } ?? script }
 
     private func commitBodyEdit() {
         let trimmed = bodyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != live.body else { editingBody = false; return }
+        let before = live
         store.commitScriptEdit(scriptId: live.id, body: trimmed)
+        // Scripts v2: the creator's own rewrite is the richest voice signal we get.
+        store.sendEditDiff(script: before, before: before.body, after: trimmed, field: "body")
         editingBody = false
     }
 
@@ -38,8 +42,17 @@ struct ScriptReaderView: View {
     private func commitCTAEdit() {
         let t = ctaDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { editingCTA = false; return }
+        let before = live
         store.commitScriptEdit(scriptId: live.id, cta: t)
+        store.sendEditDiff(script: before, before: before.cta, after: t, field: "cta")
         editingCTA = false
+    }
+
+    /// Seconds to say what's on screen right now (drafts included while editing).
+    private var readLabel: String {
+        ReadTime.label(hook: editingHook ? hookDraft : live.hook.text,
+                       body: editingBody ? bodyDraft : live.body,
+                       cta: editingCTA ? ctaDraft : live.cta)
     }
 
     var body: some View {
@@ -59,6 +72,9 @@ struct ScriptReaderView: View {
                 // three rows of classification between the hook and the body.
 
                 bodySection
+
+                // Scripts v2: does this sound like you? (feeds the voice model)
+                voiceSection
 
                 // Refine
                 refineSection
@@ -123,6 +139,7 @@ struct ScriptReaderView: View {
         .onDisappear { router.hideTabBar = false }
         .sheet(isPresented: $showHookLab) { HookLabSheet(script: live) }
         .sheet(isPresented: $showVersionHistory) { ScriptVersionHistorySheet(scriptId: live.id) }
+        .sheet(isPresented: $showHowYouTalk) { HowYouTalkView() }
         .fullScreenCover(isPresented: $showRecord) { RecordView(script: live) }
     }
 
@@ -175,8 +192,15 @@ struct ScriptReaderView: View {
 
     private var bodySection: some View {
         VStack(alignment: .leading, spacing: Space.md) {
-            HStack {
+            HStack(spacing: Space.sm) {
                 SectionTitle(text: "Script")
+                if !readLabel.isEmpty {
+                    Text(readLabel)
+                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                        .monospacedDigit()
+                        .accessibilityLabel(readLabel.replacingOccurrences(of: "~", with: "About ") + " to say")
+                        .accessibilityIdentifier("script.readTime")
+                }
                 Spacer()
                 if editingBody {
                     Button("Done") { commitBodyEdit() }
@@ -233,6 +257,38 @@ struct ScriptReaderView: View {
             // DECLUTTER (2026-08): the "Shot plan" bullets are no longer DISPLAYED —
             // they were direction for a shoot nobody blocks out from this screen.
             // Script.shotPlan itself stays populated: the editor pipeline consumes it.
+        }
+    }
+
+    // MARK: Voice verdict (scripts v2)
+
+    /// One tap per script: "Sounds like me" or "Not me". The choice sticks (and the other
+    /// option locks) so the creator sees what they said; the send is fire-and-forget.
+    private var voiceSection: some View {
+        let verdict = store.voiceVerdict(for: live.id)
+        return VStack(alignment: .leading, spacing: Space.md) {
+            SectionTitle(text: "Your voice")
+            HStack(spacing: Space.sm) {
+                DSChip(title: "Sounds like me",
+                       systemImage: verdict == .soundsLikeMe ? "checkmark" : nil,
+                       isSelected: verdict == .soundsLikeMe) {
+                    store.sendVoiceVerdict(.soundsLikeMe, for: live)
+                }
+                .accessibilityIdentifier("script.voiceYes")
+                DSChip(title: "Not me",
+                       systemImage: verdict == .notMe ? "checkmark" : nil,
+                       isSelected: verdict == .notMe) {
+                    store.sendVoiceVerdict(.notMe, for: live)
+                }
+                .accessibilityIdentifier("script.voiceNo")
+            }
+            .disabled(verdict != nil)
+            if verdict == .notMe {
+                Button("Tell us what's off") { showHowYouTalk = true }
+                    .font(AppFont.supporting.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("script.voiceFix")
+            }
         }
     }
 
@@ -367,7 +423,7 @@ struct HookLabSheet: View {
                                             Text(h.text).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                                                 .fixedSize(horizontal: false, vertical: true)
                                                 .multilineTextAlignment(.leading)
-                                            DSEyebrow(text: h.signal.label)
+                                            hookMeta(h)
                                         }
                                         Spacer(minLength: Space.sm)
                                         DSCheckmark(isOn: h.text == script.hook.text)
@@ -399,5 +455,44 @@ struct HookLabSheet: View {
             hooks = await store.llm.hookLab(brand: store.brand, topic: script.pillarName, memory: store.memory)
             loading = false
         }
+    }
+
+    /// The hook's shape ("Starts mid-story", else the signal), where it came from, and the
+    /// three quick checks. Scripts-v2 extras only render when the backend sent them.
+    @ViewBuilder private func hookMeta(_ h: Hook) -> some View {
+        let label = h.extras.map(\.label).flatMap { $0.isEmpty ? nil : $0 } ?? h.signal.label
+        HStack(spacing: Space.sm) {
+            DSEyebrow(text: label)
+            if let source = h.extras?.modeledOn {
+                Text(source.label).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    .lineLimit(1)
+            }
+        }
+        if let checks = h.extras?.checks, !checks.items.isEmpty {
+            FlowWrap(spacing: Space.md) {
+                ForEach(Array(checks.items.enumerated()), id: \.offset) { _, item in
+                    HookCheckMark(label: item.label, passed: item.passed)
+                }
+            }
+            .padding(.top, 2)
+        }
+    }
+}
+
+/// One Hook Lab check: a small filled check when it passes, a hollow ring when it doesn't.
+private struct HookCheckMark: View {
+    let label: String
+    let passed: Bool
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: passed ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(passed ? Palette.textPrimary : Palette.textTertiary)
+            Text(label).font(AppFont.caption)
+                .foregroundStyle(passed ? Palette.textSecondary : Palette.textTertiary)
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label): \(passed ? "yes" : "no")")
     }
 }

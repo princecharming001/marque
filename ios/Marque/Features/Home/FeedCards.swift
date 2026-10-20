@@ -25,6 +25,9 @@ struct ScriptFeedCard: View {
     var liked: Bool = false
     var onLike: () -> Void = {}
     var onDismiss: () -> Void = {}
+    /// Scripts v2: "Not this topic" — removes the card like ✗, but tells the planner the
+    /// subject is wrong (not just this script). Hidden when nil.
+    var onNotTopic: (() -> Void)? = nil
 
     var body: some View {
         // Fixed height (FeedCardMetrics.pickHeight) is sized to the card's own minimum
@@ -46,6 +49,19 @@ struct ScriptFeedCard: View {
                 }
                 .buttonStyle(PressableStyle(scale: 0.92)).accessibilityIdentifier("feed.like")
                 .accessibilityLabel(liked ? "Liked" : "Like")
+                if let onNotTopic {
+                    Button(action: onNotTopic) {
+                        Text("Not this topic")
+                            .font(AppFont.caption.weight(.semibold))
+                            .foregroundStyle(Palette.textSecondary)
+                            .lineLimit(1).fixedSize()
+                            .padding(.horizontal, 12)
+                            .frame(height: 32)
+                            .background(Capsule().fill(Palette.surfaceSunken))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(PressableStyle(scale: 0.95)).accessibilityIdentifier("feed.notTopic")
+                }
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .semibold))
@@ -298,6 +314,9 @@ private struct TickerWidthKey: PreferenceKey {
 struct TrendTicker: View {
     let trend: TrendItem
     var all: [TrendItem] = []          // W1: the full niche-trend list (rotates the ticker)
+    /// Scripts v2 "Make this mine": write a script from the open trend. Hidden when nil.
+    var onMakeMine: ((TrendItem) -> Void)? = nil
+    var makingMine: Bool = false
     @State private var currentIndex = 0
     @State private var allTrends: [TrendItem] = []
     @State private var expanded = false
@@ -375,10 +394,7 @@ struct TrendTicker: View {
                 if expanded {
                     DSRowDivider()
                     ZStack(alignment: .topLeading) {
-                        Text(displayTrend.why)
-                            .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
-                            .lineSpacing(3)
-                            .fixedSize(horizontal: false, vertical: true)
+                        expandedDetail(displayTrend)
                             .id("trend-why-\(currentIndex)")
                             .transition(slide)
                     }
@@ -421,6 +437,44 @@ struct TrendTicker: View {
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
                 guard !Task.isCancelled else { return }
                 advance(1)
+            }
+        }
+    }
+
+    /// The open trend: its promise (what the video would deliver) when the backend sent
+    /// one, the why, then the date it was seen and "Make this mine".
+    private func expandedDetail(_ t: TrendItem) -> some View {
+        let asOf = TrendDate.asOfLabel(t.asOf)
+        return VStack(alignment: .leading, spacing: Space.sm) {
+            if let promise = t.promise, !promise.isEmpty {
+                Text(promise)
+                    .font(AppFont.supporting.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(t.why)
+                .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+            if asOf != nil || onMakeMine != nil {
+                HStack(spacing: Space.sm) {
+                    if let asOf {
+                        Text(asOf).font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    }
+                    Spacer(minLength: 0)
+                    if let onMakeMine {
+                        Button { onMakeMine(t) } label: {
+                            if makingMine {
+                                ProgressView().controlSize(.small).tint(Palette.textSecondary)
+                            } else {
+                                Text("Make this mine")
+                            }
+                        }
+                        .buttonStyle(.ds(.primary, height: 36))
+                        .disabled(makingMine)
+                        .accessibilityIdentifier("feed.trendMakeMine")
+                    }
+                }
+                .padding(.top, Space.xs)
             }
         }
     }

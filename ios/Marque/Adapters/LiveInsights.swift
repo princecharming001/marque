@@ -4,8 +4,7 @@ import Foundation
 // cache). Conforms to the existing InsightsProviding so Coach/Today are unchanged. Mock fallback.
 struct LiveInsights: InsightsProviding {
     private let fallback = MockInsights()
-    private struct Resp: Decodable { let trends: [TrendDTO] }
-    private struct TrendDTO: Decodable { let title: String; let why: String; let formatId: String? }
+    private struct Resp: Decodable { let trends: [TrendWire] }   // scripts v2: + promise / asOf
 
     func trends(niche: String) async -> [TrendItem] {
         let q = niche.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
@@ -15,6 +14,6 @@ struct LiveInsights: InsightsProviding {
               let r = try? JSONDecoder().decode(Resp.self, from: data), !r.trends.isEmpty else {
             return await fallback.trends(niche: niche)
         }
-        return r.trends.map { TrendItem(title: $0.title, why: $0.why, formatId: $0.formatId ?? "myth-buster") }
+        return r.trends.map(\.item)
     }
 }

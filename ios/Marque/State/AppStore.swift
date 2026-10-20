@@ -2877,12 +2877,16 @@ final class AppStore {
         save()
     }
 
-    // MARK: Trend → script (Coach "Write a script for this")
-    func generateFromTrend(title: String, formatId: String) async {
+    // MARK: Trend → script (Coach "Write a script for this"; Home trend "Make this mine")
+    /// Returns the new script (the first one written) so the caller can open it.
+    /// `promise` (scripts v2 live angle) becomes the angle when the trend carries one.
+    @discardableResult
+    func generateFromTrend(title: String, formatId: String, promise: String = "") async -> Script? {
         let style = Catalog.style(for: formatId)
         // The TREND is the topic. This used to take the creator's first pillar whenever one
         // existed, so "make a video on this trend" wrote about something else entirely.
-        let pillar = Pillar(name: title, summary: "Ride this trend: \(title)", angle: title,
+        let p = promise.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pillar = Pillar(name: title, summary: "Ride this trend: \(title)", angle: p.isEmpty ? title : p,
                             exampleTopics: [title], weight: 0.2, colorHex: Catalog.pillarColors[0])
         isGenerating = true
         var made = await llm.generateScripts(brand: brand, pillar: pillar, count: 1, mediaContext: mediaContext, style: style, memory: memory)
@@ -2892,6 +2896,7 @@ final class AppStore {
         scripts.insert(contentsOf: made, at: 0)
         isGenerating = false
         save()
+        return made.first
     }
 
     // MARK: Schedule helpers
@@ -3278,6 +3283,7 @@ final class AppStore {
         var rankFloorLevel: Int? = nil
         var clipGroups: [ClipGroup]? = nil             // build 59: Library collections (decode-safe)
         var pillarsUserEdited: Bool? = nil             // hand-edited pillars survive scans
+        var voiceVerdicts: [String: String]? = nil     // scripts v2: script id → voice verdict
     }
 
     /// Debounce task for save() — the FeedStore.scheduleSave pattern. ~60 call sites
@@ -3306,7 +3312,8 @@ final class AppStore {
                  reelsShot: reelsShot,
                  rankFloorLevel: UserDefaults.standard.integer(forKey: Self.rankFloorKey),
                  clipGroups: clipGroups,
-                 pillarsUserEdited: pillarsUserEdited)
+                 pillarsUserEdited: pillarsUserEdited,
+                 voiceVerdicts: voiceVerdicts)
     }
 
     func save() {
@@ -3403,6 +3410,7 @@ final class AppStore {
         pendingPublishes = snap.pendingPublishes ?? []
         lastStreakDate = snap.lastStreakDate
         likedPicks = snap.likedPicks ?? []
+        voiceVerdicts = snap.voiceVerdicts ?? [:]
         dismissedPicks = snap.dismissedPicks ?? []
         // Back-compat: pre-counter installs seed the lifetime count from clips already in the
         // library so the wrap number isn't absurdly low on first upgrade.
@@ -3614,11 +3622,40 @@ final class AppStore {
     }
 
     /// ✗ on a pick — dismiss it (persisted so it stays gone) + a negative learning signal.
-    func dismissPick(_ script: Script) {
+    /// `reason: "topic"` is the "Not this topic" dismissal (scripts v2): same removal, and
+    /// the backend steers the planner off the subject rather than just this card.
+    func dismissPick(_ script: Script, reason: String? = nil) {
         if !dismissedPicks.contains(script.id) { dismissedPicks.append(script.id) }
         if dismissedPicks.count > 200 { dismissedPicks.removeFirst(dismissedPicks.count - 200) }
         save()
-        Task { await backend.sendFeedFeedback(script: script, niche: brand.niche, verdict: "dislike") }
+        Task { await backend.sendFeedFeedback(script: script, niche: brand.niche, verdict: "dislike", reason: reason) }
+    }
+
+    // MARK: Voice feedback (scripts v2)
+
+    /// Script id (uuidString) → VoiceVerdict raw value. One verdict per script.
+    var voiceVerdicts: [String: String] = [:]
+
+    func voiceVerdict(for scriptId: UUID) -> VoiceVerdict? {
+        voiceVerdicts[scriptId.uuidString].flatMap(VoiceVerdict.init(rawValue:))
+    }
+
+    /// "Sounds like me / Not me" on a script — once per script, fire-and-forget.
+    func sendVoiceVerdict(_ verdict: VoiceVerdict, for script: Script) {
+        guard voiceVerdict(for: script.id) == nil else { return }
+        voiceVerdicts[script.id.uuidString] = verdict.rawValue
+        if voiceVerdicts.count > 300 {                       // bound the map; order is irrelevant
+            for k in voiceVerdicts.keys.prefix(voiceVerdicts.count - 300) { voiceVerdicts[k] = nil }
+        }
+        save()
+        Task { await backend.sendFeedFeedback(script: script, niche: brand.niche, verdict: nil, voiceVerdict: verdict) }
+    }
+
+    /// An inline reader edit, sent as `edit_diff` so the voice learns the creator's own
+    /// wording. Whitespace/case-only edits are ignored (EditDiff.make).
+    func sendEditDiff(script: Script, before: String, after: String, field: String) {
+        guard let diff = EditDiff.make(before: before, after: after, field: field) else { return }
+        Task { await backend.sendFeedFeedback(script: script, niche: brand.niche, verdict: nil, editDiff: diff) }
     }
 
     /// C-06: increment the streak at most once per calendar day; a gap of >1 day resets it.

@@ -233,6 +233,9 @@ struct Hook: Codable, Hashable, Identifiable {
     var text: String
     var signal: HookSignal
     var strength: Int           // virality predictor 0…100
+    // Scripts v2: Hook Lab label + checks + provenance. Optional so every Snapshot written
+    // before this decodes (synthesized Codable uses decodeIfPresent only for Optionals).
+    var extras: HookExtras? = nil
 }
 
 // Format Library entry = a structured render-recipe
@@ -394,6 +397,9 @@ struct Script: Codable, Hashable, Identifiable {
     // first (most recent first), so nothing is ever destructive — the creator can always
     // go back. Optional-with-default → decodes fine for scripts saved before this existed.
     var versionHistory: [ScriptVersion] = []
+    // Scripts v2 craft metadata (opener frame, doctrine version, voice confidence…).
+    // Optional for Snapshot safety; nil on scripts from older backends.
+    var craft: ScriptCraft? = nil
 }
 
 /// A prior snapshot of a script's content, kept so a refine/edit/hook-swap can be undone.
@@ -716,6 +722,12 @@ struct TrendItem: Codable, Hashable, Identifiable {
     var title: String
     var why: String
     var formatId: String
+    // Scripts v2 live angles — all optional (older backends and cached feeds omit them).
+    var angleId: String? = nil
+    var promise: String? = nil      // what the video promises the viewer
+    var velocity: String? = nil     // "rising" | "steady" | "new"
+    var openers: [String]? = nil
+    var asOf: String? = nil         // ISO date the angle was seen
 }
 
 struct TeardownCard: Codable, Hashable, Identifiable {

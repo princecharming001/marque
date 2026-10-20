@@ -8,6 +8,7 @@ struct ProfileView: View {
     @State private var showSettings = false
     @State private var showBrandEditor = false
     @State private var showVoiceEditor = false
+    @State private var showHowYouTalk = false
     @State private var showPillarsEditor = false
     @State private var showEditingStyle = false
     @State private var showCreatorProfile = false
@@ -54,6 +55,10 @@ struct ProfileView: View {
                         profileRow(label: "Brand identity", systemImage: "textformat") { showBrandEditor = true }
                         DSRowDivider(inset: rowTextInset)
                         profileRow(label: "Voice & tone", systemImage: "waveform") { showVoiceEditor = true }
+                        DSRowDivider(inset: rowTextInset)
+                        // Scripts v2: the voice learned from the creator's reels, correctable.
+                        profileRow(label: "How you talk", systemImage: "text.quote") { showHowYouTalk = true }
+                            .accessibilityIdentifier("profile.howYouTalk")
                         DSRowDivider(inset: rowTextInset)
                         profileRow(label: "Content pillars", systemImage: "square.grid.2x2") { showPillarsEditor = true }
                         Group {
@@ -111,6 +116,7 @@ struct ProfileView: View {
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showBrandEditor) { BrandEditorSheet(store: store) }
         .sheet(isPresented: $showVoiceEditor) { VoiceEditorSheet(store: store) }
+        .sheet(isPresented: $showHowYouTalk) { HowYouTalkView() }
         .sheet(isPresented: $showPillarsEditor) { PillarsEditorSheet(store: store) }
         .sheet(isPresented: $showEditingStyle) { EditingStyleSheet() }
         .sheet(isPresented: $showCreatorProfile) { CreatorProfileSheet() }

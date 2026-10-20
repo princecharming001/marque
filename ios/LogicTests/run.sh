@@ -19,6 +19,8 @@ trap 'rm -rf "$OUT"' EXIT
 SOURCES=(
   "$S/Models/Models.swift"
   "$S/Models/StyleProfileMapper.swift"
+  "$S/Models/VoiceProfile.swift"
+  "$S/Models/ScriptsV2Wire.swift"
   "$S/Adapters/UploadRetryPolicy.swift"
   "$S/Adapters/UploadJournal.swift"
   "$S/Adapters/CompressionPlan.swift"
@@ -27,6 +29,7 @@ SOURCES=(
   "$S/Adapters/CappedDownload.swift"
   "$S/Features/TeleprompterLayout.swift"
   "$S/Features/Home/DaySummary.swift"
+  "$S/Features/ScriptReadLogic.swift"
 )
 
 swiftc -O -o "$OUT/logictests" "${SOURCES[@]}" "$DIR"/*Tests.swift "$DIR/Support.swift" "$DIR/main.swift"

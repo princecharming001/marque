@@ -21,6 +21,7 @@ struct HomeView: View {
     @State private var activeReelId: String?
     // Presentation only: measured carousel width, so pick cards size to the phone.
     @State private var carouselWidth: CGFloat = 375
+    @State private var makingTrendScript = false    // "Make this mine" in flight
 
     var body: some View {
         ScrollView {
@@ -42,7 +43,9 @@ struct HomeView: View {
                     .padding(.top, -Space.sm)
                 picksSection.staggerReveal(2)
                 if let trend = feed.trend {
-                    TrendTicker(trend: trend, all: store.trends).staggerReveal(3)
+                    TrendTicker(trend: trend, all: store.trends,
+                                onMakeMine: makeTrendMine, makingMine: makingTrendScript)
+                        .staggerReveal(3)
                 }
                 stealSection.staggerReveal(4)
             }
@@ -217,7 +220,8 @@ struct HomeView: View {
                                 },
                                 liked: store.likedPicks.contains(s.id),
                                 onLike: { store.likePick(s) },
-                                onDismiss: { withAnimation(Motion.quick) { feed.dismiss(s, store: store) } }
+                                onDismiss: { withAnimation(Motion.quick) { feed.dismiss(s, store: store) } },
+                                onNotTopic: { withAnimation(Motion.quick) { feed.dismiss(s, store: store, reason: "topic") } }
                             )
                             .frame(width: pickCardWidth)
                             .transition(.scale(scale: 0.92).combined(with: .opacity))
@@ -329,6 +333,18 @@ struct HomeView: View {
                         .frame(maxWidth: .infinity).frame(height: 44)
                 }
             }
+        }
+    }
+
+    /// Trend → a script in the creator's voice, opened in the reader like a tapped pick.
+    private func makeTrendMine(_ t: TrendItem) {
+        guard !makingTrendScript else { return }
+        makingTrendScript = true
+        Task {
+            let made = await store.generateFromTrend(title: t.title, formatId: t.formatId,
+                                                     promise: t.promise ?? "")
+            makingTrendScript = false
+            if let made { peekedScript = made }
         }
     }
 
