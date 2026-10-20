@@ -584,3 +584,13 @@ def test_cold_start_plan_never_assigns_confession(monkeypatch):
     assert all(s["register"] != "confession" and s["opener_frame"] != "confession" for s in cold)
     warm = asyncio.run(main._plan_slots(_sreq(count=3), 0, ""))
     assert warm[0]["register"] == "confession"
+
+
+def test_min_samples_gate_sends_cold_start_creators_to_v1(monkeypatch):
+    _stub_inputs(monkeypatch)                                   # no samples
+    monkeypatch.setenv("SCRIPTS_V2_MIN_SAMPLES", "2")
+
+    async def page(**kw):
+        raise AssertionError("gated creators never reach the v2 writer")
+    monkeypatch.setattr(pipeline, "write_page", page)
+    assert asyncio.run(main._v2_page(_sreq(), 0, tier="fast")) is None

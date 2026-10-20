@@ -14675,6 +14675,11 @@ async def _v2_page(sreq: "ScriptRequest", cursor: int = 0, *, tier: str = "fast"
     from app.scripts_v2 import pipeline
     try:
         inp = await _v2_inputs(sreq)
+        # Optional cold-start gate: v2's voice lever needs the creator's real speech; with
+        # SCRIPTS_V2_MIN_SAMPLES=N a creator with fewer spoken reels stays on v1 (eval
+        # 2026-10-19: on no-reel personas v2 has 0 tells but the judge scores v1 more specific).
+        if len(inp["samples"]) < int(os.environ.get("SCRIPTS_V2_MIN_SAMPLES", "0") or 0):
+            return None
         niche = sreq.niche or ""
         angles = await _niche_angles(niche)
         avoid_openers = (_creator_recent_openers(inp["posts"]) + _niche_openers(niche)) or None

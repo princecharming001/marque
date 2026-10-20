@@ -69,7 +69,7 @@ Single-file by design — resist splitting `main.py` without cause, but new subs
 - Voice profiles (`voice.py`) and niche angles (`angles.py`) are stored in the `reels_cache` KV table under `voice:<creator_id>` / `trends:<slug>` (no migration). `GET/PUT /v1/voice`, `POST /v1/voice/build|preview`.
 - Metering: every Anthropic call goes through `app/llm_usage.py` (`prepare_body` strips sampling knobs and pins thinking for 5.x models, `record_response` writes real usage to `ai_usage`). Label new call paths with `@_llm_usage.routed("...")` or `llm.call(route=...)`. `scripts/cost_report.py` reads it back.
 - 5.x models (`claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`) **400 on non-default `temperature`** and think by default; never add `temperature=` to a call site.
-- Optional: `BANDIT_OPENER_FRAME=1` (only after `post_registry.opener_frame` exists), `NICHE_TRANSCRIPT_PASS=1` (weekly transcription of the top 30 reels per niche), `VOICE_NEGATIVES=1`, `SCRIPTS_V2_BEST_OF=2`, `SCRIPTS_V2_FIRST_PAINT_MODEL`, `SCRIPTS_V2_WRITER_MODEL`.
+- Optional: `SCRIPTS_V2_MIN_SAMPLES=N` (v2 only for creators with N+ spoken reels; others stay on v1), `BANDIT_OPENER_FRAME=1` (only after `post_registry.opener_frame` exists), `NICHE_TRANSCRIPT_PASS=1` (weekly transcription of the top 30 reels per niche), `VOICE_NEGATIVES=1`, `SCRIPTS_V2_BEST_OF=2`, `SCRIPTS_V2_FIRST_PAINT_MODEL`, `SCRIPTS_V2_WRITER_MODEL`.
 
 ## Shipping to live (GitHub → Render / TestFlight)
 

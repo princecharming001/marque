@@ -2,9 +2,38 @@
 
 2026-10-19. Revision 2. Built from: a read of `main` (131bb90), the September realism runs and the 09-23 prod smoke, three codebase maps, three research passes (competitor teardown, hooks/trends/costs, human-sounding text + voice cloning), then an engineering review and a product/craft review whose changes are folded into §5–9. Nothing in this document is implemented.
 
-## 0. Status
+## 0. Status (2026-10-19, branch `scripts-v2`, nothing pushed or deployed)
 
-- 2026-10-19: branch `scripts-v2`. **Phase 0 done** (metering in both wrappers + 7 raw posts, `prepare_body` hygiene, Haiku 5.5, `scripts/cost_report.py`). **Phase 1 slice done** (`app/scripts_v2/lint.py` + `_lint_revise` on the full path; voiceprint transcript-first with two full sentences; planner emits payoff / register / opener frame with code-enforced distinctness; first-paint length from the creator's own reels; niche + own opener dedup). Realism eval (8 personas, independent Opus judge), old main vs v2: fast path hard tells/script 0.88 → 0.22, tell-free 14/24 → 20/23, spoken 7.5 → 8.0, honesty 8.5 → 9.1, length right 20/24 → 23/23, p50 11.6 s → 7.6 s, cost $0.5 → $0.055 per 24 pages; full path (vs Sept v6) hard tells 0.83 → 0.29, tell-free 8/24 → 17/24, would-film 24/24. The eval caught a frame-example leak (fixed 014b54b). Still open: listicle hooks converge on one shape; planner picks the most obvious topic per niche (phase-2 material step). Not deployed.
+| Phase | State | Commits |
+|---|---|---|
+| 0. Meter, strip temperature, Haiku 5.5 | done | bbf81bc, c2dc121 |
+| 1. Two-day slice (lint, payoff-first slots, own-length, opener dedup) | done | f856f3d, 014b54b |
+| 2. Writer v2 behind `SCRIPTS_V2` | done | 1f05322, ff98dc8, (cold-start fixes) |
+| 3. Voice profiles + `/v1/voice` | done (backend); app screen written, uncompiled | 1f05322, 73acb53 |
+| 4. Niche angles, Hook Lab v2, mimic beats | done | 1f05322 |
+| 5. App build | Swift written, logic tests 366/366; **not compiled for iOS** (no Xcode on this Mac) | 73acb53 |
+| 6. opener_frame bandit dim, mocks, docs | done, dimension gated by `BANDIT_OPENER_FRAME` until the migration is applied | 1f05322 |
+| 6. Retire v1 | **not done on purpose**: v1 is the kill switch until v2 has run live | |
+
+Realism eval, 8 personas, independent Opus judge (spoken / substance / specificity / honesty; hard tells per script from the v2 lint):
+
+| Run | hard tells | spoken | substance | specificity | honesty | would film | p50 | metered $ / page |
+|---|---|---|---|---|---|---|---|---|
+| old main, first paint (Haiku 4.5) | 0.88 | 7.5 | 7.7 | 7.2 | 8.5 | 21/24 | 11.6 s | ~$0.02 (est.) |
+| slice, first paint (Haiku 5.5) | 0.22 | 8.0 | 7.7 | 7.4 | 9.1 | 22/23 | 7.6 s | $0.002 |
+| slice, full (Opus 4.8) | 0.29 | 8.1 | 8.0 | 7.6 | 9.2 | 24/24 | 68 s | ~$0.30 |
+| v2, first paint (Haiku 5.5), r2 | **0.00** | 7.7 | 6.9 | 6.3 | **9.4** | 20/24 | 10.7 s | ~$0.002 |
+| v2, full (Sonnet 5.5), r2 | **0.00** | 7.8 | 7.1 | 6.5 | 9.2 | 22/24 | 20 s | ~$0.03 |
+| v2, full (Opus 5.5 writer A/B) | **0.00** | 7.8 | 7.4 | 6.8 | 9.2 | 23/24 | 29 s | ~$0.05 |
+
+What it says: the eval personas have **no reels**, so it measures the cold-start case, not v2's main lever (the creator's own speech as few-shot + material). There, v2 removes every hard tell and invents nothing, and the judge scores it less specific than the slice, partly because v1 invents specifics. The live smoke with a creator who has spoken reels carried their phrasing ("you guys", "honestly", "okay so", "do the boring thing") with zero hard tells on the full path. `SCRIPTS_V2_MIN_SAMPLES=N` keeps creators with fewer than N spoken reels on the slice if you prefer that trade.
+
+Rollout, each step needs a "push it now":
+1. Merge `scripts-v2` → `main`, deploy marque-api with `SCRIPTS_V2` unset (= off). Phases 0-1 go live for everyone (metering, Haiku 5.5, slice); v2 stays dark.
+2. `SCRIPTS_V2=allowlist`, `SCRIPTS_V2_ALLOWLIST=<owner's creator id>`, redeploy; owner runs "Rebuild from my reels" (or the digest) and compares.
+3. Apply the `post_registry.opener_frame` migration, then `BANDIT_OPENER_FRAME=1`. Optional: `NICHE_TRANSCRIPT_PASS=1` (~$0.75/niche/week).
+4. App build with the phase-5 Swift (first real compile), TestFlight.
+5. After a week live on the allowlist: `SCRIPTS_V2=on`, then retire the v1 prompt blocks.
 
 ## 1. Why
 
