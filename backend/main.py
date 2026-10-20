@@ -14432,7 +14432,8 @@ async def _plan_slots(sreq: "ScriptRequest", cursor: int = 0, context: str = "",
                       avoid: list[str] | None = None,
                       avoid_openers: list[str] | None = None,
                       angles: list[dict] | None = None,
-                      timeout: float | None = None) -> list[dict]:
+                      timeout: float | None = None,
+                      personal_ok: bool = True) -> list[dict]:
     """One fast HAIKU call that picks a DISTINCT, specific topic, payoff, register and
     opener frame for each slot. Formats are assigned here in code, and register / frame
     distinctness is enforced here too (the model can't collapse the page back to one
@@ -14471,8 +14472,12 @@ async def _plan_slots(sreq: "ScriptRequest", cursor: int = 0, context: str = "",
                           "register": got.get("register"),
                           "opener_frame": got.get("opener_frame"),
                           "trend_angle": ta_id})
-        regs = _distinct_assign([s["register"] for s in slots], list(prompts.SLOT_REGISTERS), cursor)
-        frames = _distinct_assign([s["opener_frame"] for s in slots], list(prompts.OPENER_FRAMES), cursor)
+        # A confession needs a real slip of the creator's. With no reels or memory to take it
+        # from, the writer invents one ("I made", "I cut": eval 2026-10-19), so it is not offered.
+        reg_opts = [r for r in prompts.SLOT_REGISTERS if personal_ok or r != "confession"]
+        frame_opts = [f for f in prompts.OPENER_FRAMES if personal_ok or f != "confession"]
+        regs = _distinct_assign([s["register"] for s in slots], reg_opts, cursor)
+        frames = _distinct_assign([s["opener_frame"] for s in slots], frame_opts, cursor)
         for s, r, fr in zip(slots, regs, frames):
             s["register"], s["opener_frame"] = r, fr
         return slots
@@ -14680,7 +14685,8 @@ async def _v2_page(sreq: "ScriptRequest", cursor: int = 0, *, tier: str = "fast"
             sreq.slots = await _plan_slots(sreq, cursor, context,
                                            avoid=_avoid_topics(sreq.creator_id) or None,
                                            avoid_openers=avoid_openers, angles=angles,
-                                           timeout=float(os.environ.get("SCRIPTS_V2_PLAN_TIMEOUT_S", "10")))
+                                           timeout=float(os.environ.get("SCRIPTS_V2_PLAN_TIMEOUT_S", "10")),
+                                           personal_ok=bool(inp["samples"]) or bool(sreq.memory))
         fast = tier != "full"
         res = await pipeline.write_page(
             brand=_brand_only(sreq.d()), slots=list(sreq.slots), samples=inp["samples"],

@@ -21,7 +21,7 @@ import re
 
 from app.scripts_v2 import flags, llm
 
-SOURCES = ("own_reel", "memory", "profile", "niche_trend", "mechanism")
+SOURCES = ("own_reel", "memory", "profile", "niche_trend", "situation", "mechanism")
 MAX_PER_SLOT = 3
 
 SYSTEM = (
@@ -36,8 +36,13 @@ SYSTEM = (
     "memory = something the creator told us (THEY TOLD US).\n"
     "profile = their own profile text.\n"
     "niche_trend = one of THIS WEEK IN THE NICHE; set ref to its id (A1, A2...).\n"
+    "situation = a concrete everyday moment this creator's viewer is in: a time, a place, an object, "
+    "a thing they do (\"the gym bag that rides in the trunk all week\"). Second person or plain "
+    "description, never 'I' or 'my', no statistics, no study, no result.\n"
     "mechanism = how or why something works, true for anyone in the niche. A mechanism never "
     "contains a number, a percent, a study, a name or a result.\n"
+    "Every video needs at least one particular that is concrete enough to picture; when we know "
+    "nothing personal, use a situation.\n"
     "Never invent a story, a client, a result or a number. If a video needs a personal detail we "
     "don't have, leave it out and put one short question for the creator in ask_user (or leave "
     "ask_user empty). Prefer own_reel and memory when they fit; a video with only mechanisms is fine."
@@ -138,6 +143,9 @@ def validate(raw: list[dict], *, samples: list[dict], brand: dict, memory: dict 
                 ref = str(angles[i].get("angle_id") or ref)
         elif src == "mechanism":
             ok = not re.search(r"\d|%|percent|study|studies|research|according to", text, re.I)
+        elif src == "situation":
+            ok = not re.search(r"%|percent|study|studies|research|according to|\b(i|i'm|i've|my|me|we|our)\b",
+                               text, re.I)
         if ok:
             out.append({"text": text, "source": src, "ref": ref})
         if len(out) >= MAX_PER_SLOT:
@@ -147,18 +155,19 @@ def validate(raw: list[dict], *, samples: list[dict], brand: dict, memory: dict 
 
 def render(particulars: list[dict], ask_user: str = "") -> str:
     """The MATERIAL section of the writer's brief."""
-    if not particulars and not ask_user:
-        return ("MATERIAL: nothing personal is known for this one. Talk about what the viewer does and "
-                "why it works; use no numbers, names or past events.")
+    if not particulars:
+        return ("MATERIAL: nothing personal is known for this one. Talk about a concrete moment the viewer "
+                "is in and why it works; use no statistics, no brackets, and no past events of the creator's.")
     lines = ["MATERIAL (use these and nothing else that could be checked):"]
     label = {"own_reel": "they said this in a real reel", "memory": "they told us",
              "profile": "from their profile", "niche_trend": "what the niche is talking about",
-             "mechanism": "how it works"}
+             "situation": "a moment their viewer knows", "mechanism": "how it works"}
     for p in particulars:
         lines.append(f"- {p['text']} ({label.get(p['source'], p['source'])})")
-    if ask_user:
-        lines.append(f"- If the video needs it, leave ONE short [fill-in] of 2 to 5 words naming what goes "
-                     f"there, like [your number] (never a question, never a note): {ask_user.strip()}")
+    # No [fill-in] placeholders in v2 (eval 2026-10-19: the judge read "[your number]" as an
+    # unfinished script, and it is). `ask_user` is kept on the result for a future "answer
+    # this to make it yours" prompt in the app; the writer talks about the viewer instead.
+    lines.append("- No brackets or placeholders. Anything personal that isn't here, say about the viewer.")
     return "\n".join(lines)
 
 

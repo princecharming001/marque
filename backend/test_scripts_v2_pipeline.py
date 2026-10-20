@@ -147,7 +147,7 @@ def test_material_allowed_claims_and_render():
              {"text": "adapts to stress", "source": "mechanism", "ref": ""}]
     assert material.allowed_claims([{"text": "185 lbs for 4 months", "source": "own_reel"}]) == ["185 lbs", "4 months"]
     out = material.render(parts, "how long it took you")
-    assert "they said this in a real reel" in out and "[fill-in]" in out
+    assert "they said this in a real reel" in out and "[fill-in]" not in out and "No brackets" in out
     assert "nothing personal" in material.render([], "")
 
 
@@ -562,3 +562,25 @@ def test_dto_title_prefers_the_planner_title():
     r = dict(V2_RESULT[0], slot=dict(SLOTS[0], title="why your bench stalls",
                                      topic="Why your bench stalls when you add weight on feel instead of a plan"))
     assert main._v2_to_dto(r, _sreq())["title"] == "why your bench stalls"
+
+
+def test_situation_particulars_are_concrete_and_never_first_person():
+    raw = [{"text": "the gym bag that rides in the trunk all week", "source": "situation", "ref": ""},
+           {"text": "I keep my gym bag in the trunk", "source": "situation", "ref": ""},
+           {"text": "40% of people skip the gym after work", "source": "situation", "ref": ""}]
+    got = material.validate(raw, samples=[], brand=BRAND, memory=None, angles=[])
+    assert [g["text"] for g in got] == ["the gym bag that rides in the trunk all week"]
+
+
+def test_cold_start_plan_never_assigns_confession(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+
+    async def fake_json(sys, usr, schema, model, max_tokens=3000, **kw):
+        return {"slots": [{"slot": i + 1, "formatId": "x", "subarea": f"s{i}", "topic": f"t{i}", "title": "",
+                           "angle": "a", "payoff": "p", "register": "confession", "opener_frame": "confession",
+                           "trend_angle": ""} for i in range(3)]}
+    monkeypatch.setattr(main, "anthropic_json", fake_json)
+    cold = asyncio.run(main._plan_slots(_sreq(count=3), 0, "", personal_ok=False))
+    assert all(s["register"] != "confession" and s["opener_frame"] != "confession" for s in cold)
+    warm = asyncio.run(main._plan_slots(_sreq(count=3), 0, ""))
+    assert warm[0]["register"] == "confession"
