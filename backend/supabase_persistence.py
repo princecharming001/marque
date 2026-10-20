@@ -30,6 +30,13 @@ _POST_COLS = ("creator_id", "clip_id", "permalink", "platform", "scheduled_at", 
               "outcome_raw", "settled", "settled_at", "metrics")
 _CREATOR_COLS = ("niche", "goal", "coach_last_shown", "handle")
 
+
+def _post_cols() -> tuple[str, ...]:
+    """post_registry columns to write. opener_frame (scripts v2) only once the column exists
+    (migrations.sql) and BANDIT_OPENER_FRAME=1: an unknown column 400s the whole upsert."""
+    import os
+    return _POST_COLS + (("opener_frame",) if os.environ.get("BANDIT_OPENER_FRAME") == "1" else ())
+
 _BACKOFF = (0.5, 2.0, 8.0)
 _PAGE_SIZE = 1000            # PostgREST default row cap; load_all_posts pages past it
 
@@ -193,7 +200,7 @@ class SupabaseClient:
         """Insert/merge a post row. Register uses resolution='ignore-duplicates' so a
         replayed/concurrent registration can never overwrite (and un-settle) an
         existing row; settle writes go through settle_post_conditional, not here."""
-        row = {"post_id": post_id, **{k: post[k] for k in _POST_COLS if k in post}}
+        row = {"post_id": post_id, **{k: post[k] for k in _post_cols() if k in post}}
         r = await self._request(
             "POST", "/post_registry", params={"on_conflict": "post_id"}, json=row,
             headers={"Prefer": f"resolution={resolution},return=minimal"})
@@ -206,7 +213,7 @@ class SupabaseClient:
         (0 rows), or UNAVAILABLE if the DB couldn't answer. This is the cross-instance
         idempotency latch for the bandit: arms are updated only by the winner, so a
         concurrent/retried settle can never double-count the reward."""
-        row = {k: payload[k] for k in _POST_COLS if k in payload}
+        row = {k: payload[k] for k in _post_cols() if k in payload}
         row["settled"] = True
         r = await self._request(
             "PATCH", "/post_registry",

@@ -266,6 +266,7 @@ push_mod.SUPABASE = _supabase_client   # UX-B2a: device tokens persist when Supa
 from app import exemplar, ideas, memory_v2, palo_flags, recall_ledger, strategy_compiler, tiers, track_insights, write_agent  # noqa: E402
 from app.palo_persistence import make_store  # noqa: E402
 from app import llm_usage as _llm_usage  # noqa: E402
+from app.scripts_v2 import flags as _v2flags  # noqa: E402
 
 _palo_store = make_store(SUPABASE_URL, SUPABASE_KEY)
 # Every Anthropic call (both wrappers + the raw vision posts) meters its real usage into
@@ -583,6 +584,13 @@ async def _load_learning_state():
         logging.warning("startup learning-state load failed: %s", e)
 
 DIMENSIONS = ["pillar", "style", "format_id", "hook_signal"]
+
+
+def _dims() -> list[str]:
+    """Bandit dimensions in use. Scripts v2 adds opener_frame (the first line's shape) once
+    post_registry has the column (migrations.sql) and BANDIT_OPENER_FRAME=1 is set; before
+    that, persisting it would 400 the post upsert, so it stays off by default."""
+    return DIMENSIONS + (["opener_frame"] if os.environ.get("BANDIT_OPENER_FRAME") == "1" else [])
 KAPPA = 5.0
 EXPLORATION_FLOOR = 0.15
 
@@ -954,7 +962,7 @@ async def _attribute_settled_post(creator_id: str, post: dict) -> dict:
     verdict but only from the same pre-computed lifts, and any failure/keyless falls
     back to the deterministic result — standard keyless-mock discipline."""
     all_arms = await _arms_for_prompt(creator_id)
-    own_keys = {f"{d}:{post.get(d, '')}" for d in DIMENSIONS if post.get(d)}
+    own_keys = {f"{d}:{post.get(d, '')}" for d in _dims() if post.get(d)}
     scoped = [a for a in all_arms if f"{a['dimension']}:{a['value']}" in own_keys]
     deterministic = prompts.attribute_from_arms(scoped)
     if not (ANTHROPIC_KEY and AI_QUALITY and scoped):
@@ -975,7 +983,7 @@ async def _attribute_settled_post(creator_id: str, post: dict) -> dict:
         return {"dimension": "none", "arm_value": "", "lift_pct": 0, "band": "noise",
                 "confidence": "insufficient",
                 "verdict": str(data.get("verdict", ""))[:160] or deterministic["verdict"]}
-    if dim not in DIMENSIONS or f"{dim}:{data.get('arm_value', '')}" not in own_keys:
+    if dim not in _dims() or f"{dim}:{data.get('arm_value', '')}" not in own_keys:
         return deterministic
     # AF-1 (audit): the model PHRASES, Python owns the NUMBERS — lift/band/confidence
     # come from the computed arm, and a verdict that doesn't cite the real lift
@@ -1206,7 +1214,7 @@ async def _arms_for_prompt(creator_id: str) -> list[dict]:
     await _ensure_arms_loaded(creator_id)
     mean_raw = _creator_mean_raw(creator_id)
     _dim_word = {"style": "style", "format_id": "format",
-                 "hook_signal": "hook", "pillar": "pillar"}
+                 "hook_signal": "hook", "pillar": "pillar", "opener_frame": "opening line"}
     out = []
     # _learned_arms: this list becomes prompts.learning_block(), i.e. literal
     # "+23% vs your average" lines in the script/hook/converse system prompt. On the
@@ -1578,6 +1586,12 @@ class FeedFeedbackRequest(BaseModel):
     niche: str = ""
     script: dict = {}
     pillars: list[str] = []            # the creator's own pillar names (validates the pillar dim)
+    # Scripts v2: "sounds_like_me" | "not_me" from the reader, a teleprompter/reader edit
+    # {before, after} (becomes a voice correction), and reason "topic" on a dislike
+    # ("not this topic": the planner stops pitching it).
+    voice_verdict: str = ""
+    edit_diff: dict = {}
+    reason: str = ""
 
 
 class MemoryDistillRequest(BaseModel):
@@ -1835,6 +1849,7 @@ class PostRegisterRequest(BaseModel):
     style: str = ""
     format_id: str = ""
     hook_signal: str = ""
+    opener_frame: str = ""          # scripts v2: the first line's shape (prompts.OPENER_FRAMES)
     predicted_score: int = 0
     creator_id: str = "default"
     niche: str = ""
@@ -1919,34 +1934,39 @@ def mock_scripts(req: ScriptRequest) -> list[dict]:
     # B-3: bodies are broken into short paragraphs (\n\n) — one beat each — so the reader/
     # teleprompter shows structure, not a wall of text (mirrors the live BODY_FORMAT_RULE).
     # "Most your craft advice" reads broken when no niche is set; the fallback takes "about".
-    most = f"Most advice about {niche}" if niche.lower().startswith("your ") else f"Most {niche} advice"
+    # Scripts v2 (2026-10-19): the old templates were the house style the owner flagged
+    # ("Most {niche} advice is backwards. Here's what the top 1% actually do."), and every
+    # keyless page taught that shape. These are plain, viewer-facing, no reframe, no
+    # "here's", no "follow for more", and no claim the creator would have to stand behind.
     angles = [
-        ("contrarian",
-         f"{most} is backwards. Here's what the top 1% actually do.",
-         f"Everyone tells you to do more.\n\n"
-         f"The people winning at {niche} do the opposite. They cut the noise and go deep on one thing.\n\n"
-         f"Here's the one move to start this week."),
-        ("specificity",
-         f"One number decides most of your progress in {niche}, and you're probably not tracking it.",
-         f"Pick the single metric that actually reflects progress in {niche}, and log it once a day for a week.\n\n"
-         f"The thing most people obsess over barely moves it. This other habit does.\n\n"
-         f"Here's how to run the test yourself."),
-        ("authority",
-         f"The part of {niche} nobody warns beginners about.",
-         f"Almost everyone's first months in {niche} stall for the same reason: chasing the wrong signal.\n\n"
-         f"Here's how to spot it early.\n\n"
-         f"And the fix that costs nothing but attention."),
+        ("callOut", f"Your first month in {niche}",
+         f"If you're new to {niche}, the first month is mostly noise.",
+         "Everyone around you is posting progress, and none of it tells you what to do on a Tuesday.\n\n"
+         "Pick one small thing you can repeat for thirty days. Write it down. Do it badly if you have to.\n\n"
+         "Thirty days of one small thing teaches you more than a month of watching other people.",
+         "Pick yours tonight. One line, on paper."),
+        ("specificity", "Ten minutes a day",
+         f"Ten minutes a day is enough to get better at {niche}, if it's the same 10 minutes.",
+         "Most people wait for a free afternoon that never comes.\n\n"
+         "Same time and same place, every day. Stop when the timer goes, even if it's going well.\n\n"
+         "After two weeks you won't need the reminder.",
+         "Set the timer for tomorrow before you close this."),
+        ("curiosity", "The boring part that works",
+         f"The part of {niche} you'll want to skip is usually the part that works.",
+         "It's the boring rep. The one nobody films.\n\n"
+         "When something feels too simple to matter, do it for a week before you decide.\n\n"
+         "You'll know by Friday.",
+         "Try the boring version first and tell me how it went."),
     ]
     out = []
     for i in range(max(1, req.count)):
         fmt = s["formats"][i % len(s["formats"])]
-        signal, hook, body = angles[i % len(angles)]
+        signal, base_title, hook, body, cta = angles[i % len(angles)]
         topic = (req.example_topics[i % len(req.example_topics)] if req.example_topics
                  else None)
-        # Titles are plain spoken sentence case now (TITLE_DOCTRINE): no force-capitalize,
-        # and the dash scrub runs so a template/topic dash never reaches a card.
-        # First sentence, cut on a word boundary (a hard [:48] left cards reading "here'").
-        first = re.split(r"(?<=[.!?])\s", (topic or hook).strip(), maxsplit=1)[0]
+        # Titles are plain spoken sentence case (TITLE_DOCTRINE), cut on a word boundary,
+        # dash-scrubbed so a template/topic dash never reaches a card.
+        first = re.split(r"(?<=[.!?])\s", (topic or base_title).strip(), maxsplit=1)[0]
         first = first if len(first) <= 48 else first[:48].rsplit(" ", 1)[0]
         title = prompts.scrub_em_dashes(first.rstrip("."))
         entry = {
@@ -1955,7 +1975,7 @@ def mock_scripts(req: ScriptRequest) -> list[dict]:
             "hook": hook,
             "hookSignal": signal, "formatId": fmt,
             "body": body,
-            "cta": "Follow for more, I break this down every week.",
+            "cta": cta,
             "shotPlan": s["exemplar"] and ["hold on face for the hook, no overlays",
                                           "punch in on the key number",
                                           "stay on face for the CTA"],
@@ -2555,6 +2575,10 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
     _spawn(_ensure_account_context(req.creator_id, _brand_only(req.d())))
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "scripts": mock_scripts(req)}
+    if _v2flags.enabled_for(req.creator_id):
+        v2 = await _v2_page(req, 0, tier="full")
+        if v2:
+            return v2
     pillar = {"name": req.pillar, "summary": req.pillar_summary,
               "angle": req.pillar_angle, "exampleTopics": req.example_topics}
     try:
@@ -2671,6 +2695,10 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
 async def hooks(req: HooksRequest):
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "hooks": [{"text": f"The {req.topic} mistake nobody warns you about", "signal": "curiosity", "strength": 82}]}
+    if _v2flags.enabled_for(req.creator_id):
+        v2 = await _v2_hooks(req)
+        if v2:
+            return {"mode": "live", "engine": "v2", "hooks": v2}
     try:
         stats = await _arms_for_prompt(req.creator_id)
         emulation = await _resolve_emulation_profiles(req.emulation_targets)
@@ -2692,6 +2720,10 @@ async def hooks(req: HooksRequest):
 async def steer(req: SteerRequest):
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "script": req.script}
+    if _v2flags.enabled_for(req.creator_id):
+        v2 = await _v2_steer(req)
+        if v2:
+            return {"mode": "live", "script": v2, "engine": "v2"}
     try:
         stats = await _arms_for_prompt(req.creator_id)
         sys, usr = prompts.steer_prompt(req.d(), req.script, req.instruction, arm_stats=stats,
@@ -2977,6 +3009,10 @@ async def trends(niche: str = ""):
     # W1: serve live niche trends (derived from the scraped reels corpus) when available;
     # else the mock set ROTATED by the 6h bucket so the ticker never looks frozen.
     live = _niche_live_trends(niche)
+    if _v2flags.mode() != "off":
+        v2 = await _v2_trend_cards(niche)
+        if v2:
+            return {"mode": "live", "trends": v2}
     if live:
         return {"mode": "live", "trends": live}
     base = mock_trends(niche)
@@ -9291,6 +9327,11 @@ async def _run_digest(job_id: str) -> None:
             # B3: persist (with real transcripts) so later prompts get verbatim voice
             # exemplars without the client ever holding these posts.
             _spawn(_persist_creator_posts(req.creator_id, posts))
+        if _v2flags.enabled_for(req.creator_id) and (posts or req.handle):
+            # Scripts v2: a deeper voice profile (30 posts, 12 transcribed) builds in the
+            # background; the onboarding wait never includes it.
+            _spawn(_v2_build_voice(req.creator_id, _brand_only(brand), req.handle,
+                                   req.scan_platform, posts=posts))
 
         # 3) Derive brand/voice/pillars from the best evidence available. Also
         # best-effort analyze any emulation target that hasn't been resolved yet
@@ -11637,6 +11678,9 @@ async def register_post(req: PostRegisterRequest):
     hook_signal = req.hook_signal if req.hook_signal in prompts.SIGNAL_LIST else ""
     if req.hook_signal and not hook_signal:
         dropped.append("hook_signal")
+    opener_frame = req.opener_frame if req.opener_frame in prompts.OPENER_FRAMES else ""
+    if req.opener_frame and not opener_frame:
+        dropped.append("opener_frame")
     if dropped:
         logging.warning("register_post dropped off-taxonomy dims %s for %s", dropped, req.post_id)
     # Omit the regressive outcome_y/metrics fields from the persisted row (settled
@@ -11649,6 +11693,8 @@ async def register_post(req: PostRegisterRequest):
         "predicted_score": req.predicted_score,
         "settled": False,
     }
+    if "opener_frame" in _dims():
+        post_data["opener_frame"] = opener_frame
     # WS6 (build 49): carry the clip's EDITING-knob decisions (+ logged propensities) into
     # the post record, so the settle path can update edit-knob arms with real outcomes and
     # offline replay has (action, propensity, reward) triples. Best-effort join: the clip's
@@ -11774,7 +11820,7 @@ async def ingest_metrics(req: MetricsIngestRequest):
     await _persist_creator(creator_id, niche=req.niche, goal=goal)   # durable niche/goal (A-10)
     _invalidate_creator_mean(creator_id)          # this settle shifts the personal baseline
     settled_arms: list[str] = []
-    for dim in DIMENSIONS:
+    for dim in _dims():
         val = entry.get(dim, "")
         if val:
             await _update_arm(creator_id, f"{dim}:{val}", y, raw, niche, persist=False)
@@ -13489,10 +13535,74 @@ async def _refresh_niche_trends(niche: str) -> None:
                 pass
         _niche_trends_cache[key] = {"trends": trends, "ts": time.time()}
         _cap_evict(_niche_trends_cache, 128)
+        if _v2flags.mode() != "off":
+            await _v2_refresh_angles(niche)
     except Exception as e:
         logging.warning("niche trends refresh failed for %s: %s", niche, e)
     finally:
         _trends_refreshing.discard(key)
+
+
+async def _v2_deep_transcribe(niche: str) -> None:
+    """Weekly deep pass (env NICHE_TRANSCRIPT_PASS=1): transcribe up to 30 of the niche's
+    top reels that only have a caption, so openers and angles come from real speech.
+    ~$0.75 per niche per week at AssemblyAI rates. Persists the reels entry. Never raises."""
+    key = _niche_cache_key(niche)
+    entry = _niche_reels_cache.get(key)
+    if not (entry and ASSEMBLY_KEY):
+        return
+    last = float(entry.get("deep_pass_ts") or 0)
+    if time.time() - last < 7 * 86400:
+        return
+    todo = sorted((r for r in entry.get("reels") or [] if r.get("video_url") and not r.get("transcribed")),
+                  key=lambda r: int(r.get("views") or 0), reverse=True)[:int(os.environ.get("NICHE_TRANSCRIPT_TOP_N", "30"))]
+    if todo:
+        probe = [{"video_url": r["video_url"], "views": r.get("views", 0), "transcript": "", "_r": r} for r in todo]
+        await _transcribe_top_posts(probe, top_n=len(probe))
+        for p in probe:
+            if p.get("transcript"):
+                p["_r"]["transcript"] = p["transcript"]
+                p["_r"]["transcribed"] = True
+    entry["deep_pass_ts"] = time.time()
+    if _supabase_client:
+        try:
+            await _supabase_client.upsert_reels_cache(key, entry)
+        except Exception as e:                     # noqa: BLE001
+            logging.warning("[v2] deep pass persist failed: %s", e)
+
+
+async def _v2_refresh_angles(niche: str) -> None:
+    """Rebuild the niche's live angles from its transcribed top reels and persist them."""
+    from app.scripts_v2 import angles as v2angles
+    try:
+        if os.environ.get("NICHE_TRANSCRIPT_PASS") == "1":
+            await _v2_deep_transcribe(niche)
+        entry = _niche_reels_cache.get(_niche_cache_key(niche)) or {}
+        reels = [r for r in entry.get("reels") or [] if r.get("transcribed") and (r.get("transcript") or "").strip()]
+        reels.sort(key=lambda r: int(r.get("views") or 0), reverse=True)
+        prev = await _niche_angles(niche)
+        with _llm_usage.route("trends.angles"):
+            got = await v2angles.build(niche, reels, prev)
+        if not got:
+            return
+        tkey = _v2_trends_key(niche)
+        stored = {"angles": got, "ts": time.time(), "niche": niche, "total_reels": len(entry.get("reels") or [])}
+        _v2_angles_cache[tkey] = stored
+        if _supabase_client:
+            await _supabase_client.upsert_reels_cache(tkey, stored)
+    except Exception as e:                         # noqa: BLE001
+        logging.warning("[v2] angles refresh failed for %s: %s", niche, e)
+
+
+async def _v2_trend_cards(niche: str) -> list[dict] | None:
+    """Live niche angles as trend cards (scripts v2), or None to use the format trends."""
+    from app.scripts_v2 import angles as v2angles
+    ang = await _niche_angles(niche)
+    if not ang:
+        return None
+    stored = _v2_angles_cache.get(_v2_trends_key(niche)) or {}
+    return [_scrub_voice(t) for t in v2angles.as_trends(ang, _niche_mid(niche),
+                                                       int(stored.get("total_reels") or 0))]
 
 
 def _niche_live_trends(niche: str) -> list[dict] | None:
@@ -14320,7 +14430,8 @@ def _fallback_slots(sreq: "ScriptRequest", formats: list[str], cursor: int = 0) 
 
 async def _plan_slots(sreq: "ScriptRequest", cursor: int = 0, context: str = "",
                       avoid: list[str] | None = None,
-                      avoid_openers: list[str] | None = None) -> list[dict]:
+                      avoid_openers: list[str] | None = None,
+                      angles: list[dict] | None = None) -> list[dict]:
     """One fast HAIKU call that picks a DISTINCT, specific topic, payoff, register and
     opener frame for each slot. Formats are assigned here in code, and register / frame
     distinctness is enforced here too (the model can't collapse the page back to one
@@ -14333,7 +14444,7 @@ async def _plan_slots(sreq: "ScriptRequest", cursor: int = 0, context: str = "",
     try:
         sys, usr = prompts.slot_plan_prompt(sreq.d(), pillar, formats, context=context,
                                             memory=sreq.memory or None, avoid=avoid,
-                                            avoid_openers=avoid_openers)
+                                            avoid_openers=avoid_openers, angles=angles)
         out = await asyncio.wait_for(
             anthropic_json(sys, usr, prompts.SLOT_PLAN_JSON, HAIKU, 900),
             timeout=float(os.environ.get("FEED_PLAN_TIMEOUT_S", "6")))
@@ -14345,12 +14456,19 @@ async def _plan_slots(sreq: "ScriptRequest", cursor: int = 0, context: str = "",
             topic = str(got.get("topic") or "").strip()
             if not topic:
                 return _fallback_slots(sreq, formats, cursor)
+            # trend_angle comes back as the prompt id ("A2"); store the angle's stable id.
+            ta, ta_id = str(got.get("trend_angle") or "").strip().upper(), ""
+            mm = re.fullmatch(r"A(\d+)", ta)
+            rows = [a for a in (angles or []) if isinstance(a, dict) and a.get("title")][:8]
+            if mm and 0 < int(mm.group(1)) <= len(rows):
+                ta_id = str(rows[int(mm.group(1)) - 1].get("angle_id") or "")
             slots.append({"formatId": f, "topic": topic,
                           "subarea": str(got.get("subarea") or "").strip(),
                           "angle": str(got.get("angle") or "").strip(),
                           "payoff": str(got.get("payoff") or "").strip()[:240],
                           "register": got.get("register"),
-                          "opener_frame": got.get("opener_frame")})
+                          "opener_frame": got.get("opener_frame"),
+                          "trend_angle": ta_id})
         regs = _distinct_assign([s["register"] for s in slots], list(prompts.SLOT_REGISTERS), cursor)
         frames = _distinct_assign([s["opener_frame"] for s in slots], list(prompts.OPENER_FRAMES), cursor)
         for s, r, fr in zip(slots, regs, frames):
@@ -14420,6 +14538,263 @@ async def _write_slot(sreq: "ScriptRequest", slot: dict, *, model: str, schema: 
     return None
 
 
+# =====================================================================================
+# Scripts v2 (docs/PLAN-SCRIPTS-V2.md): material -> payoff-first writer with the creator's
+# own reels as few-shot -> lint -> judge. Behind SCRIPTS_V2 (off|allowlist|on, default
+# off). Every entry point falls back to the v1 path when v2 returns nothing, so the flag
+# is a pure kill switch. Voice profiles and niche angles live in the reels_cache KV table
+# under "voice:<creator>" / "trends:<slug>" (no migration).
+# =====================================================================================
+
+_V2_CACHE_TTL_S = 300.0
+_v2_voice_cache: dict[str, tuple[dict | None, float]] = {}
+_v2_media_cache: dict[str, tuple[list[dict], float]] = {}
+_v2_angles_cache: dict[str, dict] = {}
+_v2_voice_building: set[str] = set()
+_v2_voice_status: dict[str, str] = {}
+_v2_auto_built: set[str] = set()
+
+
+def _v2_trends_key(niche: str) -> str:
+    return "trends:" + _niche_cache_key(niche)[len("niche:"):]
+
+
+async def _v2_voice(creator_id: str, *, fresh: bool = False) -> dict | None:
+    from app.scripts_v2 import voice as v2voice
+    if not palo_flags.real_creator(creator_id) or not _supabase_client:
+        return None
+    hit = _v2_voice_cache.get(creator_id)
+    if hit and not fresh and time.time() - hit[1] < _V2_CACHE_TTL_S:
+        return hit[0]
+    try:
+        prof = await v2voice.load(_supabase_client, creator_id)
+    except Exception as e:                         # noqa: BLE001
+        logging.warning("[v2] voice load failed: %s", e)
+        prof = None
+    _v2_voice_cache[creator_id] = (prof, time.time())
+    _cap_evict(_v2_voice_cache, 2000)
+    return prof
+
+
+async def _v2_media(creator_id: str) -> list[dict]:
+    """The creator's own uploaded takes that have a transcript (their real speech, free)."""
+    if not palo_flags.real_creator(creator_id) or not _supabase_client:
+        return []
+    hit = _v2_media_cache.get(creator_id)
+    if hit and time.time() - hit[1] < 1800:
+        return hit[0]
+    try:
+        rows = await asyncio.wait_for(_supabase_client.load_creator_media(creator_id, limit=60), 4.0)
+    except Exception:                              # noqa: BLE001
+        rows = []
+    rows = [r for r in (rows or []) if isinstance(r, dict) and (r.get("transcript") or "").strip()]
+    _v2_media_cache[creator_id] = (rows, time.time())
+    _cap_evict(_v2_media_cache, 2000)
+    return rows
+
+
+async def _niche_angles(niche: str) -> list[dict]:
+    """Live niche angles (what top reels in the niche are talking about), newest store."""
+    if not (niche or "").strip():
+        return []
+    key = _v2_trends_key(niche)
+    hit = _v2_angles_cache.get(key)
+    if hit is None and _supabase_client:
+        try:
+            hit = await asyncio.wait_for(_supabase_client.load_reels_cache(key), 3.0) or {}
+        except Exception:                          # noqa: BLE001
+            hit = {}
+        _v2_angles_cache[key] = hit
+        _cap_evict(_v2_angles_cache, 256)
+    hit = hit or {}
+    if not hit.get("angles") or time.time() - float(hit.get("ts") or 0) > 8 * 86400:
+        return []
+    return list(hit["angles"])
+
+
+async def _v2_inputs(sreq: "ScriptRequest") -> dict:
+    """Everything the v2 writer needs about THIS creator, from what we already store."""
+    from app.scripts_v2 import voice as v2voice
+    cid = sreq.creator_id
+    posts = sreq.posts or await _creator_posts(cid)
+    sreq.posts = posts
+    media, profile = await asyncio.gather(_v2_media(cid), _v2_voice(cid))
+    samples = v2voice.spoken_samples(posts, media)
+    brand = _brand_only(sreq.d())
+    if profile is None and len(samples) >= 2 and cid not in _v2_auto_built \
+            and palo_flags.real_creator(cid):
+        # First v2 page for a creator with real speech stored: build the profile in the
+        # background from what we have (no scrape); this page uses the raw exemplars.
+        _v2_auto_built.add(cid)
+        _spawn(_v2_build_voice(cid, brand, posts=posts))
+    prompt_profile = profile or v2voice.cold_start_profile(brand)
+    exemplars = v2voice.select_exemplars(samples, 3)
+    alt = v2voice.select_exemplars(samples, 3, alt=True)
+    lint_prof = v2voice.lint_profile(profile) if profile else {
+        "address_form": None, "exemplar_texts": [s["text"] for s in exemplars]}
+    length = _length_target([{"transcript": s["text"]} for s in samples] or posts)
+    return {"posts": posts, "samples": samples, "profile": profile,
+            "voice_block": v2voice.prompt_block(prompt_profile), "exemplars": exemplars,
+            "exemplars_alt": alt, "lint_profile": lint_prof, "length": length,
+            "confidence": (profile or prompt_profile).get("data_confidence", "low")}
+
+
+def _v2_to_dto(r: dict, sreq: "ScriptRequest") -> dict:
+    """A v2 pipeline result in the app's ScriptDTO shape (keys unchanged; v2 fields are
+    additive and ignored by older builds)."""
+    sl = r.get("slot") or {}
+    frame = sl.get("opener_frame") or ""
+    d = {
+        "title": _clamp_title(str(sl.get("topic") or sreq.pillar or "")),
+        "summary": str(sl.get("angle") or sl.get("payoff") or "")[:220],
+        "hook": r.get("hook", ""), "body": r.get("body", ""), "cta": r.get("cta", ""),
+        "hookSignal": prompts.FRAME_TO_SIGNAL.get(frame, "curiosity"),
+        "formatId": sl.get("formatId") or "", "style": sreq.style or "talking_head",
+        "shotPlan": [], "altHooks": [], "pillar": sreq.pillar,
+        "openerFrame": frame, "register": sl.get("register") or "", "payoff": sl.get("payoff") or "",
+        "trendAngle": sl.get("trend_angle") or "",
+        "particularSources": [p.get("source") for p in (r.get("particulars") or []) if isinstance(p, dict)],
+        "voiceConfidence": r.get("voice_confidence") or "low",
+        "doctrineVersion": r.get("doctrine_version") or "", "lintCodes": r.get("lint_codes") or [],
+    }
+    d = _scrub_voice(d)
+    _finalize_script(d)
+    d["predictedScore"] = _draft_score(sreq.creator_id, d)
+    return d
+
+
+async def _v2_page(sreq: "ScriptRequest", cursor: int = 0, *, tier: str = "fast") -> dict | None:
+    """One page through the v2 pipeline, or None (the caller then runs v1)."""
+    from app.scripts_v2 import pipeline
+    try:
+        inp = await _v2_inputs(sreq)
+        niche = sreq.niche or ""
+        angles = await _niche_angles(niche)
+        avoid_openers = (_creator_recent_openers(inp["posts"]) + _niche_openers(niche)) or None
+        if not sreq.slots:
+            context = await _account_context(sreq.creator_id)
+            sreq.slots = await _plan_slots(sreq, cursor, context,
+                                           avoid=_avoid_topics(sreq.creator_id) or None,
+                                           avoid_openers=avoid_openers, angles=angles)
+        fast = tier != "full"
+        res = await pipeline.write_page(
+            brand=_brand_only(sreq.d()), slots=list(sreq.slots), samples=inp["samples"],
+            memory=sreq.memory or None, angles=angles, avoid_openers=avoid_openers,
+            length=inp["length"], voice_block=inp["voice_block"], exemplars=inp["exemplars"],
+            exemplars_alt=inp["exemplars_alt"], lint_profile=inp["lint_profile"],
+            voice_confidence=inp["confidence"], tier="fast" if fast else "full", niche=niche,
+            slot_timeout=float(os.environ.get("FEED_FAST_TIMEOUT_S", "13")) if fast else 90.0)
+        if not res:
+            return None
+        return {"mode": "live_fast" if fast else "live", "engine": "v2",
+                "scripts": [_v2_to_dto(r, sreq) for r in res]}
+    except Exception as e:                         # noqa: BLE001
+        logging.warning("[v2] page failed (%s), falling back to v1: %s", tier, e)
+        return None
+
+
+async def _v2_steer(req: "SteerRequest") -> dict | None:
+    from app.scripts_v2 import writer as v2writer, lint as v2lint
+    try:
+        sreq = ScriptRequest(**_brand_only(req.d()), creator_id=req.creator_id, memory=req.memory or {})
+        inp = await _v2_inputs(sreq)
+        out = await v2writer.steer(req.script or {}, req.instruction, brand=_brand_only(req.d()),
+                                   voice_block=inp["voice_block"], exemplars=inp["exemplars"])
+        if not out:
+            return None
+        body, cta = v2writer.split_cta(out["body"])
+        s = dict(req.script or {})
+        s.update({"hook": out["hook"], "body": body or out["body"], "cta": cta})
+        s["lintCodes"] = v2lint.summarize(v2lint.lint_script(s, profile=inp["lint_profile"]))["codes"]
+        s = _scrub_voice(s)
+        _finalize_script(s)
+        return s
+    except Exception as e:                         # noqa: BLE001
+        logging.warning("[v2] steer failed, falling back to v1: %s", e)
+        return None
+
+
+async def _v2_build_voice(creator_id: str, brand: dict, handle: str = "", platform: str = "instagram",
+                          posts: list[dict] | None = None) -> None:
+    """Background: (re)build the creator's voice profile from their real reels. Scrapes up
+    to 30 posts when a handle is given (Apify), transcribes the strongest spoken ones
+    (AssemblyAI, the path the digest already uses), adds their own uploaded takes, then one
+    writer-model call. Keeps the creator's edits (merge_rebuild). Never raises."""
+    from app.scripts_v2 import voice as v2voice
+    if creator_id in _v2_voice_building or not palo_flags.real_creator(creator_id):
+        return
+    _v2_voice_building.add(creator_id)
+    _v2_voice_status[creator_id] = "running"
+    try:
+        posts = list(posts or [])
+        if handle and APIFY_KEY:
+            scraped = await scrape_posts(handle, platform, limit=int(os.environ.get("VOICE_SCRAPE_LIMIT", "30")))
+            if scraped:
+                posts = scraped
+        if not posts:
+            posts = await _creator_posts(creator_id)
+        posts = await _transcribe_top_posts(posts, top_n=int(os.environ.get("VOICE_TRANSCRIBE_TOP_N", "12")))
+        if any(p.get("transcript") for p in posts):
+            keep = sorted(posts, key=lambda p: (bool(p.get("transcript")), p.get("views", 0)), reverse=True)
+            _spawn(_persist_creator_posts(creator_id, keep[:10]))
+        media = await _v2_media(creator_id)
+        with _llm_usage.route("voice.build", creator_id):
+            new = await v2voice.build_profile(creator_id, brand, posts, media)
+        old = await v2voice.load(_supabase_client, creator_id) if _supabase_client else None
+        merged = v2voice.merge_rebuild(old, new)
+        await v2voice.save(_supabase_client, creator_id, merged)
+        _v2_voice_cache[creator_id] = (merged, time.time())
+        _v2_voice_status[creator_id] = "done"
+    except Exception as e:                         # noqa: BLE001
+        logging.warning("[v2] voice build failed for %s: %s", creator_id, e)
+        _v2_voice_status[creator_id] = "failed"
+    finally:
+        _v2_voice_building.discard(creator_id)
+
+
+async def _v2_hooks(req: "HooksRequest") -> list[dict] | None:
+    from app.scripts_v2 import hooklab
+    try:
+        sreq = ScriptRequest(**_brand_only(req.d()), creator_id=req.creator_id, memory=req.memory or {})
+        inp = await _v2_inputs(sreq)
+        hooks = await hooklab.generate(
+            req.topic or req.niche or "your next video", brand=_brand_only(req.d()),
+            voice_block=inp["voice_block"], exemplars=inp["exemplars"],
+            own_openers=_creator_recent_openers(inp["posts"]), niche_openers=_niche_openers(req.niche or ""),
+            lint_profile=inp["lint_profile"], voice_confidence=inp["confidence"])
+        return [_scrub_voice(h) for h in hooks] or None
+    except Exception as e:                         # noqa: BLE001
+        logging.warning("[v2] hooks failed, falling back to v1: %s", e)
+        return None
+
+
+async def _v2_mimic(req: "MimicRequest") -> dict | None:
+    """Reference-reel mode: the reel's beat structure, the creator's words and material."""
+    from app.scripts_v2 import beats as v2beats, pipeline
+    try:
+        brand = _brand_only(req.brand or {})
+        sreq = ScriptRequest(**brand, creator_id=req.creator_id, memory=req.memory or {}, count=1)
+        sk = await v2beats.skeleton(req.reel or {}, niche=brand.get("niche", ""), audience=brand.get("audience", ""))
+        if not sk:
+            return None
+        fmt = sk["format"] if sk["format"] in prompts.FORMAT_IDS else (req.reel or {}).get("format_id") or "pov-story"
+        inp = await _v2_inputs(sreq)
+        slot = {"formatId": fmt, "topic": sk["topic"], "angle": "", "payoff": sk["payoff"],
+                "register": "", "opener_frame": "", "beats": sk["beats"]}
+        res = await pipeline.write_page(
+            brand=brand, slots=[slot], samples=inp["samples"], memory=req.memory or None, angles=None,
+            avoid_openers=_creator_recent_openers(inp["posts"]) or None, length=inp["length"],
+            voice_block=inp["voice_block"], exemplars=inp["exemplars"],
+            exemplars_alt=None, lint_profile=inp["lint_profile"], voice_confidence=inp["confidence"],
+            tier="full", niche=brand.get("niche", ""))
+        if not res:
+            return None
+        return {"script": _v2_to_dto(res[0], sreq), "beats": sk["beats"]}
+    except Exception as e:                         # noqa: BLE001
+        logging.warning("[v2] mimic failed, falling back to v1: %s", e)
+        return None
+
+
 @_llm_usage.routed("feed.fast")
 async def _fast_feed_scripts(sreq: "ScriptRequest", cursor: int = 0) -> dict:
     """First-paint script generation, PLANNED + PARALLEL: a fast HAIKU planner picks a
@@ -14430,6 +14805,10 @@ async def _fast_feed_scripts(sreq: "ScriptRequest", cursor: int = 0) -> dict:
     realism eval measured timing out into the mock template for 5/8 new accounts."""
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "scripts": mock_scripts(sreq)}
+    if _v2flags.enabled_for(sreq.creator_id):
+        v2 = await _v2_page(sreq, cursor, tier="fast")
+        if v2:
+            return v2
     try:
         context = await _account_context(sreq.creator_id)          # cached after first read
         # First lines already in front of this audience: the creator's own recent posts
@@ -14594,7 +14973,8 @@ async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
 
     # W1: live niche trends when cached, else mock ROTATED by cursor + 6h bucket so a
     # given page's trend actually changes through the day.
-    all_trends = _niche_live_trends(niche) or mock_trends(niche)
+    all_trends = ((await _v2_trend_cards(niche)) if _v2flags.mode() != "off" else None) \
+        or _niche_live_trends(niche) or mock_trends(niche)
     items.append({"type": "trend", "trend": all_trends[(cursor + _trend_bucket()) % len(all_trends)]})
 
     reels_more = reel_result.get("next_cursor") is not None
@@ -15084,6 +15464,10 @@ async def feed_feedback(req: FeedFeedbackRequest):
     """B-7: a Today's-picks like/dislike. Folds a small reward into the creator's bandit
     arms (decoupled from real-post stats) and, on dislike, records the pick's fingerprint
     so a near-identical script doesn't reappear. Idempotent per fingerprint."""
+    if req.voice_verdict or req.edit_diff:
+        # Voice signals are not taste signals: they never touch the bandit arms (a "not me"
+        # on a good topic must not punish the topic) and they skip the like/dislike dedup.
+        return await _v2_voice_feedback(req)
     verdict = req.verdict if req.verdict in ("like", "dislike") else "like"
     fp = _script_fingerprint(req.script)
     seen = _feed_feedback_seen.setdefault(req.creator_id, set())
@@ -15105,10 +15489,11 @@ async def feed_feedback(req: FeedFeedbackRequest):
         "style": sc.get("style"),
         "format_id": sc.get("format_id") or sc.get("formatId"),
         "hook_signal": sc.get("hook_signal") or sc.get("hookSignal"),
+        "opener_frame": (sc.get("openerFrame") if sc.get("openerFrame") in prompts.OPENER_FRAMES else ""),
     }
     updated = 0
     tapped_arms: list[str] = []
-    for dim in DIMENSIONS:
+    for dim in _dims():
         val = dim_values.get(dim)
         if val:
             await _update_arm_feedback(req.creator_id, f"{dim}:{val}", y, niche, persist=False)
@@ -15124,8 +15509,155 @@ async def feed_feedback(req: FeedFeedbackRequest):
     if verdict == "dislike":
         _record_dismissal(req.creator_id, fp)
         _remember_titles(_disliked_titles, req.creator_id, [sc.get("title")])
+        if req.reason == "topic":
+            # "Not this topic": remember the planned topic and the hook too, so the
+            # planner's avoid list carries what the creator actually rejected.
+            _remember_titles(_disliked_titles, req.creator_id,
+                             [str(sc.get("summary") or "")[:120], str(sc.get("hook") or "")[:120]])
     return {"mode": "live" if _supabase_client else "mock", "status": "recorded",
             "arms_updated": updated, "dismissed": verdict == "dislike"}
+
+
+# ---------------------------------------------------------------------------
+# Scripts v2: voice profile API ("How you talk" in the app)
+# ---------------------------------------------------------------------------
+
+class VoiceUpdateRequest(BaseModel):
+    creator_id: str = "default"
+    paragraph: str | None = None
+    phrases: list[dict] | None = None
+    never_say: list[str] | None = None
+    correction: str | None = None
+
+
+class VoiceBuildRequest(BaseModel):
+    creator_id: str = "default"
+    handle: str = ""
+    platform: str = "instagram"
+
+
+class VoicePreviewRequest(Brand):
+    creator_id: str = "default"
+    topic: str = ""
+    memory: dict = {}
+
+
+async def _v2_voice_feedback(req: "FeedFeedbackRequest") -> dict:
+    from app.scripts_v2 import voice as v2voice
+    mode = "live" if _supabase_client else "mock"
+    cid = req.creator_id
+    if not palo_flags.real_creator(cid):
+        return {"mode": mode, "status": "ignored", "arms_updated": 0, "dismissed": False}
+    prof = await _v2_voice(cid, fresh=True)
+    if req.voice_verdict in ("sounds_like_me", "not_me"):
+        if prof is not None:
+            votes = dict(prof.get("votes") or {})
+            votes[req.voice_verdict] = int(votes.get(req.voice_verdict) or 0) + 1
+            prof = {**prof, "votes": votes}
+            await v2voice.save(_supabase_client, cid, prof)
+            _v2_voice_cache[cid] = (prof, time.time())
+    before = str((req.edit_diff or {}).get("before") or "")
+    after = str((req.edit_diff or {}).get("after") or "")
+    if before and after and before != after:
+        async def _learn() -> None:
+            with _llm_usage.route("voice.correction", cid):
+                line = await v2voice.correction_from_edit(before, after)
+            if not line:
+                return
+            base = await _v2_voice(cid, fresh=True) or v2voice.cold_start_profile(await _creator_profile_brand(cid))
+            upd = v2voice.add_correction(base, line)
+            await v2voice.save(_supabase_client, cid, upd)
+            _v2_voice_cache[cid] = (upd, time.time())
+        _spawn(_learn())
+    return {"mode": mode, "status": "recorded", "arms_updated": 0, "dismissed": False}
+
+
+async def _creator_profile_brand(creator_id: str) -> dict:
+    try:
+        return await _hydrate_creator_profile(creator_id) or {}
+    except Exception:                              # noqa: BLE001
+        return {}
+
+
+@app.get("/v1/voice")
+async def get_voice(creator_id: str = "default"):
+    from app.scripts_v2 import voice as v2voice
+    if not palo_flags.real_creator(creator_id):
+        return {"mode": "empty", "voice": {}}
+    prof = await _v2_voice(creator_id, fresh=True)
+    return {"mode": "live" if prof else "empty", "voice": v2voice.public_view(prof)}
+
+
+@app.put("/v1/voice")
+async def put_voice(req: VoiceUpdateRequest):
+    from app.scripts_v2 import voice as v2voice
+    if not palo_flags.real_creator(req.creator_id):
+        return {"mode": "empty", "voice": {}}
+    prof = await _v2_voice(req.creator_id, fresh=True)
+    if prof is None:
+        prof = v2voice.cold_start_profile(await _creator_profile_brand(req.creator_id))
+        prof["creator_id"] = req.creator_id
+    upd = v2voice.apply_edit(prof, paragraph=req.paragraph, phrases=req.phrases,
+                             never_say=req.never_say, correction=req.correction)
+    saved = await v2voice.save(_supabase_client, req.creator_id, upd) if _supabase_client else False
+    _v2_voice_cache[req.creator_id] = (upd, time.time())
+    return {"mode": "live" if saved else "mock", "voice": v2voice.public_view(upd)}
+
+
+@app.post("/v1/voice/build")
+async def build_voice(req: VoiceBuildRequest):
+    if not (palo_flags.real_creator(req.creator_id) and _v2flags.enabled_for(req.creator_id)
+            and ANTHROPIC_KEY and _supabase_client):
+        return {"mode": "mock", "status": "unavailable"}
+    if req.creator_id in _v2_voice_building:
+        return {"mode": "live", "status": "running"}
+    brand = await _creator_profile_brand(req.creator_id)
+    _spawn(_v2_build_voice(req.creator_id, _brand_only(brand), req.handle.lstrip("@"),
+                           req.platform if req.platform in ("instagram", "tiktok") else "instagram"))
+    return {"mode": "live", "status": "started"}
+
+
+@app.post("/v1/voice/preview")
+async def preview_voice(req: VoicePreviewRequest):
+    """The same video written twice: once from the creator's real reels + profile, once
+    with none of it. The onboarding / How-you-talk "hear the difference" moment."""
+    from app.scripts_v2 import material as v2material, writer as v2writer
+    sreq = ScriptRequest(**_brand_only(req.d()), creator_id=req.creator_id, memory=req.memory or {},
+                         pillar=req.topic or "", count=1)
+    if not (ANTHROPIC_KEY and _v2flags.enabled_for(req.creator_id)):
+        mock = mock_scripts(sreq)[0]
+        return {"mode": "mock", "with_voice": mock, "without_voice": mock}
+    try:
+        inp = await _v2_inputs(sreq)
+        slots = await _plan_slots(sreq, 0, "", avoid_openers=_creator_recent_openers(inp["posts"]) or None)
+        slot = slots[0]
+        mats = await v2material.gather([slot], brand=_brand_only(req.d()), samples=inp["samples"],
+                                       memory=req.memory or None)
+        m = mats[0] if mats else {"particulars": [], "ask_user": ""}
+        brief = v2writer.slot_brief(slot, material_text=v2material.render(m["particulars"], m["ask_user"]),
+                                    length=inp["length"], avoid_openers=None,
+                                    register_desc=prompts.SLOT_REGISTERS.get(slot.get("register") or "", ""),
+                                    frame_desc=prompts.OPENER_FRAMES.get(slot.get("opener_frame") or "", ""))
+        model = _v2flags.first_paint_model()
+        with_v, without_v = await asyncio.gather(
+            v2writer.write(brand=_brand_only(req.d()), voice_block=inp["voice_block"],
+                           exemplars=inp["exemplars"], brief=brief, model=model, route="voice.preview"),
+            v2writer.write(brand=_brand_only(req.d()), voice_block="", exemplars=[], brief=brief,
+                           model=model, route="voice.preview"))
+        if not (with_v and without_v):
+            mock = mock_scripts(sreq)[0]
+            return {"mode": "mock", "with_voice": mock, "without_voice": mock}
+
+        def _dto(w: dict) -> dict:
+            body, cta = v2writer.split_cta(w["body"])
+            return _v2_to_dto({"hook": w["hook"], "body": body or w["body"], "cta": cta, "slot": slot,
+                               "particulars": m["particulars"], "voice_confidence": inp["confidence"],
+                               "doctrine_version": "", "lint_codes": []}, sreq)
+        return {"mode": "live", "with_voice": _dto(with_v), "without_voice": _dto(without_v)}
+    except Exception as e:                         # noqa: BLE001
+        logging.warning("[v2] voice preview failed: %s", e)
+        mock = mock_scripts(sreq)[0]
+        return {"mode": "mock", "with_voice": mock, "without_voice": mock}
 
 
 # ---------------------------------------------------------------------------
@@ -15165,6 +15697,11 @@ async def mimic(req: MimicRequest):
                   "platform": req.reel.get("platform", ""), "reel_id": req.reel.get("id", "")}
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "script": _mock_mimic(req.reel, req.brand), "mimicked_from": provenance}
+    if _v2flags.enabled_for(req.creator_id):
+        v2 = await _v2_mimic(req)
+        if v2:
+            return {"mode": "live", "engine": "v2", "script": v2["script"], "beats": v2["beats"],
+                    "mimicked_from": provenance}
     try:
         stats = await _arms_for_prompt(req.creator_id)
         posts = await _creator_posts(req.creator_id)   # B3: real posts -> verbatim voice exemplars

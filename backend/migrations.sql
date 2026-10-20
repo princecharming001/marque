@@ -392,3 +392,7 @@ CREATE TABLE IF NOT EXISTS creator_media (
 );
 ALTER TABLE creator_media ENABLE ROW LEVEL SECURITY;
 CREATE INDEX IF NOT EXISTS creator_media_creator_idx ON creator_media (creator_id, created_at DESC);
+
+-- Scripts v2 (2026-10-19): the first line's shape as a bandit dimension. Apply, then set
+-- BANDIT_OPENER_FRAME=1 on marque-api (the code never writes the column before that).
+ALTER TABLE post_registry ADD COLUMN IF NOT EXISTS opener_frame TEXT DEFAULT '';

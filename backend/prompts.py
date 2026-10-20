@@ -2004,12 +2004,41 @@ SLOT_PLAN_JSON = {
     "properties": {"slots": {"type": "array", "items": {
         "type": "object", "additionalProperties": False,
         "required": ["slot", "formatId", "subarea", "topic", "angle", "payoff", "register",
-                     "opener_frame"],
+                     "opener_frame", "trend_angle"],
         "properties": {"slot": _INT, "formatId": _STR, "subarea": _STR, "topic": _STR,
                        "angle": _STR, "payoff": _STR,
                        "register": {"type": "string", "enum": list(SLOT_REGISTERS)},
-                       "opener_frame": {"type": "string", "enum": list(OPENER_FRAMES)}}}}},
+                       "opener_frame": {"type": "string", "enum": list(OPENER_FRAMES)},
+                       "trend_angle": _STR}}}},
 }
+
+# Legacy hookSignal for a v2 opener frame: the app, the bandit's hook_signal arm and the
+# post-register whitelist all speak SIGNAL_LIST, so every v2 script still carries one.
+FRAME_TO_SIGNAL: dict[str, str] = {
+    "mid-story": "narrative", "flat-claim": "contrarian", "number-first": "specificity",
+    "you-situation": "callOut", "object-first": "patternInterrupt", "command": "stakes",
+    "question": "curiosity", "confession": "narrative",
+}
+
+# Human labels for Hook Lab cards (v2).
+FRAME_LABELS: dict[str, str] = {
+    "mid-story": "Starts mid-story", "flat-claim": "Plain opinion", "number-first": "Leads with a number",
+    "you-situation": "Names your situation", "object-first": "Starts on a thing", "command": "Tells you what to do",
+    "question": "Asks a real question", "confession": "Owns a mistake",
+}
+
+
+def angles_block(angles: list[dict] | None) -> str:
+    """Live niche angles for the planner (scripts v2). Ids are A1..An in prompt order."""
+    rows = [a for a in (angles or []) if isinstance(a, dict) and a.get("title")][:8]
+    if not rows:
+        return ""
+    lines = [f"  A{i + 1}: {a['title']}. Viewers are being promised: {a.get('promise', '')}"
+             for i, a in enumerate(rows)]
+    return ("THIS WEEK IN THE NICHE (what top reels are talking about right now). When one fits this "
+            "creator honestly, put at least one slot on it and set that slot's trend_angle to its id "
+            "(A1, A2...); every other slot's trend_angle is \"\". Take the TOPIC, never the wording:\n"
+            + "\n".join(lines))
 
 
 def openers_block(openers: list[str] | None, *, label: str = "RECENT OPENING LINES") -> str:
@@ -2026,11 +2055,15 @@ def openers_block(openers: list[str] | None, *, label: str = "RECENT OPENING LIN
 def slot_plan_prompt(brand: dict, pillar: dict, formats: list[str], *,
                      context: str = "", memory: dict | None = None,
                      avoid: list[str] | None = None,
-                     avoid_openers: list[str] | None = None) -> tuple[str, str]:
+                     avoid_openers: list[str] | None = None,
+                     angles: list[dict] | None = None) -> tuple[str, str]:
     mem = memory_block(memory) if memory else ""
     avoid_line = ("\nDo NOT repeat or closely echo these recent topics: "
                   + "; ".join(a for a in (avoid or [])[:12] if a) + "\n") if avoid else ""
     opener_block = openers_block(avoid_openers)
+    ang = angles_block(angles)
+    if ang:
+        opener_block = f"{opener_block}\n\n{ang}" if opener_block else ang
     slots = "\n".join(f"  slot {i + 1}: formatId = {f}" for i, f in enumerate(formats))
     user = (
         f"{brand_block(brand, None)}\n"
