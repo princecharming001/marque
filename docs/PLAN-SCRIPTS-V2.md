@@ -2,7 +2,11 @@
 
 2026-10-19. Revision 2. Built from: a read of `main` (131bb90), the September realism runs and the 09-23 prod smoke, three codebase maps, three research passes (competitor teardown, hooks/trends/costs, human-sounding text + voice cloning), then an engineering review and a product/craft review whose changes are folded into §5–9. Nothing in this document is implemented.
 
-## 0. Status (2026-10-19, branch `scripts-v2`, nothing pushed or deployed)
+## 0. Status (updated 2026-10-20: LIVE on marque-api, main `f71f604`)
+
+Rollout done 2026-10-20: step 1 (main fast-forwarded, deployed, verified), step 2 (`SCRIPTS_V2=allowlist`, allowlist = owner's account `40c09326-…` + `qa-editor-v2-verify`), step 3 (`post_registry.opener_frame` migration applied, `BANDIT_OPENER_FRAME=1`, `NICHE_TRANSCRIPT_PASS=1`). iOS 1.1.0 (92) prepared on main with the TestFlight workflow; blocked on the four repository secrets. Step 5 waits for a week of live use.
+
+### Build log (2026-10-19)
 
 | Phase | State | Commits |
 |---|---|---|
